@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MarkdownizerForm</class>
+ <widget class="QWidget" name="MarkdownizerForm">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>400</width>
+    <height>300</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Markdownizer</string>
+  </property>
+  <widget class="QGroupBox" name="groupBox">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>30</y>
+     <width>361</width>
+     <height>231</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Parameters</string>
+   </property>
+   <widget class="QTextEdit" name="textEditLog">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>100</y>
+      <width>341</width>
+      <height>121</height>
+     </rect>
+    </property>
+    <property name="readOnly">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButtonOk">
+    <property name="geometry">
+     <rect>
+      <x>270</x>
+      <y>65</y>
+      <width>80</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>OK</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelCpuInfo">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>21</y>
+      <width>360</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>🖥️ Available CPU: (dynamically determined)</string>
+    </property>
+   </widget>
+   <widget class="QSpinBox" name="spinBoxThreads">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>64</y>
+      <width>80</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="minimum">
+     <number>4</number>
+    </property>
+    <property name="maximum">
+     <number>64</number>
+    </property>
+    <property name="value">
+     <number>4</number>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelThread">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>68</y>
+      <width>150</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>🧵 Threads to use :</string>
+    </property>
+   </widget>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
