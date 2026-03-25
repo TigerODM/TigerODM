@@ -108,6 +108,7 @@ Permet l’automatisation complète de flux métier, l’orchestration d’agent
 - Déploiement Windows/macOS/Linux  
 - Moteur IA universel, widgets experts, API locales  
 - Intégration seamless dans les **écosystèmes d'entreprise**
+- Intégration dans le reste de l'univers **Open Source**
 ---
 
 
