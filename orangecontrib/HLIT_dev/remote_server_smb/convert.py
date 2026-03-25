@@ -3,7 +3,6 @@ import Orange
 from Orange.data import Table, Domain, StringVariable, ContinuousVariable
 import math
 
-
 def is_valid_json_string(data):
     try:
         json_str = json.dumps(data)
