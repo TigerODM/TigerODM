@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 100 100"
+   width="100"
+   height="100"
+   version="1.1"
+   id="svg8"
+   sodipodi:docname="local_interf_multi_pull.svg"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="7.7711035"
+     inkscape:cx="24.192188"
+     inkscape:cy="48.062672"
+     inkscape:window-width="2560"
+     inkscape:window-height="1334"
+     inkscape:window-x="-11"
+     inkscape:window-y="-11"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg8" />
+  <defs
+     id="defs8" />
+  <!-- Écran -->
+  <rect
+     x="10.416619"
+     y="17.607677"
+     width="79.439735"
+     height="54.101482"
+     rx="6.619978"
+     fill="white"
+     stroke="black"
+     stroke-width="2.67639"
+     id="rect1" />
+  <!-- Bordure inférieure de l'écran -->
+  <rect
+     x="30.276554"
+     y="71.70916"
+     width="39.719868"
+     height="6.7626853"
+     fill="black"
+     id="rect2" />
+  <!-- Base de l'écran -->
+  <rect
+     x="36.896534"
+     y="78.47184"
+     width="26.479912"
+     height="6.7626853"
+     fill="black"
+     id="rect3" />
+  <rect
+     x="43.51651"
+     y="85.234528"
+     width="13.239956"
+     height="4.057611"
+     fill="black"
+     id="rect4" />
+  <!-- Icônes réseau (cercles connectés) -->
+  <!-- Texte pour souligner la connexion locale -->
+  <polygon
+     points="80,60 50,90 20,60 40,60 40,10 60,10 60,60 "
+     fill="#000000"
+     id="polygon1"
+     transform="matrix(0.44684561,0,0,0.44684561,26.923873,15.427206)" />
+  <polygon
+     points="80,60 50,90 20,60 40,60 40,10 60,10 60,60 "
+     fill="#000000"
+     id="polygon1-4"
+     transform="matrix(0.44684561,0,0,0.44684561,47.084016,29.995602)" />
+  <polygon
+     points="50,90 20,60 40,60 40,10 60,10 60,60 80,60 "
+     fill="#000000"
+     id="polygon1-0"
+     transform="matrix(0.44684561,0,0,0.44684561,8.5034884,30.177586)" />
+</svg>
