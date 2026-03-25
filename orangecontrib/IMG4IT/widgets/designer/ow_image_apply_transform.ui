@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>478</width>
+    <height>385</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Transformation Editor</string>
+  </property>
+  <widget class="QGroupBox" name="groupBox_3">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>30</y>
+     <width>431</width>
+     <height>131</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Information</string>
+   </property>
+   <widget class="QLabel" name="Description_info">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>30</y>
+      <width>411</width>
+      <height>71</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Values parsed from the input 'transform' column. Supports Filters, Crop, and Rigid Registration.</string>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="groupBox_4">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>170</y>
+     <width>431</width>
+     <height>191</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Example :</string>
+   </property>
+   <widget class="QPlainTextEdit" name="plainTextEdit">
+    <property name="geometry">
+     <rect>
+      <x>0</x>
+      <y>20</y>
+      <width>401</width>
+      <height>151</height>
+     </rect>
+    </property>
+    <property name="plainText">
+     <string>convert
+transform ou Crop | (xf xray viewer)
+Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = cross
+Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = invcross
+Draw | line = 238 | col = 65 | delta_line = 512 | delta_col = 188| type = rectangle  Draw | line = 237 | col = 245 | delta_line = 512 | delta_col = 188| type = rectangle (utile avec concatenate !!)
+Crop | col = 38 89  | line = 33 33 | delta_line = 30 | delta_col = 30 | type = center (crop des rectangles autour des centres)
+</string>
+    </property>
+   </widget>
+  </widget>
+  <zorder>groupBox_4</zorder>
+  <zorder>groupBox_3</zorder>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
