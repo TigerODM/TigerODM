@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>468</width>
+    <height>294</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <widget class="QRadioButton" name="radioButton">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>20</y>
+     <width>311</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Replace {Keys/Values}</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="radioButton_2">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>140</y>
+     <width>311</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Replace {Key/Table}</string>
+   </property>
+  </widget>
+  <widget class="QTableWidget" name="tableWidget">
+   <property name="geometry">
+    <rect>
+     <x>40</x>
+     <y>60</y>
+     <width>401</width>
+     <height>71</height>
+    </rect>
+   </property>
+   <column>
+    <property name="text">
+     <string>DocxPath</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>Key1</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>Key2</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>Key3</string>
+    </property>
+   </column>
+  </widget>
+  <widget class="QTableWidget" name="tableWidget_2">
+   <property name="geometry">
+    <rect>
+     <x>40</x>
+     <y>170</y>
+     <width>401</width>
+     <height>71</height>
+    </rect>
+   </property>
+   <column>
+    <property name="text">
+     <string>DocxPath</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>TableKey</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>%!blue!%Column1</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>Column2</string>
+    </property>
+   </column>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="windowTitle">
+   <string>Add columns</string>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>470</width>
+    <height>360</height>
+   </size>
+  </property>
+
+  <layout class="QVBoxLayout" name="verticalLayoutRoot">
+   <!-- Description -->
+   <item>
+    <widget class="QLabel" name="Description">
+     <property name="text">
+      <string>Select the variables to add as meta columns to the input table.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+
+   <!-- Buttons row -->
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <widget class="QPushButton" name="btnSelectAll">
+       <property name="text">
+        <string>Select all</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnClearAll">
+       <property name="text">
+        <string>Clear all</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnApply">
+       <property name="text">
+        <string>Apply</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- Scrollable area for checkboxes -->
+   <item>
+    <widget class="QScrollArea" name="varsScroll">
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="varsContainer">
+      <layout class="QVBoxLayout" name="varsLayout">
+       <!-- Checkboxes are added dynamically here -->
+       <item>
+        <spacer name="verticalSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+
+   <!-- Footer -->
+   <item>
+    <widget class="QLabel" name="footer">
+     <property name="text">
+      <string>Note: the added columns are metas (text) with the same value for all rows.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
