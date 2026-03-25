@@ -66,7 +66,7 @@ class OWAccumulator(widget.OWWidget):
             # ✅ Connexion au changement d’état
             self.checkBox_send.stateChanged.connect(self.update_auto_send_state)
 
-        # --- Connexion du bouton manuel ---
+        # ---- Connexion du bouton manuel ----
         if self.pushButton_send is not None:
             self.pushButton_send.clicked.connect(self.push)
 
