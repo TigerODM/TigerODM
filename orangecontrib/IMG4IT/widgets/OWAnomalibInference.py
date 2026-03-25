@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 from pathlib import Path
 
+
 from Orange.data import StringVariable, ContinuousVariable, Domain, Table
 from AnyQt.QtWidgets import QApplication, QPushButton, QCheckBox
 from Orange.widgets.settings import Setting
