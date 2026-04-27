@@ -609,12 +609,22 @@ class CanvasMainWindow(QMainWindow):
             toolTip="Load the Tutorial workflows from your AAIT Store.",
             triggered=self.tutorial_workflows,
         )
+
+        self.open_aait_store_interface_action = QAction(
+            "AAIT Store Interface", self,
+            objectName="aait-store-interface",
+            toolTip="Open the AAIT Store Interface too choose your ows file",
+            triggered=self.open_aait_ressource_manager,
+        )
         self.aait_ressource_manager_action = QAction(
             "AAIT Ressource Manager", self,
             objectName="aait-ressource-manager",
             toolTip="Open the ressource manager to choose your remote store",
             triggered=self.open_aait_ressource_manager,
         )
+
+
+
 
         self.key_manager_action = QAction(
             "Key Manager", self,
@@ -776,6 +786,17 @@ class CanvasMainWindow(QMainWindow):
             from orangecontrib.AAIT.utils.MetManagement import get_local_store_path
             local_store_path = get_local_store_path()
             mywf_path = os.path.join(local_store_path,  "myWorkflows")
+            os.makedirs(mywf_path, exist_ok=True)
+            self.mwe_dialog(mywf_path)
+        except Exception as e:
+            import logging
+            logging.error(f"Failed to open my Workflows: {e}")
+
+    def open_aait_store_interface(self):
+        try:
+            from orangecontrib.AAIT.utils.MetManagement import get_local_store_path
+            local_store_path = get_local_store_path()
+            mywf_path = local_store_path
             os.makedirs(mywf_path, exist_ok=True)
             self.mwe_dialog(mywf_path)
         except Exception as e:
@@ -1044,9 +1065,11 @@ class CanvasMainWindow(QMainWindow):
                 self.tutorial_workflows_action,
                 self.my_workflows_action,
             ])
-
             self.tigerODM_menu.addSeparator()
-
+            
+        if not builtins.IsTiger:
+            self.tigerODM_menu.addActions([self.open_aait_store_interface_action])
+            
         self.tigerODM_menu.addActions([
             # self.show_mwe_action,
             self.aait_ressource_manager_action,
@@ -1055,6 +1078,7 @@ class CanvasMainWindow(QMainWindow):
             self.tiger_notepad_action,
             # self.run_tests_action
         ])
+
 
 
         menu_bar.addMenu(self.tigerODM_menu)
