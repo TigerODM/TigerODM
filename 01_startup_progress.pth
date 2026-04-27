@@ -1,0 +1,1 @@
+import sys, os; f='--splash-preload' in sys.argv; f and sys.argv.remove('--splash-preload'); f and os.environ.setdefault('STARTUP_SPLASH','1'); f and __import__('startup_progress')
