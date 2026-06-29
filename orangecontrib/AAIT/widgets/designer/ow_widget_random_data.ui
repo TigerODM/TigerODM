@@ -125,7 +125,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>Need Max. Min. Feature</string>
+     <string>Need Feature/name/Column|Max./max|Min./min|(step/Step)</string>
     </property>
    </widget>
    <widget class="QLabel" name="label_4">

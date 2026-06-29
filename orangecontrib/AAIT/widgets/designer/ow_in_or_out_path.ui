@@ -16,14 +16,14 @@
   <widget class="QPushButton" name="pushButton">
    <property name="geometry">
     <rect>
-     <x>270</x>
+     <x>480</x>
      <y>330</y>
-     <width>421</width>
+     <width>211</width>
      <height>21</height>
     </rect>
    </property>
    <property name="text">
-    <string>Add path in new column</string>
+    <string>Run</string>
    </property>
   </widget>
   <widget class="QLineEdit" name="lineEdit">
@@ -177,6 +177,19 @@
    </property>
    <property name="text">
     <string>...</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_gguf">
+   <property name="geometry">
+    <rect>
+     <x>660</x>
+     <y>260</y>
+     <width>31</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>gguf</string>
    </property>
   </widget>
  </widget>

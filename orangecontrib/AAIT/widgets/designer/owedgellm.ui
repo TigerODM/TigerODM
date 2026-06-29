@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>681</width>
+    <width>708</width>
     <height>701</height>
    </rect>
   </property>
@@ -16,10 +16,10 @@
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
     <rect>
-     <x>20</x>
-     <y>40</y>
-     <width>671</width>
-     <height>561</height>
+     <x>10</x>
+     <y>10</y>
+     <width>681</width>
+     <height>641</height>
     </rect>
    </property>
    <property name="title">
@@ -28,17 +28,22 @@
    <widget class="QLabel" name="Description">
     <property name="geometry">
      <rect>
-      <x>20</x>
+      <x>10</x>
       <y>20</y>
-      <width>551</width>
-      <height>51</height>
+      <width>501</width>
+      <height>61</height>
      </rect>
     </property>
     <property name="text">
-     <string>This widget generates an answer on the column &quot;prompt&quot; of your input data.</string>
+     <string>This widget supports two input formats, automatically detected from the column names:
+- 'prompt' (optional 'image paths' paths separated by ';')
+- 'role' (user/assistant), 'type' (text/image), 'content' (text or image path)</string>
     </property>
     <property name="textFormat">
      <enum>Qt::AutoText</enum>
+    </property>
+    <property name="scaledContents">
+     <bool>true</bool>
     </property>
     <property name="alignment">
      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -51,8 +56,8 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>80</y>
-      <width>121</width>
+      <y>100</y>
+      <width>71</width>
       <height>21</height>
      </rect>
     </property>
@@ -64,7 +69,7 @@
     <property name="geometry">
      <rect>
       <x>110</x>
-      <y>70</y>
+      <y>90</y>
       <width>101</width>
       <height>41</height>
      </rect>
@@ -80,98 +85,12 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>130</y>
+      <y>140</y>
       <width>651</width>
       <height>46</height>
      </rect>
     </property>
     <layout class="QGridLayout" name="gridLayout">
-     <item row="1" column="4">
-      <widget class="QDoubleSpinBox" name="boxRepeatPenalty">
-       <property name="minimumSize">
-        <size>
-         <width>0</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>100</width>
-         <height>16777215</height>
-        </size>
-       </property>
-       <property name="alignment">
-        <set>Qt::AlignCenter</set>
-       </property>
-       <property name="decimals">
-        <number>2</number>
-       </property>
-       <property name="maximum">
-        <double>2.000000000000000</double>
-       </property>
-       <property name="singleStep">
-        <double>0.010000000000000</double>
-       </property>
-       <property name="value">
-        <double>1.150000000000000</double>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="0">
-      <widget class="QSpinBox" name="boxMaxTokens">
-       <property name="minimumSize">
-        <size>
-         <width>0</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>100</width>
-         <height>16777215</height>
-        </size>
-       </property>
-       <property name="alignment">
-        <set>Qt::AlignCenter</set>
-       </property>
-       <property name="maximum">
-        <number>4096</number>
-       </property>
-       <property name="value">
-        <number>0</number>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="0">
-      <widget class="QLabel" name="label_6">
-       <property name="text">
-        <string>Max tokens</string>
-       </property>
-       <property name="alignment">
-        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="3">
-      <widget class="QLabel" name="label_2">
-       <property name="text">
-        <string>Top K</string>
-       </property>
-       <property name="alignment">
-        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QLabel" name="label_3">
-       <property name="text">
-        <string>Temperature</string>
-       </property>
-       <property name="alignment">
-        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-       </property>
-      </widget>
-     </item>
      <item row="1" column="1">
       <widget class="QDoubleSpinBox" name="boxTemperature">
        <property name="minimumSize">
@@ -213,31 +132,6 @@
        </property>
       </widget>
      </item>
-     <item row="1" column="3">
-      <widget class="QSpinBox" name="boxTopK">
-       <property name="minimumSize">
-        <size>
-         <width>0</width>
-         <height>25</height>
-        </size>
-       </property>
-       <property name="maximumSize">
-        <size>
-         <width>100</width>
-         <height>16777215</height>
-        </size>
-       </property>
-       <property name="alignment">
-        <set>Qt::AlignCenter</set>
-       </property>
-       <property name="maximum">
-        <number>100</number>
-       </property>
-       <property name="value">
-        <number>40</number>
-       </property>
-      </widget>
-     </item>
      <item row="1" column="2">
       <widget class="QDoubleSpinBox" name="boxTopP">
        <property name="minimumSize">
@@ -269,10 +163,127 @@
        </property>
       </widget>
      </item>
+     <item row="1" column="3">
+      <widget class="QSpinBox" name="boxTopK">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>100</width>
+         <height>16777215</height>
+        </size>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignCenter</set>
+       </property>
+       <property name="maximum">
+        <number>100</number>
+       </property>
+       <property name="value">
+        <number>40</number>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="4">
+      <widget class="QDoubleSpinBox" name="boxRepeatPenalty">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>100</width>
+         <height>16777215</height>
+        </size>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignCenter</set>
+       </property>
+       <property name="decimals">
+        <number>2</number>
+       </property>
+       <property name="maximum">
+        <double>2.000000000000000</double>
+       </property>
+       <property name="singleStep">
+        <double>0.010000000000000</double>
+       </property>
+       <property name="value">
+        <double>1.150000000000000</double>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="3">
+      <widget class="QLabel" name="label_2">
+       <property name="text">
+        <string>Top K</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="0">
+      <widget class="QLabel" name="label_6">
+       <property name="toolTip">
+        <string>Set to 0 to disable the maximum token limit. Generation will only be limited by the context length.</string>
+       </property>
+       <property name="text">
+        <string>Max tokens</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QSpinBox" name="boxMaxTokens">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>25</height>
+        </size>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>100</width>
+         <height>16777215</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Set to 0 to disable the maximum token limit. Generation will only be limited by the context length.</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignCenter</set>
+       </property>
+       <property name="maximum">
+        <number>999999999</number>
+       </property>
+       <property name="value">
+        <number>0</number>
+       </property>
+      </widget>
+     </item>
      <item row="0" column="4">
       <widget class="QLabel" name="label_5">
        <property name="text">
         <string>Repeat penalty</string>
+       </property>
+       <property name="alignment">
+        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLabel" name="label_3">
+       <property name="text">
+        <string>Temperature</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -285,16 +296,16 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>190</y>
+      <y>200</y>
       <width>651</width>
-      <height>361</height>
+      <height>411</height>
      </rect>
     </property>
    </widget>
    <widget class="QLineEdit" name="lineEdit_2">
     <property name="geometry">
      <rect>
-      <x>530</x>
+      <x>550</x>
       <y>20</y>
       <width>121</width>
       <height>41</height>
@@ -314,7 +325,7 @@
     <property name="geometry">
      <rect>
       <x>320</x>
-      <y>80</y>
+      <y>100</y>
       <width>51</width>
       <height>22</height>
      </rect>
@@ -345,7 +356,7 @@
     <property name="geometry">
      <rect>
       <x>240</x>
-      <y>80</y>
+      <y>100</y>
       <width>71</width>
       <height>20</height>
      </rect>
@@ -358,7 +369,7 @@
     <property name="geometry">
      <rect>
       <x>390</x>
-      <y>80</y>
+      <y>100</y>
       <width>71</width>
       <height>20</height>
      </rect>
@@ -371,7 +382,7 @@
     <property name="geometry">
      <rect>
       <x>470</x>
-      <y>80</y>
+      <y>100</y>
       <width>51</width>
       <height>22</height>
      </rect>
@@ -398,38 +409,6 @@
      </property>
     </item>
    </widget>
-  </widget>
-  <widget class="QPushButton" name="pushButton_send">
-   <property name="enabled">
-    <bool>false</bool>
-   </property>
-   <property name="geometry">
-    <rect>
-     <x>170</x>
-     <y>614</y>
-     <width>521</width>
-     <height>31</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Run</string>
-   </property>
-  </widget>
-  <widget class="QCheckBox" name="checkBox_send">
-   <property name="enabled">
-    <bool>false</bool>
-   </property>
-   <property name="geometry">
-    <rect>
-     <x>20</x>
-     <y>620</y>
-     <width>131</width>
-     <height>20</height>
-    </rect>
-   </property>
-   <property name="text">
-    <string>Auto send data</string>
-   </property>
   </widget>
  </widget>
  <resources/>

@@ -6,121 +6,104 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>460</width>
-    <height>178</height>
+    <width>380</width>
+    <height>230</height>
    </rect>
   </property>
-  <property name="minimumSize">
-   <size>
-    <width>460</width>
-    <height>140</height>
-   </size>
-  </property>
   <property name="windowTitle">
-   <string>Fusion NxM (Inner)</string>
+   <string>Fusion NxM</string>
   </property>
-  <layout class="QGridLayout" name="gridLayoutRoot">
-   <property name="spacing">
-    <number>8</number>
-   </property>
-   <item row="2" column="0">
+
+  <layout class="QVBoxLayout" name="verticalLayoutRoot">
+   <item>
     <widget class="QGroupBox" name="groupBox">
-     <property name="maximumSize">
-      <size>
-       <width>448</width>
-       <height>166</height>
-      </size>
-     </property>
      <property name="title">
       <string>Parameters</string>
      </property>
-     <widget class="QComboBox" name="cb_key1_b">
-      <property name="geometry">
-       <rect>
-        <x>201</x>
-        <y>50</y>
-        <width>106</width>
-        <height>19</height>
-       </rect>
+
+     <layout class="QVBoxLayout" name="verticalLayoutGroupBox">
+      <property name="spacing">
+       <number>12</number>
       </property>
-     </widget>
-     <widget class="QComboBox" name="cb_key1_a">
-      <property name="geometry">
-       <rect>
-        <x>41</x>
-        <y>50</y>
-        <width>106</width>
-        <height>19</height>
-       </rect>
-      </property>
-     </widget>
-     <widget class="QLabel" name="Description">
-      <property name="geometry">
-       <rect>
-        <x>40</x>
-        <y>-6</y>
-        <width>334</width>
-        <height>70</height>
-       </rect>
-      </property>
-      <property name="minimumSize">
-       <size>
-        <width>334</width>
-        <height>70</height>
-       </size>
-      </property>
-      <property name="text">
-       <string>Select a column key for each table; the merge (inner) is auto.</string>
-      </property>
-      <property name="wordWrap">
-       <bool>true</bool>
-      </property>
-     </widget>
-     <widget class="QLabel" name="labelKeyA">
-      <property name="geometry">
-       <rect>
-        <x>335</x>
-        <y>50</y>
-        <width>106</width>
-        <height>19</height>
-       </rect>
-      </property>
-      <property name="text">
-       <string>Column keys</string>
-      </property>
-     </widget>
-     <widget class="QPushButton" name="pushButton_send">
-      <property name="enabled">
-       <bool>false</bool>
-      </property>
-      <property name="geometry">
-       <rect>
-        <x>150</x>
-        <y>84</y>
-        <width>271</width>
-        <height>21</height>
-       </rect>
-      </property>
-      <property name="text">
-       <string>Run</string>
-      </property>
-     </widget>
-     <widget class="QCheckBox" name="checkBox_send">
-      <property name="enabled">
-       <bool>false</bool>
-      </property>
-      <property name="geometry">
-       <rect>
-        <x>10</x>
-        <y>84</y>
-        <width>121</width>
-        <height>20</height>
-       </rect>
-      </property>
-      <property name="text">
-       <string>Auto send data</string>
-      </property>
-     </widget>
+
+      <item>
+       <widget class="QLabel" name="Description">
+        <property name="text">
+         <string>Select a column key for each table and a join type; the merge is auto.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+
+      <item>
+       <layout class="QFormLayout" name="formLayoutInputs">
+        <property name="horizontalSpacing">
+         <number>15</number>
+        </property>
+        <property name="verticalSpacing">
+         <number>8</number>
+        </property>
+
+        <item row="0" column="0">
+         <widget class="QLabel" name="labelKeyA">
+          <property name="text">
+           <string>Key Table 1:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QComboBox" name="cb_key1_a"/>
+        </item>
+
+        <item row="1" column="0">
+         <widget class="QLabel" name="labelKeyB">
+          <property name="text">
+           <string>Key Table 2:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="cb_key1_b"/>
+        </item>
+
+        <item row="2" column="0">
+         <widget class="QLabel" name="labelJoinType">
+          <property name="text">
+           <string>Join type:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QComboBox" name="cb_join_type"/>
+        </item>
+       </layout>
+      </item>
+
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayoutButtons">
+        <item>
+         <widget class="QCheckBox" name="checkBox_send">
+          <property name="text">
+           <string>Auto send data</string>
+          </property>
+          <property name="checked">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="pushButton_send">
+          <property name="text">
+           <string>Run</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+
+     </layout>
     </widget>
    </item>
   </layout>

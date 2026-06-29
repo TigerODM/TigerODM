@@ -29,9 +29,9 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>50</y>
+      <y>20</y>
       <width>411</width>
-      <height>71</height>
+      <height>61</height>
      </rect>
     </property>
     <property name="text">
@@ -45,6 +45,35 @@
     </property>
     <property name="wordWrap">
      <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QFrame" name="line">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>88</y>
+      <width>411</width>
+      <height>2</height>
+     </rect>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::HLine</enum>
+    </property>
+    <property name="frameShadow">
+     <enum>QFrame::Sunken</enum>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_detailed">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>100</y>
+      <width>411</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Detailed loading for docx (one row per object: heading, paragraph, table, header, footer)</string>
     </property>
    </widget>
   </widget>

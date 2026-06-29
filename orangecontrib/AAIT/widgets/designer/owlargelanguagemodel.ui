@@ -65,66 +65,16 @@
      <rect>
       <x>210</x>
       <y>10</y>
-      <width>121</width>
+      <width>201</width>
       <height>21</height>
      </rect>
     </property>
     <property name="currentText">
-     <string>Qwen3 1.7B (Q2)</string>
+     <string/>
     </property>
     <property name="minimumContentsLength">
      <number>0</number>
     </property>
-    <item>
-     <property name="text">
-      <string>Qwen3 1.7B (Q2)</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Qwen3 1.7B</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Qwen3 4B</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Qwen3 8B</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Qwen3 14B</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Granite4 7B</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Phi4 4B</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Gemma3 270m</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Gemma3 12B</string>
-     </property>
-    </item>
-    <item>
-     <property name="text">
-      <string>Deepseek 8B</string>
-     </property>
-    </item>
    </widget>
    <widget class="QLabel" name="label">
     <property name="geometry">

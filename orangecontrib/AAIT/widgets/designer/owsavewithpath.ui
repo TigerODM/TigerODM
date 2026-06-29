@@ -43,12 +43,25 @@
      <rect>
       <x>40</x>
       <y>70</y>
-      <width>221</width>
+      <width>361</width>
       <height>31</height>
      </rect>
     </property>
     <property name="text">
-     <string>purge widget entries after writing the file</string>
+     <string>Purge widget entries after writing the file</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_3">
+    <property name="geometry">
+     <rect>
+      <x>40</x>
+      <y>100</y>
+      <width>371</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Use paths from the input table to write the file.</string>
     </property>
    </widget>
   </widget>
