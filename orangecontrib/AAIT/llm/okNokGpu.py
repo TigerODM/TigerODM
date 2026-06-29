@@ -2,8 +2,11 @@ import glob
 import ctypes
 import platform
 from ctypes import wintypes
-
-
+import os
+if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
+    from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
+else:
+    from orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
 def has_gpu_with_min_vram(min_vram_gb=12):
     """
     Retourne True si au moins un GPU dispose d'au moins `min_vram_gb` Go.
@@ -256,3 +259,53 @@ def _has_gpu_linux_best_effort(threshold_bytes):
 
     except Exception:
         return False
+
+
+# renvoie un dictionnaire clef:chemin (chemin=="" si le modele n'est pas sur l'odinateur)
+def get_model_names():
+    model_names = [
+        "Qwen3.5 9B Q6",
+        "Qwen3.5 4B Q4",
+        "Qwen3 1.7B (Q2)",
+        "Qwen3 1.7B",
+        "Qwen3 4B",
+        "Qwen3 VL 8B",
+        "Qwen3 8B",
+        "Qwen3 14B",
+        "Granite4 7B",
+        "Phi4 4B",
+        "Gemma3 270m",
+        "Gemma3 12B",
+        "Deepseek 8B",
+        "Gemma 4 E2B Q4"
+    ]
+    result = {}
+    for model_name in model_names:
+        try:
+            path = get_path_or_retrieve(model_name, False)
+        except Exception as e:
+            print(f"Warning OkNokGpu function: {e}")
+            path = ""
+        result[model_name] = path
+    return result
+
+def auto_choose_model():
+    best_big_llm_ordered = ["Qwen3.5 9B Q6","Qwen3 14B", "Qwen3 8B", "Qwen3 4B","Qwen3 VL 8B"]
+    best_small_llm_ordered = ["Gemma 4 E2B Q4","Qwen3.5 4B Q4","Qwen3 1.7B"]
+    vram_pour_gros_model=12
+    model_names=get_model_names()
+    if has_gpu_with_min_vram(vram_pour_gros_model):
+        for element in best_big_llm_ordered:
+            model_path = model_names[element]
+            if model_path!="":
+                return str(element)
+    for element in best_small_llm_ordered:
+        model_path = model_names[element]
+        if model_path != "":
+            return str(element)
+    return ""
+
+
+
+
+print(auto_choose_model())

@@ -7,6 +7,9 @@ from Orange.data import Table, Domain, StringVariable
 
 import fitz
 import docx
+import pptx
+from docx.oxml.ns import qn
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 
 
@@ -176,6 +179,347 @@ def load_documents_in_table(table, progress_callback=None, argself=None):
     return data
 
 
+def load_documents_in_table_detailed(table, progress_callback=None, argself=None):
+    """
+    Load the content of each document listed in a table.
+
+    Returns a tuple (main_table, details_table):
+      - main_table   : one row per file (same as load_documents_in_table),
+                       columns: path, name, content
+      - details_table: one row per Word object (paragraph, heading, table, …)
+                       for .docx files; one row with type "document" for others,
+                       columns: path, name, type, content
+
+    :param table: Orange.data.Table containing file paths in a column named "path".
+    :return: (Orange.data.Table, Orange.data.Table)
+    """
+    main_rows = []
+    detail_rows = []
+    total = len(table)
+
+    for i, row in enumerate(table):
+        filepath = row["path"].value
+        name = Path(filepath).name
+        ext = os.path.splitext(filepath)[1].lower()
+
+        # --- Main table: one row per file, full text content ---
+        full_text = extract_text(filepath)
+        main_rows.append([filepath, name, full_text])
+
+        # --- Details table: one row per Word object ---
+        if ext == ".docx":
+            objects = extract_docx_objects(filepath)
+            for obj_type, content in objects:
+                detail_rows.append([filepath, name, obj_type, content])
+        # To include other files in the details table under type document uncomment:
+        #else:
+        #    detail_rows.append([filepath, name, "document", full_text])
+
+        if progress_callback is not None:
+            progress_callback(float(100 * (i + 1) / total))
+
+        if argself is not None and getattr(argself, "stop", False):
+            break
+
+    # Build main_table (path, name, content)
+    path_var = StringVariable("path")
+    name_var = StringVariable("name")
+    content_var = StringVariable("content")
+    main_domain = Domain(attributes=[], metas=[path_var, name_var, content_var])
+    main_table = Table.from_list(domain=main_domain, rows=main_rows)
+
+    # Build details_table (path, name, type, content)
+    type_var = StringVariable("type")
+    detail_content_var = StringVariable("content")
+    detail_domain = Domain(
+        attributes=[],
+        metas=[
+            StringVariable("path"),
+            StringVariable("name"),
+            StringVariable("type"),
+            StringVariable("content"),
+        ]
+    )
+    details_table = Table.from_list(domain=detail_domain, rows=detail_rows)
+
+    return main_table, details_table
+
+def _extract_header_footer_text(header_or_footer) -> str:
+    """
+    Extract text from a header or footer, including:
+    - Static runs
+    - Field code results (e.g. STYLEREF which renders the current section/heading name)
+    - Table content (headers/footers often use tables for layout)
+    """
+    parts = []
+
+    def _extract_from_paragraphs(paragraphs):
+        para_lines = []
+        for para in paragraphs:
+            para_parts = []
+            inside_field_result = False
+
+            for child in para._element.iter():
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+
+                if tag == "fldChar":
+                    fld_type = child.get(qn("w:fldCharType"))
+                    if fld_type == "separate":
+                        inside_field_result = True
+                    elif fld_type == "end":
+                        inside_field_result = False
+
+                elif tag == "t":
+                    text = child.text or ""
+                    if text.strip():
+                        para_parts.append(text)
+
+            line = "".join(para_parts).strip()
+            if line:
+                para_lines.append(line)
+        return para_lines
+
+    # Direct paragraphs in the header/footer
+    parts.extend(_extract_from_paragraphs(header_or_footer.paragraphs))
+
+    # Tables inside the header/footer
+    for table in header_or_footer.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                parts.extend(_extract_from_paragraphs(cell.paragraphs))
+
+    return "\n".join(parts)
+
+
+def extract_docx_objects(docx_path):
+    """
+    Extract Word objects from a .docx file, preserving document order.
+    Returns a list of (type, content) tuples.
+
+    Types returned:
+      - "heading_N"          for Heading N styles (N = 1..9)
+      - "title"              for Title style paragraphs
+      - "subtitle"           for Subtitle style paragraphs
+      - "paragraph"          for normal body paragraphs
+      - "table"              for tables (tab/newline-separated text)
+      - "header"             for default/odd-page headers (includes STYLEREF section names)
+      - "header_first"       for first-page headers (page 1)
+      - "header_even"        for even-page headers
+      - "footer"             for default/odd-page footers
+      - "footer_first"       for first-page footers (page 1)
+      - "footer_even"        for even-page footers
+      - "textbox"            for floating text boxes / shapes
+      - "footnote"           for footnotes
+      - "endnote"            for endnotes
+
+    :param docx_path: Path to the .docx file.
+    :return: List of (type_str, content_str) tuples.
+    """
+    try:
+        doc = docx.Document(docx_path)
+        objects = []
+
+        # ------------------------------------------------------------------ #
+        # 1. Headers & Footers (all variants, deduplicated by text)           #
+        # ------------------------------------------------------------------ #
+        seen_header_footer = set()
+
+        def _add_hf(label, header_or_footer):
+            text = _extract_header_footer_text(header_or_footer).strip()
+            if text and text not in seen_header_footer:
+                seen_header_footer.add(text)
+                objects.append((label, text))
+
+        for section in doc.sections:
+            try:
+                if section.header:
+                    _add_hf("header", section.header)
+                if section.footer:
+                    _add_hf("footer", section.footer)
+                if section.first_page_header:
+                    _add_hf("header_first", section.first_page_header)
+                if section.first_page_footer:
+                    _add_hf("footer_first", section.first_page_footer)
+                if section.even_page_header:
+                    _add_hf("header_even", section.even_page_header)
+                if section.even_page_footer:
+                    _add_hf("footer_even", section.even_page_footer)
+            except Exception as e:
+                print(f"[AVERTISSEMENT] Section header/footer ignorée dans '{docx_path}': {e}")
+                continue
+
+        # ------------------------------------------------------------------ #
+        # 2. Footnotes                                                         #
+        # ------------------------------------------------------------------ #
+        try:
+            footnotes_part = doc.part.footnotes_part
+            if footnotes_part is not None:
+                for fn in footnotes_part._element.findall(qn("w:footnote")):
+                    fn_id = fn.get(qn("w:id"), "")
+                    if fn_id in ("-1", "0"):
+                        continue
+                    run_texts = []
+                    for p in fn.findall(".//" + qn("w:p")):
+                        para_text = "".join(
+                            r.text for r in p.findall(".//" + qn("w:t")) if r.text
+                        ).strip()
+                        if para_text:
+                            run_texts.append(para_text)
+                    combined = " ".join(run_texts)
+                    if combined:
+                        objects.append(("footnote", combined))
+        except Exception:
+            pass
+
+        # ------------------------------------------------------------------ #
+        # 3. Endnotes                                                          #
+        # ------------------------------------------------------------------ #
+        try:
+            endnotes_part = doc.part.endnotes_part
+            if endnotes_part is not None:
+                for en in endnotes_part._element.findall(qn("w:endnote")):
+                    en_id = en.get(qn("w:id"), "")
+                    if en_id in ("-1", "0"):
+                        continue
+                    run_texts = []
+                    for p in en.findall(".//" + qn("w:p")):
+                        para_text = "".join(
+                            r.text for r in p.findall(".//" + qn("w:t")) if r.text
+                        ).strip()
+                        if para_text:
+                            run_texts.append(para_text)
+                    combined = " ".join(run_texts)
+                    if combined:
+                        objects.append(("endnote", combined))
+        except Exception:
+            pass
+
+        # ------------------------------------------------------------------ #
+        # 4. Body: paragraphs, tables, text boxes in document order           #
+        # ------------------------------------------------------------------ #
+        parent = doc.element.body
+        table_elements = {t._element: t for t in doc.tables}
+        para_elements = {p._element: p for p in doc.paragraphs}
+
+        def _style_to_type(style_name: str) -> str:
+            """Map a paragraph style name to an object type string."""
+            if not style_name:
+                return "paragraph"
+            s = style_name.lower().strip()
+            if s.startswith("heading"):
+                try:
+                    level = int(style_name.split()[-1])
+                except ValueError:
+                    level = 1
+                return f"heading_{level}"
+            if s == "title":
+                return "title"
+            if s == "subtitle":
+                return "subtitle"
+            return "paragraph"
+
+
+        def _collect_textboxes(element) -> list:
+            """
+            Recursively find all text-box / shape text inside an element.
+            Returns a list of ("textbox", text) tuples.
+            """
+            results = []
+            for txbx in element.findall(".//" + qn("w:txbxContent")):
+                parts = []
+                for p in txbx.findall(qn("w:p")):
+                    line = "".join(
+                        r.text for r in p.findall(".//" + qn("w:t")) if r.text
+                    ).strip()
+                    if line:
+                        parts.append(line)
+                text = "\n".join(parts)
+                if text:
+                    results.append(("textbox", text))
+            return results
+
+        for child in parent.iterchildren():
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            try:
+                if tag == "p":
+                    # Inline text boxes / shapes
+                    for tb_type, tb_text in _collect_textboxes(child):
+                        objects.append((tb_type, tb_text))
+
+                    para = para_elements.get(child)
+                    if para is None:
+                        continue
+
+                    # para.text can miss runs; fall back to joining all w:t elements
+                    text = para.text.strip()
+                    if not text:
+                        text = "".join(
+                            r.text for r in child.findall(".//" + qn("w:t")) if r.text
+                        ).strip()
+                    if not text:
+                        continue
+
+                    style_name = para.style.name if para.style else ""
+                    obj_type = _style_to_type(style_name)
+                    objects.append((obj_type, text))
+
+                elif tag == "tbl":
+                    table = table_elements.get(child)
+                    if table is None:
+                        continue
+                    table_text = _extract_table_text(table)
+                    if table_text.strip():
+                        objects.append(("table", table_text.strip()))
+
+                elif tag == "sdt":
+                    # Structured Document Tags (content controls: TOC, cover fields, etc.)
+                    parts = []
+                    for p in child.findall(".//" + qn("w:p")):
+                        line = "".join(
+                            r.text for r in p.findall(".//" + qn("w:t")) if r.text
+                        ).strip()
+                        if line:
+                            parts.append(line)
+                    combined = "\n".join(parts)
+                    if combined:
+                        objects.append(("paragraph", combined))
+                    
+            except Exception as e:
+                print(f"[AVERTISSEMENT] Élément '{tag}' ignoré dans '{docx_path}': {e}")
+                continue
+
+        return objects
+
+    except Exception as e:
+        print(f"Error extracting objects from {docx_path}: {e}")
+        return [("document", f"ERROR: Extraction Error ({e})")]
+
+
+def _extract_table_text(table) -> str:
+    """Convert a table to tab/newline-separated text, en ignorant les cellules/lignes cassées."""
+    rows = []
+    try:
+        table_rows = table.rows
+    except Exception as e:
+        print(f"[AVERTISSEMENT] Tableau ignoré (structure invalide): {e}")
+        return ""
+
+    for row in table_rows:
+        cells = []
+        try:
+            row_cells = row.cells
+        except Exception as e:
+            print(f"[AVERTISSEMENT] Ligne ignorée (structure invalide): {e}")
+            continue
+        for cell in row_cells:
+            try:
+                cells.append(cell.text.strip())
+            except Exception as e:
+                print(f"[AVERTISSEMENT] Cellule ignorée: {e}")
+                cells.append("")
+        rows.append("\t".join(cells))
+    return "\n".join(rows)
+
 
 def extract_text(filepath):
     """
@@ -187,15 +531,18 @@ def extract_text(filepath):
     try:
         # Vérifie l'extension du fichier
         file_extension = os.path.splitext(filepath)[1].lower()
+        print(file_extension)
 
         if file_extension == ".pdf":
             return extract_text_from_pdf(filepath)
         elif file_extension == ".docx":
             return extract_text_from_docx(filepath)
+        elif file_extension == ".pptx":
+            return extract_text_from_pptx(filepath)
         elif file_extension in [".txt", ".md", ".py", ".html", ".json", ".ows"]:
             return extract_text_from_txt(filepath)
         else:
-            return "ERROR: Unsupported file format. Please use a .pdf, .docx, .txt, .md, .py, .html, .ows or .json file."
+            return "ERROR: Unsupported file format. Please use a .pdf, .docx, pptx, .txt, .md, .py, .html, .ows or .json file."
     except Exception as e:
         print(f"Erreur lors de l'extraction de texte depuis {filepath}: {e}")
         return f"ERROR: Extraction Error ({e})"
@@ -261,17 +608,29 @@ def extract_text_from_docx(docx_path):
                 extracted_text.append(para.text.strip())  # Ajoute le paragraphe
 
         # Parcourt les tableaux du document
-        for table in doc.tables:
+        for table_idx, table in enumerate(doc.tables):
             table_text = []
-            for row in table.rows:
-                row_text = [cell.text.strip() for cell in row.cells]  # Extrait le texte de chaque cellule
-                table_text.append("\t".join(row_text))  # Sépare les colonnes par des tabulations
-            extracted_text.append("\n".join(table_text))  # Ajoute le tableau sous forme de texte
-        return "\n".join(filter(None, extracted_text))  # Retourne le texte en filtrant les vides
+            try:
+                rows = table.rows
+            except Exception as e:
+                print(f"[AVERTISSEMENT] Tableau {table_idx + 1} ignoré (structure invalide) dans '{docx_path}': {e}")
+                continue
 
+            for row_idx, row in enumerate(rows):
+                try:
+                    row_text = [cell.text.strip() for cell in row.cells]
+                    table_text.append("\t".join(row_text))
+                except Exception as e:
+                    print(f"[AVERTISSEMENT] Tableau {table_idx + 1}, ligne {row_idx + 1} ignorée dans '{docx_path}': {e}")
+                    continue
+
+            extracted_text.append("\n".join(table_text))      
+    
     except Exception as e:
         print(f"Erreur lors de l'extraction de texte depuis {docx_path}: {e}")
         return f"ERROR: Extraction Error ({e})"
+
+    return "\n".join(filter(None, extracted_text))  # Retourne le texte en filtrant les vides
 
 
 def extract_text_from_txt(filepath):
@@ -280,6 +639,54 @@ def extract_text_from_txt(filepath):
             return f.read()
     except Exception as e:
         print(f"Erreur lors de l'extraction de texte depuis {filepath}: {e}")
+        return f"ERROR: Extraction Error ({e})"
+
+
+def extract_text_from_pptx(filepath):
+    try:
+        prs = pptx.Presentation(filepath)
+        full_text = []
+
+        def walk_shapes(shapes):
+            text_bits = []
+            for shape in shapes:
+                # 1. Standard text shapes
+                if hasattr(shape, "text") and shape.text.strip() and not shape.has_table:
+                    text_bits.append(shape.text)
+
+                # 2. Tables converted to Markdown
+                elif shape.has_table:
+                    table_md = []
+                    rows = list(shape.table.rows)
+                    if not rows:
+                        continue
+
+                    for row_idx, row in enumerate(rows):
+                        # Extract text from each cell, replace newlines with spaces to keep MD table valid
+                        cells = [cell.text.replace('\n', ' ').strip() for cell in row.cells]
+                        table_md.append(f"| {' | '.join(cells)} |")
+
+                        # Add the Markdown separator after the first row (header)
+                        if row_idx == 0:
+                            separator = f"| {' | '.join(['---'] * len(cells))} |"
+                            table_md.append(separator)
+
+                    text_bits.append("\n" + "\n".join(table_md) + "\n")
+
+                # 3. Grouped shapes
+                elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    text_bits.extend(walk_shapes(shape.shapes))
+
+            return text_bits
+
+        for i, slide in enumerate(prs.slides):
+            full_text.append(f"### Slide n°{i + 1}")
+            slide_content = walk_shapes(slide.shapes)
+            full_text.extend(slide_content)
+            full_text.append("\n---\n")  # Visual separator in Markdown
+        return "\n".join(full_text)
+
+    except Exception as e:
         return f"ERROR: Extraction Error ({e})"
 
 

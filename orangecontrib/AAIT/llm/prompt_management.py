@@ -64,34 +64,70 @@ stop_tokens = {
     "qwen": "<|im_end|>",
     "gemma": "<end_of_turn>",
     "granite": "<|endoftext|>",
-    "phi": "<|im_end|>"
+    "phi": "<|im_end|>",
+    "solar": "</s>",  #chattyboy
+    "deepseek": "<|EOT|>", # chattyboy
 }
 
 
 model_types = {
-    "solar-10.7b-instruct-v1.0.Q6_K.gguf": "solar",
-    "solar-10.7b-instruct-v1.0-uncensored.Q6_K.gguf": "solar",
-    "Mistral-7B-Instruct-v0.3.Q6_K.gguf": "mistral",
-    "Qwen2.5.1-Coder-7B-Instruct-Q6_K.gguf": "qwen",
-    "qwen2.5-3b-instruct-q4_k_m.gguf": "qwen",
-    "deepseek-coder-6.7b-instruct.Q6_K.gguf": "deepseek"
+
+    # Qwen
+    "qwen2.5.1-coder": "qwen",
+    "qwen2.5-coder": "qwen",
+    "qwen2.5": "qwen",
+    "qwen2": "qwen",
+    "qwen3": "qwen",
+    "qwen": "qwen",
+
+    # Mistral
+    "mistral": "mistral",
+    "mixtral": "mistral",
+
+    # Solar
+    "solar": "solar",
+
+    # DeepSeek
+    "deepseek": "deepseek",
+
+    # Llama
+    "llama-4": "llama",
+    "llama-3": "llama",
+    "llama3": "llama",
+    "llama": "llama",
+
+    # Gemma
+    "gemma-3": "gemma",
+    "gemma-2": "gemma",
+    "gemma": "gemma",
+
+    # Granite
+    "granite": "granite",
+
+    # Phi
+    "phi-4": "phi",
+    "phi-3.5": "phi",
+    "phi-3": "phi",
+    "phi3": "phi",
+    "phi": "phi",
 }
-
-model_keywords = ["qwen", "solar", "mistral", "llama", "deepseek", "gemma", "granite", "phi"]
-
 
 
 def get_model_type(model_path):
-    model_name = os.path.basename(model_path)
-    model_type = model_types.get(model_name)
-    if model_type is None:
-        model_type = next((keyword for keyword in model_keywords if keyword in model_name.lower()), None)
-    if model_type is None:
-        model_type = "default"
-    return model_type
+    """
+    Détecte le type du modèle à partir du nom du GGUF.
+    """
+    model_name = os.path.basename(model_path).lower()
+    # Recherche tolérante
+    for keyword, model_type in model_types.items():
+        if keyword in model_name:
+            return model_type
+
+    # Fallback
+    return "qwen"
 
 
-def apply_prompt_template(model_path, user_prompt, assistant_prompt="", system_prompt=""):
+def apply_prompt_template(model_path, user_prompt, assistant_prompt="", system_prompt="", force_non_thinking=False):
     """
     Apply a prompt template based on the given model name and user input.
 
@@ -114,6 +150,8 @@ def apply_prompt_template(model_path, user_prompt, assistant_prompt="", system_p
         prompt += template["system"].format(system_prompt=system_prompt)
     prompt += template["user"].format(user_prompt=user_prompt)
     prompt += template["assistant"].format(assistant_prompt=assistant_prompt)
+    if force_non_thinking:
+        prompt += "<think>\n\n</think>"
     return prompt
 
 
@@ -127,10 +165,63 @@ def apply_user_template(model_path, user_prompt):
     template = prompt_templates.get(model_type, prompt_templates["default"])
     return template["user"].format(user_prompt=user_prompt)
 
-def apply_assistant_template(model_path, assistant_prompt):
+def apply_assistant_template(model_path, assistant_prompt, is_last=True):
     model_type = get_model_type(model_path)
     template = prompt_templates.get(model_type, prompt_templates["default"])
-    return template["assistant"].format(assistant_prompt=assistant_prompt)
+    text = template["assistant"].format(assistant_prompt=assistant_prompt)
+    # Append <|im_end|> for all but the last assistant message
+    if not is_last:
+        text += "<|im_end|>\n"
+    return text
+
+def apply_template_to_conversation(model_path, conversation):
+    prompt = ""
+    for i, message in enumerate(conversation):
+        is_last = (i == len(conversation) - 1)
+        if message["role"] == "system":
+            prompt += apply_system_template(model_path, message["content"])
+        elif message["role"] == "user":
+            prompt += apply_user_template(model_path, message["content"])
+        elif message["role"] == "assistant":
+            prompt += apply_assistant_template(model_path, message["content"], is_last=is_last)
+    prompt += apply_assistant_template(model_path, "")
+    return prompt
+
+
+def apply_template_to_conversation_2(model_path, conversation):
+    prompt = ""
+    for i, message in enumerate(conversation):
+        is_last = (i == len(conversation) - 1)
+        role = message["role"]
+        content = message["content"]
+
+        # Normalize content → always iterable list of strings
+        if isinstance(content, str):
+            contents = [content]
+        elif isinstance(content, list):
+            contents = [
+                entry.get("text", "")
+                for entry in content
+                if "text" in entry
+            ]
+        else:
+            contents = [""]
+
+        if role == "system":
+            prompt += apply_system_template(model_path, contents[0])
+        elif role == "user":
+            for text in contents:
+                prompt += apply_user_template(model_path, text)
+        elif role == "assistant":
+            for j, text in enumerate(contents):
+                # Only last chunk of last assistant message gets is_last=True
+                last_chunk = is_last and (j == len(contents) - 1)
+                prompt += apply_assistant_template(model_path, text, is_last=last_chunk)
+
+    # Ensure generation prompt if last message isn't assistant
+    if conversation[-1]["role"] != "assistant":
+        prompt += apply_assistant_template(model_path, "")
+    return prompt
 
 
 def get_stop_token(model_name):
@@ -143,7 +234,7 @@ def get_stop_token(model_name):
     # If there is a stop token
     try:
         # Get the model type
-        model_type = model_types[model_name]
+        model_type = get_model_type(model_name)
         # Get the template for the model type
         stop_token = stop_tokens[model_type]
     except KeyError as e:

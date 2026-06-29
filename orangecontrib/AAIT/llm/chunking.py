@@ -7,10 +7,10 @@ from sentence_transformers import SentenceTransformer
 from chonkie import TokenChunker, SentenceChunker, RecursiveChunker, SemanticChunker, LateChunker, CodeChunker
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import wordchunker_deprecated
-    from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import get_local_store_path
+    from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
 else:
     from orangecontrib.AAIT.llm import wordchunker_deprecated
-    from orangecontrib.AAIT.utils.MetManagement import get_local_store_path
+    from orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
 
 
 def create_chunks(table, column_name, tokenizer="character", chunk_size=300, chunk_overlap=100, mode="tokens",
@@ -42,7 +42,11 @@ def create_chunks(table, column_name, tokenizer="character", chunk_size=300, chu
     if mode == "tokens":
         chunker = TokenChunker(tokenizer=tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     elif mode == "words":
-        path_ugly = os.path.join(get_local_store_path(), "Models", "NLP", "all-mpnet-base-v2")
+        try:
+            path_ugly= get_path_or_retrieve("MPNET BASE V2")
+        except Exception as e:
+            raise ValueError(str(e))
+
         tokenizer = SentenceTransformer(path_ugly, device="cpu")
         model_name = "MPNET"
         chunker = wordchunker_deprecated.WordChunker(tokenizer=tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
