@@ -1,4 +1,4 @@
-from Orange.data import Table, Domain, Instance, DiscreteVariable, ContinuousVariable, StringVariable
+from Orange.data import Table, Domain, Instance, DiscreteVariable, ContinuousVariable, StringVariable,TimeVariable
 import numpy as np
 
 def unlink_domain(table: Table) -> Table:
@@ -33,54 +33,85 @@ def _var_key(v):
 
 def build_union_domain(tables: list[Table]) -> Domain:
     """
-    Construit un domaine cible basé sur la 1ère table (ordre et rôles),
-    en unifiant les modalités des DiscreteVariable par nom.
+    Construit un domaine cible :
+    - une variable finale unique par nom
+    - ordre/rôle prioritaire dictés par la 1ère apparition globale
+    - ordre de la 1ère table préservé
+    - colonnes nouvelles des tables suivantes ajoutées à la fin
+    - union des modalités pour les DiscreteVariable
     """
+    if not tables:
+        raise ValueError("tables is empty")
+
     first_dom = tables[0].domain
 
-    # ordre / rôles dictés par la 1ère table
-    order_attrs = [(_var_key(v), v) for v in first_dom.attributes]
-    order_cls   = [(_var_key(v), v) for v in first_dom.class_vars]
-    order_metas = [(_var_key(v), v) for v in first_dom.metas]
+    ordered_names = []
+    seen_by_name = {}
 
-    seen = {"attrs": {}, "cls": {}, "metas": {}}
+    def register(v, role):
+        name = v.name
 
-    def add_vars(role: str, vars_):
-        for v in vars_:
-            k = _var_key(v)
-            if k not in seen[role]:
-                seen[role][k] = {"proto": v, "values": set()}
-            if isinstance(v, DiscreteVariable):
-                seen[role][k]["values"].update(v.values)
+        if name not in seen_by_name:
+            seen_by_name[name] = {
+                "proto": v,
+                "role": role,
+                "values": []
+            }
+            ordered_names.append(name)
+        else:
+            # si la 1ère apparition n'était pas discrète mais qu'une autre l'est,
+            # on garde le proto d'origine; seule l'union de catégories sert
+            pass
 
-    for t in tables:
-        add_vars("attrs", t.domain.attributes)
-        add_vars("cls",   t.domain.class_vars)
-        add_vars("metas", t.domain.metas)
+        if isinstance(v, DiscreteVariable):
+            for val in v.values:
+                if val not in seen_by_name[name]["values"]:
+                    seen_by_name[name]["values"].append(val)
 
-    def make_var(proto, values_set):
-        # Recrée une variable "déconnectée" (sans compute_value) + union des valeurs si Discrete
+    # 1) ordre/rôle prioritaire dictés par la 1ère table
+    for v in first_dom.attributes:
+        register(v, "attr")
+    for v in first_dom.class_vars:
+        register(v, "class")
+    for v in first_dom.metas:
+        register(v, "meta")
+
+    # 2) ajout des variables nouvelles des autres tables
+    for t in tables[1:]:
+        for v in t.domain.attributes:
+            register(v, "attr")
+        for v in t.domain.class_vars:
+            register(v, "class")
+        for v in t.domain.metas:
+            register(v, "meta")
+
+    def make_var(proto, values_list):
         if isinstance(proto, DiscreteVariable):
-            values = list(values_set)  # ou sorted(values_set) si tu veux ordre stable alphabétique
-            return DiscreteVariable(proto.name, values=values)
+            return DiscreteVariable(proto.name, values=values_list)
         if isinstance(proto, ContinuousVariable):
             return ContinuousVariable(proto.name)
         if isinstance(proto, StringVariable):
             return StringVariable(proto.name)
-        # fallback (rare)
+        if isinstance(proto, TimeVariable):
+            return TimeVariable(proto.name)
         return proto.copy(compute_value=None)
 
-    def build_list(role: str, ordered_keys_and_proto):
-        out = []
-        for k, proto in ordered_keys_and_proto:
-            if k in seen[role]:
-                out.append(make_var(seen[role][k]["proto"], seen[role][k]["values"]))
-        return out
+    attrs = []
+    class_vars = []
+    metas = []
 
-    new_attrs = build_list("attrs", order_attrs)
-    new_cls   = build_list("cls",   order_cls)
-    new_metas = build_list("metas", order_metas)
-    return Domain(new_attrs, new_cls, new_metas)
+    for name in ordered_names:
+        info = seen_by_name[name]
+        new_var = make_var(info["proto"], info["values"])
+
+        if info["role"] == "attr":
+            attrs.append(new_var)
+        elif info["role"] == "class":
+            class_vars.append(new_var)
+        else:
+            metas.append(new_var)
+
+    return Domain(attrs, class_vars, metas)
 
 def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
     """
@@ -101,50 +132,133 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
     src_dom = table.domain
     src_by_name = {v.name: v for v in list(src_dom.variables) + list(src_dom.metas)}
 
+    def _safe_raw_value(val):
+        if hasattr(val, "value"):
+            return val.value
+        return val
+
+    def _safe_str_label(val):
+        raw = _safe_raw_value(val)
+        if raw is None:
+            return None
+        s = str(raw)
+        if s == "?":
+            return None
+        return s
+
     def fill_block(target_vars, block, is_meta: bool):
         for j, tv in enumerate(target_vars):
             sv = src_by_name.get(tv.name)
             if sv is None:
                 continue
 
-            col = table.get_column(sv)  # ✅ API moderne (remplace get_column_view)
+            col = table.get_column(sv)
 
-            if isinstance(tv, DiscreteVariable) and isinstance(sv, DiscreteVariable):
+            # ------------------------------------------------------------------
+            # 1) cible discrète : on doit toujours produire des CODES Orange valides
+            # ------------------------------------------------------------------
+            if isinstance(tv, DiscreteVariable):
                 out = np.full(n, np.nan, dtype=float)
-
-                # mapping label -> index cible
                 tgt_index = {label: idx for idx, label in enumerate(tv.values)}
 
-                # col est float avec NaN (codes)
-                for i in range(n):
-                    c = col[i]
-                    if np.isnan(c):
-                        continue
-                    label = sv.values[int(c)]
-                    out[i] = tgt_index.get(label, np.nan)
+                # source discrète -> code source -> label source -> code cible
+                if isinstance(sv, DiscreteVariable):
+                    for i in range(n):
+                        c = col[i]
+                        if np.isnan(c):
+                            continue
+                        ic = int(c)
+                        if 0 <= ic < len(sv.values):
+                            label = sv.values[ic]
+                            out[i] = tgt_index.get(label, np.nan)
+
+                # source non discrète -> valeur brute -> str(...) -> code cible
+                else:
+                    for i in range(n):
+                        val = table[i, sv]
+                        label = _safe_str_label(val)
+                        if label is None:
+                            continue
+                        out[i] = tgt_index.get(label, np.nan)
 
                 block[:, j] = out
 
-            elif isinstance(tv, ContinuousVariable) and isinstance(sv, ContinuousVariable) and not is_meta:
-                block[:, j] = col.astype(float, copy=False)
+            # ------------------------------------------------------------------
+            # 2) cible continue
+            # ------------------------------------------------------------------
+            elif isinstance(tv, ContinuousVariable) and not is_meta:
+                out = np.full(n, np.nan, dtype=float)
 
+                if isinstance(sv, DiscreteVariable):
+                    for i in range(n):
+                        c = col[i]
+                        if np.isnan(c):
+                            continue
+                        ic = int(c)
+                        if 0 <= ic < len(sv.values):
+                            try:
+                                out[i] = float(sv.values[ic])
+                            except Exception:
+                                out[i] = np.nan
+                else:
+                    for i in range(n):
+                        val = table[i, sv]
+                        raw = _safe_raw_value(val)
+                        try:
+                            out[i] = float(raw)
+                        except Exception:
+                            out[i] = np.nan
+
+                block[:, j] = out
+
+            # ------------------------------------------------------------------
+            # 3) cible meta / string
+            # ------------------------------------------------------------------
             elif is_meta or isinstance(tv, StringVariable):
-                # On stocke des objets/texte
                 out = np.empty(n, dtype=object)
                 for i in range(n):
-                    val = table[i, sv]
-                    out[i] = val.value if hasattr(val, "value") else str(val)
+                    if isinstance(sv, DiscreteVariable):
+                        c = col[i]
+                        if np.isnan(c):
+                            out[i] = None
+                        else:
+                            ic = int(c)
+                            if 0 <= ic < len(sv.values):
+                                out[i] = sv.values[ic]
+                            else:
+                                out[i] = None
+                    else:
+                        val = table[i, sv]
+                        raw = _safe_raw_value(val)
+                        out[i] = raw
                 block[:, j] = out
 
+            # ------------------------------------------------------------------
+            # 4) fallback : conversion float prudente
+            # ------------------------------------------------------------------
             else:
-                # fallback : tente float, sinon NaN
                 out = np.full(n, np.nan, dtype=float)
-                for i in range(n):
-                    val = table[i, sv]
-                    try:
-                        out[i] = float(val)
-                    except Exception:
-                        out[i] = np.nan
+
+                if isinstance(sv, DiscreteVariable):
+                    for i in range(n):
+                        c = col[i]
+                        if np.isnan(c):
+                            continue
+                        ic = int(c)
+                        if 0 <= ic < len(sv.values):
+                            try:
+                                out[i] = float(sv.values[ic])
+                            except Exception:
+                                out[i] = np.nan
+                else:
+                    for i in range(n):
+                        val = table[i, sv]
+                        raw = _safe_raw_value(val)
+                        try:
+                            out[i] = float(raw)
+                        except Exception:
+                            out[i] = np.nan
+
                 block[:, j] = out
 
     fill_block(target_domain.attributes, X, is_meta=False)
@@ -162,6 +276,7 @@ def concatenate_tables_harmonized(tables: list[Table]) -> Table:
     """
     Concatène des tables en harmonisant les DiscreteVariable (union + remap).
     """
+
     if not tables:
         raise ValueError("tables is empty")
     if len(tables) == 1:
@@ -170,3 +285,6 @@ def concatenate_tables_harmonized(tables: list[Table]) -> Table:
     target = build_union_domain(tables)
     mapped = [remap_table_to_domain(t, target) for t in tables]
     return Table.concatenate(mapped)
+
+
+

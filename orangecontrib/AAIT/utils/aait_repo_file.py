@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 import posixpath
 import time
+import subprocess
+import shutil
+import threading
+import queue
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, unquote
 
@@ -557,9 +561,9 @@ class FolderServerDownloader:
         self.verify_ssl = verify_ssl
         self.max_redirects = max_redirects
 
-        self.max_retries = 8
-        self.retry_base_delay = 2.0
-        self.retry_max_delay = 30.0
+        self.max_retries = 100
+        self.retry_base_delay = 1.0
+        self.retry_max_delay = 5.0
 
         self.visited: set[str] = set()
         self.stats = {
@@ -946,8 +950,8 @@ class FolderServerDownloader:
             self._update_global_ui()
             return False
 
-        self._set_current(f"Downloading: {file_url}")
-        self._log(f"Downloading file: {file_url} -> {local_path}")
+        self._set_current(f"Downloading with curl: {file_url}")
+        self._log(f"Downloading file with curl: {file_url} -> {local_path}")
 
         relative_for_cache = str(local_path.relative_to(self.local_dir)).replace("\\", "/")
         try:
@@ -966,115 +970,202 @@ class FolderServerDownloader:
             self._update_global_ui()
             return False
 
+        curl_exe = shutil.which("curl") or shutil.which("curl.exe")
+        if not curl_exe:
+            raise RuntimeError("curl is not available in PATH")
+
         local_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = local_path.with_suffix(local_path.suffix + ".part")
 
+        total_size = 0
         accept_ranges = False
         head_response = self._safe_head(file_url)
         if head_response is not None:
             try:
                 accept_ranges = "bytes" in head_response.headers.get("Accept-Ranges", "").lower()
+                content_length = head_response.headers.get("Content-Length")
+                if content_length:
+                    total_size = int(content_length)
+            except Exception:
+                total_size = 0
             finally:
                 head_response.close()
 
-        resume_from = 0
         if tmp_path.exists():
             try:
-                resume_from = tmp_path.stat().st_size
+                existing_size = tmp_path.stat().st_size
             except Exception:
-                resume_from = 0
+                existing_size = 0
+            if existing_size > 0:
+                if accept_ranges:
+                    self._log(f"[info] Existing partial file detected: {format_bytes(existing_size)}. curl will resume with -C -.")
+                else:
+                    self._log("[info] Existing partial file detected, but server does not advertise byte ranges. Restarting from zero.")
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
 
-        headers = {"Accept-Encoding": "identity"}
-        mode = "wb"
+        curl_cmd = [
+            curl_exe,
+            "-L",
+            "--fail",
+            "--show-error",
+            "--silent",
+            "--noproxy", "*",
+            "--ipv4",
+            "--tcp-nodelay",
+            "--connect-timeout", "5",
+            "--max-time", "0",
+            "--max-redirs", str(self.max_redirects),
+            "--retry", str(self.max_retries),
+            "--retry-delay", "1",
+            "--retry-max-time", "0",
+            "--retry-all-errors",
+            "--continue-at", "-",
+            "--speed-limit", "1",
+            "--speed-time", "20",
+            "--output", str(tmp_path),
+            file_url,
+        ]
 
-        if accept_ranges and resume_from > 0:
-            headers["Range"] = f"bytes={resume_from}-"
-            mode = "ab"
-            self._log(f"Resuming download from byte {resume_from}")
-        elif resume_from > 0:
-            self._log("[info] Server does not support byte ranges, restarting download from zero.")
+        self._log("[debug] curl executable: " + curl_exe)
+        self._log("[debug] curl command: " + " ".join(curl_cmd))
+        self._set_connection_status("Connected. Downloading with curl...")
+
+        if self.signals is not None:
             try:
-                tmp_path.unlink()
+                self.signals.file_progress.emit(0)
+                self.signals.speed.emit("Speed: 0 B/s | ETA: ?")
             except Exception:
                 pass
-            resume_from = 0
 
-        response = None
-        try:
-            response = self._safe_get(file_url, stream=True, headers=headers)
+        q = queue.Queue()
 
-            if resume_from > 0 and "Range" in headers and response.status_code == 200:
-                self._log("[warning] Server ignored Range request, restarting from zero.")
-                response.close()
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
-                resume_from = 0
-                headers = {"Accept-Encoding": "identity"}
-                mode = "wb"
-                response = self._safe_get(file_url, stream=True, headers=headers)
-
-            total_size = 0
+        def _reader(pipe):
             try:
-                if response.status_code == 206:
-                    content_range = response.headers.get("Content-Range", "")
-                    if "/" in content_range:
-                        total_size = int(content_range.rsplit("/", 1)[1])
-                else:
-                    content_length = response.headers.get("Content-Length")
-                    if content_length:
-                        total_size = resume_from + int(content_length) if mode == "ab" else int(content_length)
-            except Exception:
-                total_size = 0
+                while True:
+                    line = pipe.readline()
+                    if not line:
+                        break
+                    q.put(line.rstrip())
+            except Exception as e:
+                q.put(f"[warning] curl output reader stopped: {e}")
 
-            if self.signals is not None:
-                try:
-                    if total_size > 0:
-                        self.signals.file_progress.emit(int((resume_from / total_size) * 100))
-                    else:
-                        self.signals.file_progress.emit(0)
-                    self.signals.speed.emit("Speed: 0 B/s | ETA: ?")
-                except Exception:
-                    pass
+        start_size = 0
+        try:
+            if tmp_path.exists():
+                start_size = tmp_path.stat().st_size
+        except Exception:
+            start_size = 0
 
-            written_total = resume_from
-            t0 = time.perf_counter()
-            last_speed_t = t0
-            last_speed_written = written_total
+        process = subprocess.Popen(
+            curl_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
 
-            with open(tmp_path, mode) as f:
-                for chunk in response.iter_content(chunk_size=self.chunk_size):
-                    self._check_cancel()
-                    if not chunk:
+        reader = threading.Thread(target=_reader, args=(process.stdout,), daemon=True)
+        reader.start()
+
+        last_size = start_size
+        written_total = start_size
+        t0 = time.perf_counter()
+        last_t = t0
+        retry_seen = 0
+        last_stop_log_t = 0.0
+
+        try:
+            while process.poll() is None:
+                self._check_cancel()
+
+                while True:
+                    try:
+                        line = q.get_nowait()
+                    except queue.Empty:
+                        break
+
+                    if not line:
                         continue
 
-                    f.write(chunk)
-                    chunk_len = len(chunk)
-                    written_total += chunk_len
-                    self.stats["bytes_done"] += chunk_len
+                    line_lower = line.lower()
+                    if "retry" in line_lower or "will retry" in line_lower or "connection" in line_lower or "failed" in line_lower:
+                        retry_seen += 1
+                        current_bytes = 0
+                        try:
+                            if tmp_path.exists():
+                                current_bytes = tmp_path.stat().st_size
+                        except Exception:
+                            current_bytes = written_total
 
-                    now = time.perf_counter()
-                    dt = max(1e-9, now - last_speed_t)
-                    speed_bps = (written_total - last_speed_written) / dt
+                        self._set_connection_status(
+                            f"Download interrupted at {format_bytes(current_bytes)}. curl retry {retry_seen}/{self.max_retries}..."
+                        )
+                        self._log(
+                            f"[warning] Download interrupted at byte {current_bytes} ({format_bytes(current_bytes)}). curl retry {retry_seen}/{self.max_retries}. Detail: {line}"
+                        )
+                    else:
+                        self._log(f"[curl] {line}")
 
-                    if dt >= 0.25:
-                        last_speed_t = now
-                        last_speed_written = written_total
+                now = time.perf_counter()
+                if now - last_t >= 0.25:
+                    try:
+                        current_size = tmp_path.stat().st_size if tmp_path.exists() else 0
+                    except Exception:
+                        current_size = written_total
 
-                    avg_dt = max(1e-9, now - t0)
-                    avg_speed_bps = max(speed_bps, written_total / avg_dt)
+                    delta = max(0, current_size - last_size)
+                    dt = max(1e-9, now - last_t)
+                    speed_bps = delta / dt
+                    written_total = current_size
+                    last_size = current_size
+                    last_t = now
 
-                    self._update_file_ui(written_total, total_size, avg_speed_bps)
+                    self.stats["bytes_done"] += delta
+                    self._update_file_ui(written_total, total_size, speed_bps)
                     self._update_global_ui()
+
+                    if delta == 0 and written_total > 0 and now - last_stop_log_t >= 20:
+                        last_stop_log_t = now
+                        self._set_connection_status(
+                            f"No new data received. Current position: {written_total} bytes ({format_bytes(written_total)}). Waiting for curl retry..."
+                        )
+                        self._log(
+                            f"[warning] Download appears stalled at byte {written_total} ({format_bytes(written_total)}). Waiting for curl retry..."
+                        )
+
+                time.sleep(0.05)
+
+            return_code = process.wait()
+
+            while True:
+                try:
+                    line = q.get_nowait()
+                except queue.Empty:
+                    break
+                if line:
+                    self._log(f"[curl] {line}")
 
             final_size = 0
             try:
-                final_size = tmp_path.stat().st_size
+                final_size = tmp_path.stat().st_size if tmp_path.exists() else 0
             except Exception:
                 final_size = 0
 
+            if return_code != 0:
+                self._set_connection_status(
+                    f"curl failed at {final_size} bytes ({format_bytes(final_size)}). The .part file is kept for resume."
+                )
+                raise requests.ConnectionError(
+                    f"curl failed with exit code {return_code} at byte {final_size} ({format_bytes(final_size)})"
+                )
+
             if total_size > 0 and final_size != total_size:
+                self._set_connection_status(
+                    f"Download stopped at {final_size} bytes ({format_bytes(final_size)}) instead of {total_size} bytes ({format_bytes(total_size)})."
+                )
                 raise DownloadIntegrityError(
                     f"Downloaded size mismatch for {file_url}: expected {total_size}, got {final_size}"
                 )
@@ -1095,17 +1186,26 @@ class FolderServerDownloader:
                 except Exception:
                     pass
 
+            self._set_connection_status("")
             self.stats["files_done"] += 1
             self._log(f"Downloaded: {local_path}")
             self._update_global_ui()
             return True
 
+        except DownloadCancelled:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            self._log("[info] Download cancelled. Partial .part file is kept for resume.")
+            raise
+
         finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:
-                    pass
+            try:
+                if process.poll() is None:
+                    process.terminate()
+            except Exception:
+                pass
 
     # -----------------------------
     # Walk récursif
@@ -1303,6 +1403,6 @@ def download_from_folder_server(
 
 if __name__ == "__main__":
     # create the json needed to http / zipped stored
-    in_repo_file="C:/modele_NLP/IFIA_models/repository.aait"
+    in_repo_file="C:/Store_a_upload/aait_store/repository.aait"
     create_index_file(in_repo_file)
 

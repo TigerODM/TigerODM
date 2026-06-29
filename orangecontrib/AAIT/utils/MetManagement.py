@@ -15,7 +15,7 @@ import uuid
 import base64
 from Orange.data import Table, StringVariable, Domain
 import platform
-
+import re
 
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
@@ -519,7 +519,15 @@ def set_aait_store_remote_ressources_path(ressource_path):
         return
     ressource_path.replace("\\", "/")
     if is_url(ressource_path):
-        path = urlparse(ressource_path).path
+        parsed = urlparse(ressource_path)
+
+        path = (
+            f"{parsed.scheme}://"
+            f"{parsed.netloc.removeprefix('www.')}"
+            f"{parsed.path}"
+        )
+
+        ressource_path=str(path)
         if bool (os.path.splitext(path)[1])==False:
             if os.path.isfile(ressource_path)==False:
                 if ressource_path[-1] != "/":
@@ -563,27 +571,41 @@ def get_aait_store_remote_version(ressource_path):
         version_file = os.path.join(ressource_path, "Parameters/Store_IA.txt")
 
     version = ""
-    try:
-        if is_url(ressource_path):
-            # Télécharger le contenu du fichier à distance
-            curl_command = f"curl -s {version_file}"
-            process = subprocess.run(curl_command, shell=True, capture_output=True, text=True)
+    last_exception = None
 
-            if process.returncode == 0:  # Vérifie si curl a réussi
-                line = process.stdout.splitlines()[0]  # Lire la première ligne
-                version = line.split(" ")[-1]
+    for attempt in range(20):
+        try:
+            if is_url(ressource_path):
+                # Télécharger le contenu du fichier à distance
+                curl_command = f"curl -s -connect-timeout 0.2 --max-time 0.5 {version_file}"
+                process = subprocess.run(curl_command, shell=True, capture_output=True, text=True)
+                if process.returncode == 0:  # Vérifie si curl a réussi
+                    line = process.stdout.splitlines()[0]  # Lire la première ligne
+                    version = line.split(" ")[-1]
+                    break
+                else:
+                    raise Exception(f"Error: Unable to fetch file using curl: {version_file}")
             else:
-                raise Exception(f"Error: Unable to fetch file using curl: {version_file}")
-        else:
-            # Lire le fichier local
-            with open(version_file, 'r') as f:
-                line = f.readline()
-                version = line.split(" ")[-1]
-    except Exception as e:
-        SimpleDialogQt.BoxError(f"Error: Impossible to read file: {version_file}\n{str(e)}")
-        raise Exception(f"Error: Impossible to read file: {version_file}\n{str(e)}")
+                # Lire le fichier local
+                with open(version_file, 'r') as f:
+                    line = f.readline()
+                    version = line.split(" ")[-1]
+                    break
 
-    print("Version:", version)
+        except Exception as e:
+            last_exception = e
+
+            if attempt < 19:
+                time.sleep(0.05)
+            else:
+                SimpleDialogQt.BoxError(
+                    f"Error: Impossible to read file: {version_file}\n{str(last_exception)}"
+                )
+                raise Exception(
+                    f"Error: Impossible to read file: {version_file}\n{str(last_exception)}"
+                )
+
+
     return version
 
 
@@ -704,35 +726,57 @@ def get_aait_store_requirements_json(repo_path=None):
                 return
             data = evolved_json_load(output)
             return data
+
     # Cas distant (URL)
     json_path = aait_store_remote + "Parameters/requirements.json"
     if is_url(json_path):
         json_path = aait_store_remote + "/Parameters/requirements.json"
-        # Utiliser curl pour récupérer le contenu du fichier distant
-        curl_command = f"curl -s {json_path}"
-        process = subprocess.run(curl_command, shell=True, capture_output=True, text=True)
 
-        if process.returncode == 0:  # Vérifie si curl a réussi
+
+        for attempt in range(20):
             try:
-                data = evolved_json_load(process.stdout)  # Utiliser stdout pour récupérer la sortie
-                print("Données chargées depuis l'URL :", data)
-                return data
+                # Utiliser curl pour récupérer le contenu du fichier distant
+                curl_command = f"curl -s -connect-timeout 0.2 --max-time 0.5 {json_path}"
+                process = subprocess.run(curl_command, shell=True, capture_output=True, text=True)
+
+                if process.returncode == 0:  # Vérifie si curl a réussi
+                    data = evolved_json_load(process.stdout)  # Utiliser stdout pour récupérer la sortie
+                    print("Données chargées depuis l'URL :", data)
+                    return data
+                else:
+                    raise Exception(f"Error: Unable to fetch file using curl: {json_path}")
+
             except Exception as e:
-                SimpleDialogQt.BoxError(f"Error parsing JSON from URL: {json_path}")
-                raise Exception(f"Error parsing JSON from URL: {json_path}") from e
-        else:
-            raise Exception(f"Error: Unable to fetch file using curl: {json_path}")
+                print(e)
+
+                if attempt < 19:
+                    time.sleep(0.05)
+                else:
+                    if process.returncode == 0:
+                        SimpleDialogQt.BoxError(f"Error parsing JSON from URL: {json_path}")
+                        raise Exception(f"Error parsing JSON from URL: {json_path}") from e
+                    else:
+                        raise Exception(f"Error: Unable to fetch file using curl: {json_path}")
+
     else:
         if not Path(json_path).is_file():
             return {}
-        try:
-            with open(json_path, 'r', encoding='utf-8') as file:
-                data = evolved_json_load(file.read())
-                return data
-        except:
-            SimpleDialogQt.BoxError("unable to read"+ json_path)
-            raise Exception("unable to read"+ json_path)
 
+
+        for attempt in range(20):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as file:
+                    data = evolved_json_load(file.read())
+                    return data
+
+            except Exception as e:
+                print(e)
+
+                if attempt < 19:
+                    time.sleep(1)
+                else:
+                    SimpleDialogQt.BoxError("unable to read" + json_path)
+                    raise Exception("unable to read" + json_path)
 
 def download_aait_store_file_or_directory(server_path: str = "", target: str = "", repo_path: str = None) -> None:
     """
@@ -1079,7 +1123,7 @@ def GetFromRemote(name_to_download, repo_if_necessary = None):
                     if downloaded:
                         if delete_temporary_files:
                             delete_path(get_local_store_path()+"temporary_files")
-                        SimpleDialogQt.BoxInfo("Finished!")
+                        #SimpleDialogQt.BoxInfo("Finished!")
                         return 0
 
             except Exception as e:
@@ -1377,6 +1421,86 @@ def create_trigger_table():
     table = Table.from_list(domain=dom, rows=[["Trigger"]])
     return table
 
+def IsStoreCompressed(aait_store_path):
+    """
+    Determines if the given store path is considered "compressed."
+
+    Logic:
+      1) If it's a local path:
+         - If it's a directory, return False (not compressed)
+         - Else, return True (compressed)
+      2) If it's a remote URL (HTTP/HTTPS):
+         - HEAD request with curl. If Content-Type not HTML => probably a file => True
+         - If HTML => we GET it to check for "Index of" or "Contenu de" => if found => False, else True
+         - If we get 404, we do an extra GET to see if it might be a directory response or a custom 404
+           - If we detect "Index of" or "Contenu de," we treat as directory => False
+           - Otherwise, True
+    """
+
+    if not is_url(aait_store_path):
+        return not Path(aait_store_path).is_dir()
+
+    # ---------------------------------------------
+    # CASE: The path is a remote HTTP/HTTPS URL
+    # ---------------------------------------------
+    process_head = subprocess.run(
+        ["curl", "-s", "-L", "-I", aait_store_path],
+        capture_output=True
+    )
+    if process_head.returncode != 0:
+        print("La requête HEAD a échoué pour", aait_store_path)
+        return True
+
+    headers_str = process_head.stdout.decode("utf-8", errors="replace").lower()
+    is_404 = "404 not found" in headers_str
+    if not is_404:
+        if "content-type: text/html" in headers_str:
+            if has_listing_signature(aait_store_path):
+                return False
+            else:
+                return True
+        else:
+            return True
+    else:
+
+        process_get = subprocess.run(
+            ["curl", "-s", "-L", aait_store_path],
+            capture_output=True
+        )
+        if process_get.returncode != 0:
+            print("La requête GET a également échoué.")
+            return True
+        body = process_get.stdout.decode("utf-8", errors="replace").lower()
+
+        if ("index of" in body) or ("contenu de" in body):
+            #print("Listing de dossier détecté.")
+            return False
+
+        temp_url = aait_store_path.split("/")[:-1]
+        url = "/".join(temp_url) + "/"
+        process_get = subprocess.run(
+            ["curl", "-s", "-L", url],
+            capture_output=True
+        )
+        if process_get.returncode != 0:
+            print("La requête GET a également échoué.")
+            return True
+        body = process_get.stdout.decode("utf-8", errors="replace").lower()
+        lines = body.split("\n")
+        for i in range(len(lines)):
+            if ".aait" in lines[i]:
+                match = re.search(r'(\d+)\s*octets', lines[i+2])
+                if match:
+                    if int(match.group(1)) < 10:
+                        return False
+
+
+
+        if ("index of" in body) or ("contenu de" in body):
+            # print("Listing de dossier détecté.")
+            return False
+
+
 
 def ensure_file_exists_recursive(path_holder: list[str]) -> bool:
     """
@@ -1397,21 +1521,17 @@ def ensure_file_exists_recursive(path_holder: list[str]) -> bool:
         return False
 
     original_path = Path(path_holder[0])
-
     # 1️⃣ Cas simple : le fichier existe déjà
-    if original_path.is_file():
+    if original_path.exists():
         return True
-
     parent_dir = original_path.parent
     filename = original_path.name
-
     # 2️⃣ Sécurité minimale
     if not parent_dir.is_dir():
         return False
-
     # 3️⃣ Recherche récursive dans les sous-dossiers
     for found in parent_dir.rglob(filename):
-        if found.is_file():
+        if found.exists():
             path_holder[0] = str(found.resolve())
             return True
 

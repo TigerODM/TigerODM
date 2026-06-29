@@ -210,10 +210,15 @@ if os.name=='nt':
         if "(" in file_filter and ")" in file_filter:
             description = file_filter.split("(")[0].strip()
             pattern = file_filter[file_filter.find("(") + 1:file_filter.find(")")]
+
+            # Windows attend des ; et non des ,
+            pattern = pattern.replace(",", ";")
         else:
             description = "All Files"
             pattern = "*.*"
-        filter_combined = f"{description}\0{pattern}\0All Files\0*.*\0\0"
+
+        # Suppression volontaire du choix "All Files"
+        filter_combined = f"{description}\0{pattern}\0\0"
 
         file_buffer = ctypes.create_unicode_buffer(MAX_PATH)
 
@@ -255,7 +260,7 @@ if os.name=='nt':
         user32.EnumWindows(cb_after, 0)
 
         # peut etre a remettre (pyflakes warning)
-        #new_hwnds = list(set(hwnd_list_after) - set(hwnd_list_before))
+        # new_hwnds = list(set(hwnd_list_after) - set(hwnd_list_before))
 
         # ... le reste de ton code (détection de la fenêtre, thread enforce_modal, parsing buffer) ...
         buffer_content = ctypes.wstring_at(ctypes.addressof(file_buffer), file_buffer._length_)
@@ -269,8 +274,6 @@ if os.name=='nt':
             return parts[0] if parts else ""
         else:
             return parts[0] if parts else ""
-
-
 
 
     def select_new_file_ctypes(file_filter="All Files (*.*)", dialog_title="Create New File"):
@@ -319,7 +322,10 @@ if os.name=='nt':
         # Convert file_filter into Windows format: "Description\0Pattern\0..."
         if "(" in file_filter and ")" in file_filter:
             description = file_filter.split("(")[0].strip()
-            pattern = file_filter[file_filter.find("(")+1:file_filter.find(")")]
+            pattern = file_filter[file_filter.find("(") + 1:file_filter.find(")")]
+
+            # Windows attend des ; et non des ,
+            pattern = pattern.replace(",", ";")
         else:
             description = "All Files"
             pattern = "*.*"
@@ -329,7 +335,8 @@ if os.name=='nt':
         if not first_ext:
             first_ext = "txt"
 
-        filter_combined = f"{description}\0{pattern}\0All Files\0*.*\0\0"
+        # Suppression volontaire du choix "All Files"
+        filter_combined = f"{description}\0{pattern}\0\0"
 
         file_buffer = ctypes.create_unicode_buffer(MAX_PATH)
 
@@ -345,12 +352,18 @@ if os.name=='nt':
 
         # Mémoriser les fenêtres existantes
         hwnd_list_before = []
+
         def enum_windows_proc(hwnd, lParam):
             hwnd_list_before.append(hwnd)
             return True
 
         EnumWindows = user32.EnumWindows
-        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+        EnumWindowsProc = ctypes.WINFUNCTYPE(
+            ctypes.wintypes.BOOL,
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.LPARAM
+        )
+
         EnumWindows(EnumWindowsProc(enum_windows_proc), 0)
 
         # Ouvre la boîte de dialogue
@@ -361,16 +374,22 @@ if os.name=='nt':
 
         # Fenêtres après
         hwnd_list_after = []
-        EnumWindows(EnumWindowsProc(lambda hwnd, lParam: hwnd_list_after.append(hwnd) or True), 0)
+        EnumWindows(
+            EnumWindowsProc(lambda hwnd, lParam: hwnd_list_after.append(hwnd) or True),
+            0
+        )
+
         new_hwnds = list(set(hwnd_list_after) - set(hwnd_list_before))
 
         selector_hwnd = None
         target_phrase = (dialog_title or "Save").lower()
+
         for hwnd in new_hwnds:
             length = user32.GetWindowTextLengthW(hwnd)
             if length > 0:
                 window_title = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(hwnd, window_title, length + 1)
+
                 if target_phrase in window_title.value.lower():
                     selector_hwnd = hwnd
                     break
@@ -378,18 +397,34 @@ if os.name=='nt':
         def enforce_modal(hwnd):
             if not hwnd:
                 return
+
             while user32.IsWindow(hwnd):
                 user32.SetForegroundWindow(hwnd)
-                user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0,
-                                    0x0002 | 0x0001 | 0x0040)  # SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+                user32.SetWindowPos(
+                    hwnd,
+                    -1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0x0002 | 0x0001 | 0x0040
+                )  # SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+
                 time.sleep(0.2)
 
         if selector_hwnd:
-            threading.Thread(target=enforce_modal, args=(selector_hwnd,), daemon=True).start()
+            threading.Thread(
+                target=enforce_modal,
+                args=(selector_hwnd,),
+                daemon=True
+            ).start()
 
-        result = ctypes.wstring_at(ctypes.addressof(file_buffer), file_buffer._length_)
+        result = ctypes.wstring_at(
+            ctypes.addressof(file_buffer),
+            file_buffer._length_
+        )
+
         return result.split('\0', 1)[0].replace("\\", "/")
-
 
     def BoxMessage(text: str, mode: int = 0, title: str = None) -> int:
         """

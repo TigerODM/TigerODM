@@ -432,15 +432,18 @@ class OWAAITResourcesManager(QMainWindow):
         current_repos = self.current_repositories.copy()
 
         for repo in current_repos:
-            # Set the remote resources path temporarily
-            MetManagement.set_aait_store_remote_ressources_path(repo)
-            repo_requirements = MetManagement.get_aait_store_requirements_json()
-            if repo_requirements:
-                # Add repository information to each requirement
-                for req in repo_requirements:
-                    req['repository'] = repo
-                self.requirements.extend(repo_requirements)
-
+            try:
+                # Set the remote resources path temporarily
+                MetManagement.set_aait_store_remote_ressources_path(repo)
+                repo_requirements = MetManagement.get_aait_store_requirements_json()
+                if repo_requirements:
+                    # Add repository information to each requirement
+                    for req in repo_requirements:
+                        req['repository'] = repo
+                    self.requirements.extend(repo_requirements)
+            except Exception as e:
+                print(f"Unable to access repository '{repo}': {e}")
+                continue
         # Write repositories back to file
         try:
             local_store_path = MetManagement.get_local_store_path()
