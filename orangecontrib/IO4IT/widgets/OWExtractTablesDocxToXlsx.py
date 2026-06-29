@@ -2,6 +2,7 @@ import os
 import sys
 import docx
 import pandas as pd
+from docx.oxml.ns import qn
 from Orange.widgets.settings import Setting
 from AnyQt.QtWidgets import QApplication, QPushButton, QLineEdit, QCheckBox
 
@@ -9,12 +10,12 @@ from Orange.widgets.utils.signals import Input, Output
 from Orange.data import Domain, StringVariable, Table, DiscreteVariable
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from Orange.widgets.orangecontrib.AAIT.utils import  base_widget
+    from Orange.widgets.orangecontrib.AAIT.utils import base_widget
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 else:
-
     from orangecontrib.AAIT.utils import base_widget
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
+
 
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
@@ -60,7 +61,6 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
         # Qt Management
         self.setFixedWidth(470)
         self.setFixedHeight(580)
-
 
         self.checkbox_headers = self.findChild(QCheckBox, "checkBox_headers")
         self.pushButton_run = self.findChild(QPushButton, "pushButton_run")
@@ -127,7 +127,6 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
         ])
         result_table = Table.from_list(output_domain, result_rows)
         self.Outputs.data.send(result_table)
-
         self.progressBarFinished()
 
     def _process_files(self, in_data: Table) -> list:
@@ -174,12 +173,128 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
 
             self.processed_statuses.append([full_path, status_short, details])
             self._send_status_table()
-
             result_rows.append([full_path, output_dir_path, f"{status_short}: {details}"])
-
             QApplication.processEvents()
 
         return result_rows
+
+    # ------------------------------------------------------------------ #
+    # Extraction du texte des cellules — gère les champs (REF, STYLEREF…) #
+    # ------------------------------------------------------------------ #
+
+    def _extract_text_from_paragraphs(self, paragraphs) -> str:
+        """
+        Extrait le texte d'une liste de paragraphes, en capturant à la fois les
+        runs statiques et les résultats mis en cache des champs (séquence
+        w:fldChar begin/separate/end et w:fldSimple). Se rabat sur le nom du
+        signet de instrText lorsque la zone de résultat en cache est vide.
+        """
+        all_parts = []
+
+        for para in paragraphs:
+            para_parts = []
+            field_depth = 0
+            in_instr = False
+            current_instr = []
+            current_result = []
+
+            def _flush_field():
+                result = " ".join(current_result).strip()
+                instr = " ".join(current_instr).strip()
+                if result:
+                    para_parts.append(result)
+                else:
+                    # Résultat en cache vide : on se rabat sur le nom du signet de instrText
+                    tokens = instr.split()
+                    if len(tokens) >= 2:
+                        para_parts.append(f"[{tokens[1]}]")
+                    elif tokens:
+                        para_parts.append(f"[{instr}]")
+                    else:
+                        para_parts.append("[EMPTY_FIELD]")
+                current_instr.clear()
+                current_result.clear()
+
+            for child in para._element.iter():
+                tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+
+                if tag == "fldSimple":
+                    # Champ autonome : <w:fldSimple w:instr="REF ..."><w:r><w:t>valeur</w:t></w:r></w:fldSimple>
+                    instr = child.get(qn("w:instr"), "")
+                    result_texts = [
+                        t.text for t in child.findall(".//" + qn("w:t"))
+                        if t.text and t.text.strip()
+                    ]
+                    if result_texts:
+                        para_parts.append(" ".join(result_texts))
+                    else:
+                        tokens = instr.split()
+                        if len(tokens) >= 2:
+                            para_parts.append(f"[{tokens[1]}]")
+                        elif tokens:
+                            para_parts.append(f"[{instr}]")
+
+                elif tag == "fldChar":
+                    fld_type = child.get(qn("w:fldCharType"))
+                    if fld_type == "begin":
+                        field_depth += 1
+                        in_instr = True
+                    elif fld_type == "separate":
+                        in_instr = False
+                    elif fld_type == "end":
+                        field_depth = max(0, field_depth - 1)
+                        _flush_field()
+                        in_instr = False
+
+                elif tag == "instrText":
+                    if child.text:
+                        current_instr.append(child.text)
+
+                elif tag == "t":
+                    text = child.text or ""
+                    if text.strip():
+                        if in_instr:
+                            pass  # on ignore le texte d'instruction
+                        elif field_depth > 0:
+                            current_result.append(text)
+                        else:
+                            para_parts.append(text)
+
+            if para_parts:
+                all_parts.append(" ".join(para_parts))
+
+        return "\n".join(all_parts)
+
+    def _extract_cell_text_from_xml(self, tc_element) -> str:
+        """
+        Extrait le texte d'un élément XML w:tc brut, en itérant directement sur
+        les enfants w:p pour éviter les problèmes de déduplication des cellules
+        fusionnées de python-docx. Récurse également dans les tables imbriquées
+        de la cellule.
+        """
+        all_parts = []
+
+        # Paragraphes directs de cette cellule
+        paragraphs_xml = tc_element.findall(".//" + qn("w:p"))
+
+        # On a besoin d'objets paragraphes — on construit des wrappers minimaux
+        # par itération sur les éléments.
+        # Mais _extract_text_from_paragraphs attend des objets exposant ._element,
+        # on enveloppe donc chaque w:p dans un proxy léger.
+        class _ParaProxy:
+            def __init__(self, el):
+                self._element = el
+
+        para_proxies = [_ParaProxy(p) for p in paragraphs_xml]
+        text = self._extract_text_from_paragraphs(para_proxies)
+        if text.strip():
+            all_parts.append(text.strip())
+
+        return "\n".join(all_parts)
+
+    # ------------------------------------------------------------------ #
+    # Extraction principale                                                #
+    # ------------------------------------------------------------------ #
 
     def _extraire_et_convertir(self, docx_path):
         """
@@ -199,60 +314,77 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
         trigger_text_lower = self.trigger_text.lower() if self.trigger_text else None
 
         for i, table in enumerate(doc.tables):
-            raw_data = []
-            for row in table.rows:
-                row_data = [cell.text.strip() for cell in row.cells]
-                raw_data.append(row_data)
+            try:
+                raw_data = []
 
-            if not raw_data or not any(row for row in raw_data):
-                continue
+                # Fallback table : accès sécurisé aux lignes (structure potentiellement corrompue)
+                try:
+                    rows_xml = table._element.findall(".//" + qn("w:tr"))
+                except Exception as e:
+                    self.warning(
+                        f"Table {i + 1} ignorée (accès aux lignes impossible) "
+                        f"dans '{docx_path}': {e}"
+                    )
+                    continue
 
-            table_index = i + 1
+                for row_idx, row_xml in enumerate(rows_xml):
+                    # Fallback ligne : on skippe les lignes défectueuses sans bloquer la table
+                    try:
+                        # Récupère chaque w:tc directement depuis le XML de la ligne —
+                        # évite totalement la duplication des cellules fusionnées de python-docx
+                        cell_elements = row_xml.findall(qn("w:tc"))
+                        row_data = []
+                        for cell_idx, tc in enumerate(cell_elements):
+                            cell_text = self._extract_cell_text_from_xml(tc)
+                            row_data.append(cell_text)
 
-            # --- MODIFIÉ : Section 1 (sauvegarde originale) supprimée ---
+                        raw_data.append(row_data)
+                    except Exception as e:
+                        self.warning(
+                            f"Table {i + 1}, ligne {row_idx + 1} ignorée "
+                            f"dans '{docx_path}': {e}"
+                        )
+                        continue
 
-            # --- Traitement de la sortie principale (split ou standard) ---
-            if trigger_text_lower:
-                # Cas A : Un trigger est fourni, on split
-                sub_tables_data = self._split_table_data(raw_data, trigger_text_lower)
+                if not raw_data or not any(row for row in raw_data):
+                    continue
 
-                for j, sub_table_data in enumerate(sub_tables_data):
-                    table_name = f"table_{table_index}_{chr(ord('a') + j)}"
-                    df_split = self._create_dataframe(sub_table_data)
+                table_index = i + 1
 
-                    if df_split is not None and not df_split.empty:
-                        self._save_sub_table(df_split, output_dir_main, table_name)
+                if trigger_text_lower:
+                    # Cas A : Un trigger est fourni, on split
+                    sub_tables_data = self._split_table_data(raw_data, trigger_text_lower)
+                    for j, sub_table_data in enumerate(sub_tables_data):
+                        table_name = f"table_{table_index}_{chr(ord('a') + j)}"
+                        df_split = self._create_dataframe(sub_table_data)
+                        if df_split is not None and not df_split.empty:
+                            self._save_sub_table(df_split, output_dir_main, table_name)
+                            total_tables_main_found += 1
+                else:
+                    # Cas B : Pas de trigger, comportement original
+                    table_name = f"table_{table_index}_a"  # Garde le suffixe _a pour cohérence
+                    df_main = self._create_dataframe(raw_data)
+                    if df_main is not None and not df_main.empty:
+                        self._save_sub_table(df_main, output_dir_main, table_name)
                         total_tables_main_found += 1
 
-            else:
-                # Cas B : Pas de trigger, comportement original
-                table_name = f"table_{table_index}_a"  # Garde le suffixe _a pour cohérence
-                df_main = self._create_dataframe(raw_data)
-
-                if df_main is not None and not df_main.empty:
-                    self._save_sub_table(df_main, output_dir_main, table_name)
-                    total_tables_main_found += 1
+            except Exception as e:
+                self.warning(f"Table {i + 1} ignorée (erreur inattendue) : {e}")
+                continue
 
         return total_tables_main_found, output_dir_main
 
     def _split_table_data(self, raw_data: list, trigger_text: str) -> list:
-        """
-        Découpe une table (liste de lignes) en sous-tables logiques.
-        """
         data = [row for row in raw_data if row and any(cell.strip() for cell in row)]
         if not data:
             return []
 
         if self.use_alpha_headers:
-            # Cas A : En-têtes alphabétiques
             sub_tables = []
-            if not data:
-                return []
-
             current_table = [data[0]]
             for row in data[1:]:
                 if any(trigger_text in str(cell).lower() for cell in row):
-                    # self.information(f"  [+] Déclencheur '{trigger_text}' détecté (mode alpha-headers). Division.")
+                    # Déclencheur détecté (mode alpha-headers). Division.
                     if current_table:
                         sub_tables.append(current_table)
                     current_table = [row]
@@ -261,9 +393,7 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
             if current_table:
                 sub_tables.append(current_table)
             return sub_tables
-
         else:
-            # Cas B : Première ligne = en-tête
             if len(data) <= 1:
                 return [data]
 
@@ -273,11 +403,11 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
             current_data_segment = []
 
             if data_rows:
-                current_data_segment.append(data_rows[0])  # Ligne n+1 ne splite jamais
+                current_data_segment.append(data_rows[0])  # La ligne n+1 ne splite jamais
 
             for row in data_rows[1:]:  # Commence à n+2
                 if any(trigger_text in str(cell).lower() for cell in row):
-                    # self.information(f"  [+] Déclencheur '{trigger_text}' détecté (mode 1ere-ligne-header). Division.")
+                    # Déclencheur détecté (mode 1ère-ligne-header). Division.
                     if current_data_segment:
                         final_tables.append([headers] + current_data_segment)
                     current_data_segment = [row]
@@ -290,10 +420,6 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
             return final_tables
 
     def _create_dataframe(self, data):
-        """
-        Crée le DataFrame à partir des lignes brutes (d'une sous-table).
-        """
-        # Nettoyer les lignes vides
         data = [row for row in data if row and any(cell.strip() for cell in row)]
         if not data:
             return None
@@ -302,7 +428,6 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
         data = [row + [''] * (max_cols - len(row)) for row in data]
 
         if self.use_alpha_headers:
-            # Cas A : En-têtes alphabétiques. Toutes les lignes sont des données.
             headers = [chr(ord('A') + j) for j in range(max_cols)]
             df = pd.DataFrame(data, columns=headers)
         else:
@@ -328,8 +453,6 @@ class OWExtractTablesDocxToXlsx(base_widget.BaseListWidget):
         return df
 
     def _save_sub_table(self, df, output_dir, table_full_name):
-        """Sauvegarde le DataFrame exclusivement en XLSX."""
-
         output_xlsx_path = os.path.join(output_dir, f"{table_full_name}.xlsx")
         try:
             df.to_excel(output_xlsx_path, index=False, engine='openpyxl')

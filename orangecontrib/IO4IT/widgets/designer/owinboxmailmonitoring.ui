@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>706</width>
-    <height>439</height>
+    <height>480</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -17,7 +17,7 @@
    <property name="geometry">
     <rect>
      <x>170</x>
-     <y>240</y>
+     <y>390</y>
      <width>521</width>
      <height>51</height>
     </rect>
@@ -32,7 +32,7 @@
      <x>20</x>
      <y>30</y>
      <width>671</width>
-     <height>201</height>
+     <height>340</height>
     </rect>
    </property>
    <property name="title">
@@ -90,6 +90,80 @@
      <bool>false</bool>
     </property>
    </widget>
+   <!-- Sort order label + combobox -->
+   <widget class="QLabel" name="label_sort_order">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>200</y>
+      <width>120</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Loading order :</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="comboBox_sort_order">
+    <property name="geometry">
+     <rect>
+      <x>135</x>
+      <y>200</y>
+      <width>180</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>false</bool>
+    </property>
+   </widget>
+   <!-- Read all checkbox -->
+   <widget class="QCheckBox" name="checkBox_read_all">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>240</y>
+      <width>120</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Read all</string>
+    </property>
+   </widget>
+   <!-- Email count label + spinbox (hidden when Read all is checked) -->
+   <widget class="QLabel" name="label_email_count">
+    <property name="geometry">
+     <rect>
+      <x>140</x>
+      <y>240</y>
+      <width>130</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Number of emails :</string>
+    </property>
+   </widget>
+   <widget class="QSpinBox" name="spinBox_email_count">
+    <property name="geometry">
+     <rect>
+      <x>280</x>
+      <y>240</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="minimum">
+     <number>1</number>
+    </property>
+    <property name="maximum">
+     <number>99999</number>
+    </property>
+    <property name="value">
+     <number>10</number>
+    </property>
+   </widget>
   </widget>
   <widget class="QCheckBox" name="checkBox_send">
    <property name="enabled">
@@ -98,7 +172,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>258</y>
+     <y>408</y>
      <width>131</width>
      <height>16</height>
     </rect>

@@ -155,7 +155,7 @@ class KeyManagerUI(QtWidgets.QDialog):
         if func_name=="Create / overwrite api key":
             self.textDetails.setText("{\n'service': 'service_name',\n'api_key': 'api_key',\n'description': 'this_is_a_description'\n}")
         elif func_name=="Create / overwrite imap4_ssl configuration":
-            self.textDetails.setText("{\n'agent': 'service_name',\n'alias': 'alias_name',\n'domain': '@domain.com',\n'interval_second': 1,\n'password': 'password'\n}")
+            self.textDetails.setText("{\n'agent': 'service_name',\n'alias': 'alias_name',\n'domain': '@domain.com',\n'interval_second': 1,\n'password': 'password',\n'server_imap': 'imap.gmail.com',\n'port_imap': 993,\n'server_smtp': 'smtp.gmail.com',\n'port_smtp': 587\n}")
         elif func_name=="Create / overwrite nxp configuration":
             self.textDetails.setText("{\n'dossier_node_id': 'bode_key',\n'serveur': 'servor_adress',\n'username': 'my_username',\n'password': 'password',\n'description': 'this is a description'\n}")
         elif func_name=="Create / overwrite owa configuration":

@@ -1,20 +1,27 @@
 import os
 import sys
-import threading
-import time
 import unicodedata
 import re
+import warnings
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import Orange
 from Orange.widgets.widget import Input, Output
-from AnyQt.QtWidgets import QApplication, QPushButton, QLabel, QWidget, QVBoxLayout, QGroupBox
-from AnyQt.QtCore import QUrl, QTimer, Signal
+from AnyQt.QtWidgets import QApplication, QPushButton
 from Orange.widgets.settings import Setting
-from AnyQt.QtWebEngineWidgets import QWebEngineView
 
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import quote, urlparse, urljoin, parse_qs
+from urllib.parse import urlparse, urljoin
+
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils import thread_management, base_widget
@@ -23,8 +30,28 @@ else:
     from orangecontrib.AAIT.utils import thread_management, base_widget
     from orangecontrib.HLIT_dev.remote_server_smb import convert
 
+JOURS_MAX_ANCIENNETE = 90
 
+DOMAINES_BLACKLIST = {
+    "jeretiens.net", "wikipedia.org", "wikimedia.org",
+    "larousse.fr", "linternaute.fr", "futura-sciences.com",
+    "maxicours.com", "kartable.fr",
+    "marmiton.org", "750g.com", "cuisineaz.com",
+    "chefsimon.com", "croq-kilos.com", "laterrassesaintvalery.fr",
+    "leboncoin.fr", "seloger.com", "pagesjaunes.fr", "lacentrale.fr",
+    "reddit.com", "quora.com", "commentcamarche.net",
+    "aufeminin.com", "doctissimo.fr", "santeplus.fr",
+    "inc-conso.fr", "madeinfr.fr",
+}
 
+PATTERNS_URL_BLACKLIST = [
+    r"/recette", r"/cuisine", r"/sante", r"/beaute",
+    r"/loisir", r"/divertissement", r"/culture-generale", r"/geographie",
+    r"comment-page", r"#comment-",
+    r"/mentions?-legales?", r"/legal", r"/cgu", r"/cgv",
+    r"/privacy", r"/politique-de-confidentialite",
+    r"/contact", r"/a-propos", r"/about",
+]
 
 
 class WebSearch(base_widget.BaseListWidget):
@@ -40,8 +67,7 @@ class WebSearch(base_widget.BaseListWidget):
     gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owwebsearch.ui")
 
     selected_column_name = Setting("content")
-
-    browser_request_signal = Signal(str, int)
+    jours_max = Setting(JOURS_MAX_ANCIENNETE)   # configurable via UI
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -62,294 +88,12 @@ class WebSearch(base_widget.BaseListWidget):
 
     def __init__(self):
         super().__init__()
-
         self.setFixedWidth(480)
         self.setFixedHeight(760)
-
         self.pushButton_run = self.findChild(QPushButton, 'pushButton_send')
         self.pushButton_run.clicked.connect(self.run)
 
-        # UI viewer embarqué
-        self.groupBox_browser = self.findChild(QGroupBox, "groupBox_browser")
-        self.label_browser_status = self.findChild(QLabel, "label_browser_status")
-        self.web_placeholder = self.findChild(QWidget, "web_placeholder")
-        self.pushButton_browser_check = self.findChild(QPushButton, "pushButton_browser_check")
-        self.pushButton_browser_close = self.findChild(QPushButton, "pushButton_browser_close")
-
-        self.browser_view = None
-        self.browser_timer = QTimer(self)
-        self.browser_timer.timeout.connect(self._browser_periodic_check)
-
-        self._browser_request_event = None
-        self._browser_request_data = None
-        self._browser_wait_deadline = 0.0
-        self._browser_active = False
-        self._browser_last_html = ""
-
-        # Cookies du viewer Qt -> requests.Session
-        self.browser_cookies = []
-        self.browser_cookie_lock = threading.Lock()
-
-        self.browser_request_signal.connect(self._open_browser_for_query)
-        self._init_embedded_browser_ui()
-
-    def _init_embedded_browser_ui(self):
-        if self.groupBox_browser is not None:
-            self.groupBox_browser.hide()
-
-        if self.pushButton_browser_check is not None:
-            self.pushButton_browser_check.clicked.connect(self._browser_check_current_page)
-
-        if self.pushButton_browser_close is not None:
-            self.pushButton_browser_close.clicked.connect(self._browser_cancel_request)
-
-        if QWebEngineView is None:
-            if self.label_browser_status is not None:
-                self.label_browser_status.setText("QWebEngineView is not available.")
-            if self.pushButton_browser_check is not None:
-                self.pushButton_browser_check.setEnabled(False)
-            if self.pushButton_browser_close is not None:
-                self.pushButton_browser_close.setEnabled(False)
-            return
-
-        if self.web_placeholder is None:
-            return
-
-        layout = self.web_placeholder.layout()
-        if layout is None:
-            layout = QVBoxLayout(self.web_placeholder)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(0)
-
-        self.browser_view = QWebEngineView(self.web_placeholder)
-        layout.addWidget(self.browser_view)
-        self.browser_view.hide()
-        self.browser_view.loadFinished.connect(self._browser_on_load_finished)
-
-        try:
-            cookie_store = self.browser_view.page().profile().cookieStore()
-            cookie_store.cookieAdded.connect(self._on_cookie_added)
-        except Exception as e:
-            print(f"[WARN] Impossible de brancher le cookie store Qt: {e}")
-
-    def _on_cookie_added(self, cookie):
-        try:
-            name = bytes(cookie.name()).decode("utf-8", errors="ignore")
-            value = bytes(cookie.value()).decode("utf-8", errors="ignore")
-            domain = cookie.domain() if hasattr(cookie, "domain") else ""
-            path = cookie.path() if hasattr(cookie, "path") else "/"
-
-            item = {
-                "name": name,
-                "value": value,
-                "domain": domain or "",
-                "path": path or "/",
-            }
-
-            with self.browser_cookie_lock:
-                replaced = False
-                for i, existing in enumerate(self.browser_cookies):
-                    if (
-                        existing["name"] == item["name"]
-                        and existing["domain"] == item["domain"]
-                        and existing["path"] == item["path"]
-                    ):
-                        self.browser_cookies[i] = item
-                        replaced = True
-                        break
-                if not replaced:
-                    self.browser_cookies.append(item)
-        except Exception as e:
-            print(f"[WARN] _on_cookie_added error: {e}")
-
-    def _copy_qt_cookies_to_session(self, session):
-        with self.browser_cookie_lock:
-            cookies_snapshot = list(self.browser_cookies)
-
-        for c in cookies_snapshot:
-            try:
-                name = c.get("name", "")
-                value = c.get("value", "")
-                domain = c.get("domain", "")
-                path = c.get("path", "/") or "/"
-
-                if not name:
-                    continue
-
-                if domain:
-                    session.cookies.set(name, value, domain=domain, path=path)
-                    # variante sans le point initial éventuel
-                    if domain.startswith("."):
-                        session.cookies.set(name, value, domain=domain.lstrip("."), path=path)
-                else:
-                    session.cookies.set(name, value, path=path)
-            except Exception as e:
-                print(f"[WARN] copy cookie error: {e}")
-
-    def _get_browser_user_agent(self):
-        try:
-            if self.browser_view is not None:
-                return self.browser_view.page().profile().httpUserAgent()
-        except Exception:
-            pass
-        return "Mozilla/5.0"
-
-    def _is_duckduckgo_challenge(self, html):
-        if not html:
-            return False
-        h = html.lower()
-        markers = [
-            "anomaly-modal",
-            "bots use duckduckgo too",
-            "please complete the following challenge",
-            "select all squares containing",
-            "challenge-form",
-            "anomaly.js",
-        ]
-        return any(m in h for m in markers)
-
-    def _parse_ddg_results_from_html(self, html, max_results):
-        soup = BeautifulSoup(html, "html.parser")
-        resultats = []
-
-        for a in soup.select("a.result__a")[:max_results]:
-            titre = a.get_text(strip=True)
-            lien = a.get("href", "")
-
-            parsed = urlparse(lien)
-            if parsed.netloc and "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
-                qs = parse_qs(parsed.query)
-                if "uddg" in qs:
-                    lien = qs["uddg"][0]
-
-            if lien.startswith("/"):
-                lien = urljoin("https://duckduckgo.com", lien)
-
-            resultats.append((titre, lien))
-
-        return resultats
-
-    def _open_browser_for_query(self, query, wait_timeout):
-        if self._browser_request_data is None:
-            return
-
-        if self.browser_view is None:
-            self._browser_finish_request(html=None, cancelled=True, message="QWebEngineView unavailable.")
-            return
-
-        q = quote(query)
-        url = f"https://duckduckgo.com/html/?q={q}"
-
-        self._browser_active = True
-        self._browser_last_html = ""
-        self._browser_wait_deadline = time.time() + wait_timeout
-
-        if self.groupBox_browser is not None:
-            self.groupBox_browser.show()
-
-        if self.label_browser_status is not None:
-            self.label_browser_status.setText(
-                "Captcha detected.\n"
-                "Solve it in the embedded browser."
-            )
-
-        self.browser_view.show()
-        self.browser_view.setUrl(QUrl(url))
-        self.browser_timer.start(2000)
-
-    def _browser_on_load_finished(self, ok):
-        if not self._browser_active:
-            return
-        if not ok:
-            if self.label_browser_status is not None:
-                self.label_browser_status.setText("DuckDuckGo load error.")
-            return
-        self._browser_check_current_page()
-
-    def _browser_periodic_check(self):
-        if not self._browser_active:
-            self.browser_timer.stop()
-            return
-
-        if time.time() >= self._browser_wait_deadline:
-            self._browser_finish_request(html=None, cancelled=True, message="Captcha timeout.")
-            return
-
-        self._browser_check_current_page()
-
-    def _browser_check_current_page(self):
-        if not self._browser_active or self.browser_view is None:
-            return
-
-        try:
-            page = self.browser_view.page()
-            if page is None:
-                return
-            page.toHtml(self._browser_process_html)
-        except Exception as e:
-            if self.label_browser_status is not None:
-                self.label_browser_status.setText(f"Check error: {e}")
-
-    def _browser_process_html(self, html):
-        if not self._browser_active:
-            return
-
-        html = html or ""
-        self._browser_last_html = html
-
-        if self._is_duckduckgo_challenge(html):
-            if self.label_browser_status is not None:
-                self.label_browser_status.setText(
-                    "Captcha still present.\n"
-                    "Solve it, then wait for automatic detection."
-                )
-            return
-
-        if self.label_browser_status is not None:
-            self.label_browser_status.setText("Results detected.")
-
-        self._browser_finish_request(html=html, cancelled=False, message=None)
-
-    def _browser_cancel_request(self):
-        self._browser_finish_request(html=None, cancelled=True, message="Validation cancelled.")
-
-    def _browser_finish_request(self, html=None, cancelled=False, message=None):
-        self.browser_timer.stop()
-        self._browser_active = False
-
-        if self.browser_view is not None:
-            try:
-                self.browser_view.stop()
-            except Exception:
-                pass
-            try:
-                self.browser_view.setUrl(QUrl("about:blank"))
-            except Exception:
-                pass
-            self.browser_view.hide()
-
-        if self.groupBox_browser is not None:
-            self.groupBox_browser.hide()
-
-        if self.label_browser_status is not None:
-            if message:
-                self.label_browser_status.setText(message)
-            else:
-                self.label_browser_status.setText(
-                    "The embedded browser will appear here only if manual validation is needed."
-                )
-
-        if self._browser_request_data is not None:
-            self._browser_request_data["html"] = html
-            self._browser_request_data["cancelled"] = cancelled
-
-        if self._browser_request_event is not None:
-            self._browser_request_event.set()
-
     def normaliser_texte(self, txt: str) -> str:
-        """
-        Met en minuscules, retire les accents et trim.
-        """
         if not txt:
             return ""
         txt = txt.lower()
@@ -357,159 +101,204 @@ class WebSearch(base_widget.BaseListWidget):
         txt = "".join(c for c in txt if not unicodedata.combining(c))
         return txt.strip()
 
-    def extraire_mots_cles(self, requete: str):
-        """
-        Découpe la requête en mots-clés simples, en retirant
-        les mots très fréquents (du, de, le, la, etc.).
-        """
-        stopwords = {"du", "de", "des", "le", "la", "les", "un", "une", "au", "aux", "et", "en", "pour", "sur", "a"}
+    def extraire_mots_cles(self, requete: str) -> list:
+        stopwords = {
+            "du", "de", "des", "le", "la", "les", "un", "une", "au", "aux",
+            "et", "en", "pour", "sur", "a", "par", "avec", "dans", "est",
+            "prix", "cours", "cotation", "marche", "tarif", "cout", "semaine",
+            "actuel", "actualite", "tendance", "hausse", "baisse", "evolution",
+        }
         req_norm = self.normaliser_texte(requete)
         mots = re.findall(r"\w+", req_norm)
-        mots_cles = [m for m in mots if m not in stopwords and len(m) > 2]
-        return mots_cles or mots
+        return [m for m in mots if m not in stopwords and len(m) > 2] or mots
+
+    def extraire_mots_produit(self, requete: str) -> list:
+        stopwords_larges = {
+            "du", "de", "des", "le", "la", "les", "un", "une", "au", "aux",
+            "et", "en", "pour", "sur", "a", "par", "avec", "dans", "est",
+            "prix", "cours", "cotation", "marche", "tarif", "cout", "semaine",
+            "actuel", "actualite", "tendance", "hausse", "baisse", "evolution",
+            "france", "europe", "mondial", "international", "national",
+            "mai", "juin", "juillet", "aout", "septembre", "octobre",
+            "novembre", "decembre", "janvier", "fevrier", "mars", "avril",
+            "2024", "2025", "2026", "2027",
+        }
+        req_norm = self.normaliser_texte(requete)
+        mots = re.findall(r"\w+", req_norm)
+        return [m for m in mots if m not in stopwords_larges and len(m) > 2]
+
+    def parser_date(self, date_str: str):
+        """
+        Tente de parser une date RSS/Atom en datetime aware (UTC).
+        Supporte : RFC 2822 (RSS), ISO 8601 (Atom), et quelques variantes.
+        Retourne None si impossible à parser.
+        """
+        if not date_str or date_str == "Date inconnue":
+            return None
+        # Nettoyage basique
+        date_str = date_str.strip()
+        # Tentative RFC 2822 (format RSS standard)
+        try:
+            return parsedate_to_datetime(date_str)
+        except Exception:
+            pass
+        # Tentative ISO 8601 / Atom
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+        ):
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                continue
+        return None
+
+    def est_recent(self, date_str: str) -> bool:
+        """
+        Retourne True si l'article date de moins de self.jours_max jours.
+        Retourne True aussi si la date est absente (on ne rejette pas faute d'info).
+        """
+        dt = self.parser_date(date_str)
+        if dt is None:
+            return True  # pas de date → on garde par défaut
+        limite = datetime.now(tz=timezone.utc) - timedelta(days=self.jours_max)
+        return dt >= limite
+
+    def est_url_valide(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+            netloc = parsed.netloc.lower().lstrip("www.")
+            for domaine in DOMAINES_BLACKLIST:
+                if netloc == domaine or netloc.endswith("." + domaine):
+                    return False
+            url_lower = url.lower()
+            for pattern in PATTERNS_URL_BLACKLIST:
+                if re.search(pattern, url_lower):
+                    return False
+        except Exception:
+            return False
+        return True
+
+    def normaliser_url(self, url: str) -> str:
+        try:
+            return urlparse(url)._replace(fragment="").geturl()
+        except Exception:
+            return url
+
+    def score_pertinence(self, texte: str, mots_produit: list) -> int:
+        texte_norm = self.normaliser_texte(texte)
+        return sum(1 for mot in mots_produit if mot in texte_norm)
+
+    def est_pertinent(self, texte: str, mots_produit: list) -> tuple:
+        if not mots_produit:
+            return True, 1
+        score = self.score_pertinence(texte, mots_produit)
+        return score >= len(mots_produit), score
+
+    def filtrer_et_trier(self, resultats: list, mots_produit: list) -> list:
+        scores = []
+        for r in resultats:
+            texte = r.get("titre", "") + " " + r.get("resume", "") + " " + r.get("url", "")
+            ok, score = self.est_pertinent(texte, mots_produit)
+            if ok:
+                scores.append((score, r))
+        scores.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scores]
+
+    def generer_variantes(self, requete: str) -> list:
+        mots_cles = self.extraire_mots_cles(requete)
+        base = " ".join(mots_cles)
+        variantes = [
+            requete,
+            base + " cotation marché",
+            base + " prix semaine actualité",
+        ]
+        return list(dict.fromkeys(variantes))
 
     def recherche_duckduckgo(self, query, max_results=10):
-        q = quote(query)
-        url = f"https://duckduckgo.com/html/?q={q}"
-
-        session = requests.Session()
-        headers = {
-            "User-Agent": self._get_browser_user_agent(),
-            # "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-            # "Referer": "https://duckduckgo.com/",
-        }
-
-        def do_request():
-            r = session.get(url, headers=headers, timeout=10)
-            r.raise_for_status()
-            return r.text
-
         try:
-            r = session.get(url, headers=headers, timeout=10)
-            r.raise_for_status()
-        except requests.RequestException as e:
-            print(f"[ERREUR] Problème lors de la requête DuckDuckGo : {e}")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(
+                        query,
+                        max_results=max_results,
+                        region="fr-fr",
+                        safesearch="off",
+                    ))
+            return [{"titre": r["title"], "url": r["href"], "resume": r.get("body", "")} for r in results] if results else []
+        except Exception as e:
+            self.thread.progress.emit((None, f"[ERREUR DDG] {e}\n"))
             return []
 
-        html = r.text
-
-        # Cas normal = ton code d'origine
-        if not self._is_duckduckgo_challenge(html):
-            return self._parse_ddg_results_from_html(html, max_results)
-
-        # Cas captcha = viewer Qt
-        print("[INFO] Challenge DuckDuckGo détecté.")
-        print("[INFO] Ouverture du navigateur embarqué pour résolution manuelle...")
-
-        if QWebEngineView is None or self.browser_view is None:
-            print("[ERREUR] QWebEngineView non disponible.")
-            return []
-
-        wait_event = threading.Event()
-        request_data = {
-            "html": None,
-            "cancelled": False,
-        }
-
-        self._browser_request_event = wait_event
-        self._browser_request_data = request_data
-
-        self.browser_request_signal.emit(query, 120)
-        wait_event.wait(125)
-
-        data = self._browser_request_data
-        self._browser_request_event = None
-        self._browser_request_data = None
-
-        if not data or data.get("cancelled"):
-            print("[ERREUR] Validation DuckDuckGo annulée ou timeout.")
-            return []
-
-        viewer_html = data.get("html") or ""
-        if not viewer_html:
-            print("[ERREUR] HTML vide après validation.")
-            return []
-
-        if self._is_duckduckgo_challenge(viewer_html):
-            print("[ERREUR] Captcha toujours présent après validation.")
-            return []
-
-        # On copie les cookies Qt -> requests.Session
-        self._copy_qt_cookies_to_session(session)
-
-        # 1) on tente de relancer requests avec les mêmes cookies
-        try:
-            html_after = do_request()
-            if not self._is_duckduckgo_challenge(html_after):
-                resultats = self._parse_ddg_results_from_html(html_after, max_results)
-                if resultats:
-                    return resultats
-        except requests.RequestException as e:
-            print(f"[WARN] Requête requests après synchro cookies en échec: {e}")
-
-        # 2) fallback: on parse directement le HTML du viewer
-        resultats = self._parse_ddg_results_from_html(viewer_html, max_results)
-        if resultats:
-            return resultats
-
-        print("[ERREUR] Aucun résultat parsable après validation captcha.")
-        return []
-
-    def extraire_domaines(self, resultats_search):
-        domaines = set()
-        for _titre, url in resultats_search:
-            try:
-                parsed = urlparse(url)
-                scheme = parsed.scheme or "https"
-                if not parsed.netloc:
+    def recherche_multi_variantes(self, requete: str, mots_produit: list) -> list:
+        variantes = self.generer_variantes(requete)
+        tous_resultats = {}
+        for v in variantes:
+            self.thread.progress.emit((None, f"  → DDG : {v}\n"))
+            res = self.recherche_duckduckgo(v, max_results=10)
+            for r in res:
+                url_norm = self.normaliser_url(r["url"])
+                if not self.est_url_valide(url_norm):
                     continue
-                domaine = f"{scheme}://{parsed.netloc}"
-                domaines.add(domaine)
+                if url_norm not in tous_resultats:
+                    r["url"] = url_norm
+                    tous_resultats[url_norm] = r
+
+        bruts = list(tous_resultats.values())
+        filtres = self.filtrer_et_trier(bruts, mots_produit)
+        self.thread.progress.emit((None, f"  {len(filtres)} gardés / {len(bruts)-len(filtres)} hors-sujet\n"))
+        return filtres
+
+    def extraire_domaines(self, resultats):
+        domaines = set()
+        for r in resultats:
+            try:
+                parsed = urlparse(r["url"])
+                if parsed.netloc:
+                    domaines.add(f"{parsed.scheme or 'https'}://{parsed.netloc}")
             except Exception:
                 pass
         return list(domaines)
 
     def trouver_flux_rss(self, url_site):
         try:
-            r = requests.get(url_site, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            r = requests.get(url_site, headers={"User-Agent": "Mozilla/5.0"}, timeout=10, verify=False)
             r.raise_for_status()
         except requests.RequestException as e:
-            print(f"[ERREUR] Impossible d'accéder à {url_site} : {e}")
+            self.thread.progress.emit((None, f"[ERREUR RSS] {url_site} : {e}\n"))
             return []
-
         soup = BeautifulSoup(r.text, "html.parser")
         flux = []
 
         for link in soup.find_all("link", type="application/rss+xml"):
             href = link.get("href")
             if href:
-                href = urljoin(url_site, href)
-                flux.append(href)
-
+                flux.append(urljoin(url_site, href))
         for link in soup.find_all("a"):
             href = link.get("href", "")
-            if not href:
-                continue
-            href_norm = href.lower()
-            if "rss" in href_norm or "feed" in href_norm:
+            if href and ("rss" in href.lower() or "feed" in href.lower()):
                 flux.append(urljoin(url_site, href))
-
         return list(set(flux))
 
-    def rechercher_articles_dans_flux(self, requete, flux_list, max_results=20):
-        mots_cles = self.extraire_mots_cles(requete)
+    def rechercher_articles_dans_flux(self, flux_list, mots_produit, max_results=20):
         articles = []
-
+        vus = set()
+        rejetes_date = 0
         headers = {"User-Agent": "Mozilla/5.0"}
 
         for flux in flux_list:
             try:
-                r = requests.get(flux, headers=headers, timeout=10)
+                r = requests.get(flux, headers=headers, timeout=10, verify=False)
                 r.raise_for_status()
-                # Parse du flux en XML
                 soup = BeautifulSoup(r.content, "xml")
             except requests.RequestException as e:
-                print(f"[ERREUR] Problème lors de la lecture du flux {flux} : {e}")
+                self.thread.progress.emit((None, f"[ERREUR flux] {flux} : {e}\n"))
                 continue
 
             # Gestion RSS (<item>) et Atom (<entry>)
@@ -526,70 +315,74 @@ class WebSearch(base_widget.BaseListWidget):
                 lien_tag = entry.find("link")
                 lien = ""
                 if lien_tag:
-                    # Atom : <link href="...">
-                    if lien_tag.has_attr("href"):
-                        lien = lien_tag["href"]
-                    else:
-                        # RSS : <link>https://...</link>
-                        lien = lien_tag.get_text(strip=True)
+                    lien = lien_tag["href"] if lien_tag.has_attr("href") else lien_tag.get_text(strip=True)
 
-                # Date
-                date_tag = (
-                        entry.find("pubDate")
-                        or entry.find("published")
-                        or entry.find("updated")
-                )
+                lien_norm = self.normaliser_url(lien)
+
+                if not self.est_url_valide(lien_norm) or lien_norm in vus:
+                    continue
+                vus.add(lien_norm)
+
+                date_tag = entry.find("pubDate") or entry.find("published") or entry.find("updated")
                 date = date_tag.get_text(strip=True) if date_tag else "Date inconnue"
 
-                texte_complet = self.normaliser_texte(titre + " " + resume)
+                # ← FILTRE DATE ICI
+                if not self.est_recent(date):
+                    rejetes_date += 1
+                    continue
 
-                # Condition : au moins un mot-clé présent dans titre+résumé
-                if any(mot in texte_complet for mot in mots_cles):
-                    articles.append(
-                        {
-                            "titre": titre,
-                            "url": lien,
-                            "date": date,
-                            "source_flux": flux,
-                        }
-                    )
+                ok, score = self.est_pertinent(titre + " " + resume, mots_produit)
+                if ok:
+                    articles.append({
+                        "titre": titre,
+                        "url": lien_norm,
+                        "date": date,
+                        "source_flux": flux,
+                        "resume": resume,
+                        "score": score,
+                    })
                     if len(articles) >= max_results:
-                        return articles
+                        break
 
+        if rejetes_date > 0:
+            self.thread.progress.emit((None, f"  {rejetes_date} articles trop anciens (>{self.jours_max}j) ignorés\n"))
+
+        articles.sort(key=lambda x: x["score"], reverse=True)
         return articles
 
     def pipeline_veille_requete(self, requete):
-        resultats = self.recherche_duckduckgo(requete)
-        if not resultats:
-            print("Aucun résultat trouvé sur DuckDuckGo.")
-            return []
-        print(resultats)
-        domaines = self.extraire_domaines(resultats)
+        mots_produit = self.extraire_mots_produit(requete)
+        self.thread.progress.emit((10, f"Produit ciblé : {mots_produit}\n"))
+        self.thread.progress.emit((10, f"Fenêtre temporelle : {self.jours_max} jours\n"))
 
+        resultats = self.recherche_multi_variantes(requete, mots_produit)
+        if not resultats:
+            self.thread.progress.emit((50, "Aucun résultat pertinent.\n"))
+            return []
+
+        self.thread.progress.emit((40, f"{len(resultats)} résultats — recherche RSS...\n"))
+
+        domaines = self.extraire_domaines(resultats)
         flux = []
         for d in domaines:
             found = self.trouver_flux_rss(d)
             if found:
-                print(f"Flux trouvés sur {d}:")
-                for f in found:
-                    print(" ->", f)
+                self.thread.progress.emit((None, f"  RSS : {d}\n"))
                 flux.extend(found)
-
         flux = list(set(flux))
+        self.thread.progress.emit((70, f"{len(flux)} flux RSS\n"))
 
         if not flux:
-            return [
-                {"titre": t, "url": u, "date": None, "source_flux": None, "source": "web"}
-                for t, u in resultats
-            ]
+            self.thread.progress.emit((100, "Pas de RSS — résultats DDG retournés.\n"))
+            return [{"titre": r["titre"], "url": r["url"], "date": None, "source_flux": None, "source": "web", "resume": r.get("resume", "")} for r in resultats]
 
-        articles = self.rechercher_articles_dans_flux(requete, flux)
+        articles = self.rechercher_articles_dans_flux(flux, mots_produit)
 
         if not articles:
-            return [
-                {"titre": t, "url": u, "date": None, "source_flux": None, "source": "web"}
-                for t, u in resultats
-            ]
+            self.thread.progress.emit((100, f"Aucun article récent (<{self.jours_max}j) — fallback DDG.\n"))
+            return [{"titre": r["titre"], "url": r["url"], "date": None, "source_flux": None, "source": "web", "resume": r.get("resume", "")} for r in resultats]
+
+        self.thread.progress.emit((100, f"Terminé — {len(articles)} articles récents.\n"))
         return articles
 
     def run(self):
@@ -617,10 +410,11 @@ class WebSearch(base_widget.BaseListWidget):
         text = progress[1]
         if value is not None:
             self.progressBarSet(value)
-        if text is None:
-            self.textBrowser.setText("")
-        else:
-            self.textBrowser.insertPlainText(text)
+        if hasattr(self, "textBrowser"):
+            if text is None:
+                self.textBrowser.setText("")
+            else:
+                self.textBrowser.insertPlainText(text)
 
     def handle_result(self, result):
         if result is None or len(result) == 0:
@@ -640,7 +434,6 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     my_widget = WebSearch()
     my_widget.show()
-
     if hasattr(app, "exec"):
         sys.exit(app.exec())
     else:

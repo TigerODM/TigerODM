@@ -139,7 +139,10 @@ class OWOfficeNormalizer(widget.OWWidget):
                 Domain([], metas=[StringVariable("src_path"), StringVariable("dst_path"), StringVariable("status")]),
                 [])
 
-        common_path = Path(os.path.commonpath(file_paths))
+        if total_files==1:
+            common_path = Path(os.path.dirname(os.path.abspath(file_paths[0])))
+        else:
+            common_path = Path(os.path.commonpath(file_paths))
         output_base_dir = common_path / "office_normalisation"
         output_base_dir.mkdir(parents=True, exist_ok=True)
 

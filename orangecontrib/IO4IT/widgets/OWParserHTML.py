@@ -106,6 +106,7 @@ class ParseHMTL(OWWidget):
             timeout=30
         )
         resp.raise_for_status()
+        resp.encoding = resp.apparent_encoding or "utf-8"
         return resp.text
 
     def parse_html(self):
@@ -241,12 +242,17 @@ class ParseHMTL(OWWidget):
     def handle_progress(self, progress) -> None:
         value = progress[0]
         text = progress[1]
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", errors="replace")
+        if text is not None:
+            text = str(text)
         if value is not None:
             self.progressBarSet(value)
-        if text is None:
-            self.textBrowser.setText("")
-        else:
-            self.textBrowser.insertPlainText(text)
+        if hasattr(self, "textBrowser"):
+            if text is None:
+                self.textBrowser.setText("")
+            else:
+                self.textBrowser.insertPlainText(text)
 
     def handle_result(self, result):
         data = convert.convert_json_implicite_to_data_table(result)

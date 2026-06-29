@@ -5,7 +5,8 @@ import Orange
 from Orange.widgets.widget import Input, Output
 from AnyQt.QtWidgets import QApplication
 from Orange.widgets.settings import Setting
-
+from AnyQt.QtWidgets import  QCheckBox
+from Orange.data import Table, Domain, StringVariable
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert
     from Orange.widgets.orangecontrib.AAIT.utils import base_widget
@@ -24,6 +25,7 @@ class OWJsonToDataTable(base_widget.BaseListWidget):
     want_control_area = False
     category = "AAIT - TOOLBOX"
     selected_column_name = Setting("content")
+    data_table_to_json=Setting("False")
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -43,7 +45,10 @@ class OWJsonToDataTable(base_widget.BaseListWidget):
     def set_path(self, in_data):
         if in_data is None:
             return
-        self.path = in_data
+        if self.data_table_to_json == "True":
+            self.warning("")
+            return
+        self.path = in_data #in_data est le chemin pas l entree in_data
         if self.path:
             self.var_selector.add_variables(self.path.domain)
             self.var_selector.select_variable_by_name(self.selected_column_name)
@@ -59,10 +64,52 @@ class OWJsonToDataTable(base_widget.BaseListWidget):
         self.setFixedHeight(450)
         self.data = None
         self.path = None
+        self.check_box_data_table_to_json=self.findChild(QCheckBox, "checkBox")
+        if self.data_table_to_json=="True":
+            self.check_box_data_table_to_json.setChecked(True)
+        else:
+            self.check_box_data_table_to_json.setChecked(False)
+        self.check_box_data_table_to_json.stateChanged.connect(self.on_checkbox_toggled)
+
+
+    def on_checkbox_toggled(self):
+        if self.check_box_data_table_to_json.isChecked():
+            self.data_table_to_json="True"
+        else:
+            self.data_table_to_json = "False"
+
 
     def run(self):
         self.error("")
         self.warning("")
+        if self.data_table_to_json=="True":
+            try:
+                json_data = convert.convert_data_table_to_json(self.data)
+
+                if json_data is None:
+                    content = ""
+                else:
+                    content = json.dumps(json_data, ensure_ascii=False, indent=4)
+
+                domain = Domain([], metas=[StringVariable("content")])
+
+                out_data = Table.from_list(
+                    domain,
+                    [[content]]
+                )
+
+                self.Outputs.data.send(out_data)
+                return
+            except Exception as e:
+                self.error(f"Error: {e}")
+                self.Outputs.data.send(None)
+                self.data = None
+                self.path = None
+
+
+
+
+
         try :
             if self.data:
                 raw = self.data.get_column(self.selected_column_name)[0]

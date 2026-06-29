@@ -1,19 +1,17 @@
 import os
 import sys
 from AnyQt.QtWidgets import QApplication
-from AnyQt.QtCore import pyqtSignal, QTimer
+from AnyQt.QtCore import pyqtSignal
 from Orange.widgets.utils.signals import Input, Output
 from Orange.data import Domain, StringVariable, Table, DiscreteVariable
 from Orange.widgets.settings import Setting
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.IO4IT.utils import pptx2jpg
-    from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.thread_management import Thread
     from Orange.widgets.orangecontrib.AAIT.utils import  base_widget
 else:
     from orangecontrib.IO4IT.utils import pptx2jpg
-    from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.thread_management import Thread
     from orangecontrib.AAIT.utils import  base_widget
 
@@ -47,7 +45,7 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
         if self.data:
             self.var_selector.add_variables(self.data.domain)
             self.var_selector.select_variable_by_name(self.selected_column_name)
-        if self.autorun:
+        if self.auto_send:
             self.run()
 
     def __init__(self):
@@ -113,22 +111,10 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
 
         self.thread = Thread(self._convert_and_build_table, pptx_files, unique_folder)
 
-        self.thread.result.connect(self.handle_progress) # Fonction lignes 106-108 create embeddings
+        self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
         self.thread.start()
-    
-    def handleNewSignals(self):
-        if self.data:
-            has_path = any(v.name == self.selected_column_name for v in self.data.domain.variables + self.data.domain.metas)            
-            if hasattr(self, "pushButton_send"):
-                self.pushButton_send.setEnabled(has_path)
-
-            if has_path and self.auto_send:
-                QTimer.singleShot(100, self.run)
-        else:
-            if hasattr(self, "pushButton_send"):
-                self.pushButton_send.setEnabled(False)
 
     def handle_status_update(self, info):
         path_str, status, message = info
@@ -137,14 +123,12 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
 
     def handle_progress(self, value: float) -> None:
         """Met à jour la barre de progression (reçu via progress_callback)"""
-        self.progressBarSet(value)
+        self.progressBarSet(int(value))
 
     def handle_result(self, result_table):
-        """Gère la table de données finale reçue du thread"""
         try:
             self.Outputs.data.send(result_table)
 
-            # Envoie la status table
             final_statuses = {
                 path: d for path, d in self.processed_statuses.items()
                 if d["status"] != "in_progress"
@@ -157,12 +141,13 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
             ])
 
             rows = [[path, d["status"], d["message"]] for path, d in final_statuses.items()]
-            if rows:
-                self.Outputs.status_data.send(Table.from_list(status_domain, rows))
-                
+            status_table = Table.from_list(status_domain, rows) if rows else None
+            self.Outputs.status_data.send(status_table)   # ← always sent
+
         except Exception as e:
             print("An error occurred when sending out_data:", e)
             self.Outputs.data.send(None)
+            self.Outputs.status_data.send(None)            # ← always sent on error too
 
     def handle_finish(self):
         """Nettoyage final une fois le thread terminé"""

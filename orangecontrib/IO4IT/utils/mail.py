@@ -29,13 +29,19 @@ else:
     from orangecontrib.AAIT.utils import MetManagement
     from orangecontrib.IO4IT.utils import keys_manager
 
-
 def clean_addresses(field,myemail):
     """Retourne une liste d'adresses nettoyées sans ton adresse"""
     if not field:
         return []
     addresses = email.utils.getaddresses([field])
     return [addr for name, addr in addresses if addr.lower() != myemail.lower()]
+
+def get_addresses(field):
+    """Retourne une liste d'adresses nettoyées sans ton adresse"""
+    if not field:
+        return []
+    addresses = email.utils.getaddresses([field])
+    return [addr for name, addr in addresses]
 
 def mail_in_folder(agent_name, type="in"):
     if agent_name is None or agent_name == "":
@@ -74,16 +80,29 @@ def mark_as_read(item):
         return False
 
 
-def check_new_emails(offusc_conf_agent,type_co, list_agent_email=[]):
+def check_new_emails(offusc_conf_agent,type_co,list_agent_email=[],ascending=True,max_emails=None):
     if type_co=="IMAP4_SSL":
         try:
-            agent,my_domain,password,interl_seconds,alias=keys_manager.lire_config_imap4_ssl(offusc_conf_agent)
-            myemail=agent + my_domain
-            imap = imaplib.IMAP4_SSL("imap.gmail.com")
+            agent,my_domain,password,interl_seconds,alias,server_imap,port_imap,_,_=keys_manager.lire_config_imap4_ssl(offusc_conf_agent)
+            if(alias and alias != ""):
+                myemail=alias + my_domain
+            else:
+                myemail=agent + my_domain
+            imap = imaplib.IMAP4_SSL(server_imap,port_imap)
             imap.login(myemail, password)
             imap.select("inbox")
             status, messages = imap.search(None, 'UNSEEN')
             mail_ids = messages[0].split()
+            mail_ids = sorted(
+                mail_ids,
+                key=lambda x: int(x),
+                reverse=not ascending
+            )
+
+            # Limitation du nombre de mails
+            if max_emails is not None:
+                mail_ids = mail_ids[:max_emails]
+
             if not mail_ids:
                 print("Aucun nouveau mail.")
             else:
@@ -110,16 +129,29 @@ def check_new_emails(offusc_conf_agent,type_co, list_agent_email=[]):
 
                             # Expéditeur
                             from_ = msg.get("From")
+
                             # Destinataires
-                            to_emails = clean_addresses(msg.get("To", ""),myemail)
-                            cc_emails = clean_addresses(msg.get("Cc", ""),myemail)
-                            if (to_emails != [] or cc_emails != []) and alias == "":
-                                if myemail not in to_emails or myemail not in cc_emails:
-                                    print(f"l'adresse de reception est un alias : {to_emails}")
-                                    continue
-                            if (to_emails == [] and cc_emails == []) and alias != "":
-                                print(f"l'adresse de reception est un alias : {alias}")
+                            # Je n'ai pas compris la logique
+                            #to_emails = clean_addresses(msg.get("To", ""),myemail)
+                            #cc_emails = clean_addresses(msg.get("Cc", ""),myemail)
+
+                            #if (to_emails != [] or cc_emails != []) and alias == "":
+                            #    if myemail not in to_emails and myemail not in cc_emails:
+                            #        print(f"l'adresse de reception est un alias : {to_emails}")
+                            #        continue
+                            #if (to_emails == [] and cc_emails == []) and alias != "":
+                            #    print(f"l'adresse de reception est un alias : {alias}")
+                            #    continue
+                            to_emails = get_addresses(msg.get("To", ""))
+                            cc_emails = get_addresses(msg.get("Cc", ""))
+                            all_recipients = to_emails + cc_emails
+                            myemail = myemail.lower().strip()
+                            all_recipients = [x.lower().strip() for x in all_recipients]
+                            
+                            if myemail not in all_recipients:
+                                print(f"Le mail n'est pas destiné à {myemail}")
                                 continue
+
                             ## passe en lu si ce n'est pas un alias
                             imap.store(mail_id, '+FLAGS', '\\Seen')
                             # Corps
@@ -231,7 +263,14 @@ def check_new_emails(offusc_conf_agent,type_co, list_agent_email=[]):
             if not inbox:
                 print("Aucun nouveau mail.")
             else:
-                for item in inbox.order_by('datetime_received'):
+                ordered_inbox = inbox.order_by(
+                    'datetime_received' if ascending else '-datetime_received'
+                )
+
+                if max_emails is not None:
+                    ordered_inbox = ordered_inbox[:max_emails]
+
+                for item in ordered_inbox:
                     if list_agent_email != []:
                         white_list, black_list = keys_manager.lire_list_email(list_agent_email)
                     else:
@@ -378,7 +417,14 @@ def check_new_emails(offusc_conf_agent,type_co, list_agent_email=[]):
             if not inbox:
                 print("Aucun nouveau mail.")
             else:
-                for item in inbox.order_by('datetime_received'):
+                ordered_inbox = inbox.order_by(
+                    'datetime_received' if ascending else '-datetime_received'
+                )
+
+                if max_emails is not None:
+                    ordered_inbox = ordered_inbox[:max_emails]
+
+                for item in ordered_inbox:
                     if list_agent_email:
                         white_list, black_list = keys_manager.lire_list_email(list_agent_email)
                     else:
@@ -482,10 +528,12 @@ def check_new_emails(offusc_conf_agent,type_co, list_agent_email=[]):
             graph_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/messages"
             params = {
                 '$filter': 'isRead eq false',
-                '$orderby': 'receivedDateTime asc',
+                '$orderby': f"receivedDateTime {'asc' if ascending else 'desc'}",
                 '$select': 'id,subject,sender,toRecipients,ccRecipients,receivedDateTime,body,hasAttachments'
             }
 
+            if max_emails is not None:
+                params['$top'] = max_emails
 
             try:
                 response = requests.get(graph_url, headers=headers, params=params)
@@ -634,20 +682,25 @@ def lire_message(chemin_fichier):
     return donnees
 
 
-
-
-def send_mail(expediteur, offusc_conf_agent, destinataire, sujet, contenu_html, piece_jointe_paths=None, serveur="smtp.gmail.com", port=587):
+def send_mail(expediteur, offusc_conf_agent, destinataire, sujet, contenu_html, piece_jointe_paths=None, cc=None, serveur="smtp.gmail.com", port=587):
     msg = EmailMessage()
     msg['From'] = expediteur
     msg['To'] = destinataire
     msg['Subject'] = sujet
+
+    if cc:
+        # Si cc est une liste, on la transforme en chaîne séparée par des virgules
+        if isinstance(cc, list):
+            msg['Cc'] = ", ".join(cc)
+        else:
+            msg['Cc'] = cc
 
     # ✅ Définir le contenu HTML comme contenu alternatif
     msg.set_content("Votre client mail ne supporte pas le HTML.")  # fallback texte brut
     msg.add_alternative(contenu_html, subtype='html')
 
     # ✅ Ajout d'une ou plusieurs pièces jointes si fournie
-    if piece_jointe_paths:
+    if piece_jointe_paths and os.path.exists(piece_jointe_paths):
         piece_paths = [f for f in os.listdir(piece_jointe_paths) if os.path.isfile(os.path.join(piece_jointe_paths, f))]
         for piece_path in piece_paths:
             try:
@@ -660,7 +713,7 @@ def send_mail(expediteur, offusc_conf_agent, destinataire, sujet, contenu_html, 
             except Exception as e:
                 print(f"Erreur lors de l'ajout de la pièce jointe '{piece_path}': {e}")
     try:
-        _, _, mot_de_passe, _, _ = keys_manager.lire_config_imap4_ssl(offusc_conf_agent)
+        _, _, mot_de_passe, _, _, _, _, _, _ = keys_manager.lire_config_imap4_ssl(offusc_conf_agent)
         with smtplib.SMTP(serveur, port) as smtp:
             smtp.starttls()
             smtp.login(expediteur, mot_de_passe)
@@ -677,9 +730,18 @@ def extraire_emails(champ):
     """
     if not champ:
         return []
+    # Nettoie les guillemets littéraux et valeurs placeholder
+    champ = champ.strip().strip('"').strip("'")
+
+    if champ in ("", "?", "-", "none", "null"):
+        return []
 
     emails = champ.replace(";", ",").split(",")
-    return [email.strip() for email in emails if email.strip()]
+    return [
+        email.strip().strip('"').strip("'")
+        for email in emails
+        if email.strip().strip('"').strip("'") and "@" in email
+    ]
 
 def to_graph_recipients(champ):
     """
@@ -696,8 +758,9 @@ def to_graph_recipients(champ):
 
 def check_send_new_emails(offusc_conf_agent, type_co):
     if type_co == "IMAP4_SSL":
-        agent, domain, _, _, alias = keys_manager.lire_config_imap4_ssl(offusc_conf_agent)
+        agent, domain, _, _, alias, _, _, server_smtp, port_smtp = keys_manager.lire_config_imap4_ssl(offusc_conf_agent)
         mail = agent + domain
+
         if alias != "":
             agent = alias
         chemin_dossier_in, chemin_dossier_out = mail_in_folder(agent, "out")
@@ -716,6 +779,9 @@ def check_send_new_emails(offusc_conf_agent, type_co):
                                 print("Aucun destinataire trouvé dans 'eme'")
                                 continue
 
+                            chemin_pj = chemin_dossier_out + "/" + contenu + "/pj"
+                            pj_argument = chemin_pj if os.path.exists(chemin_pj) else None
+
                             send_mail(
                                 mail,
                                 offusc_conf_agent,
@@ -723,7 +789,9 @@ def check_send_new_emails(offusc_conf_agent, type_co):
                                 infos["tit"],
                                 infos["txt"],
                                 cc=copies,
-                                piece_jointe_paths=chemin_dossier_out + "/" + contenu + "/pj"
+                                piece_jointe_paths=pj_argument,
+                                serveur=server_smtp,
+                                port=port_smtp
                             )
                             MetManagement.reset_folder(chemin_dossier_in + contenu, recreate=False)
                             MetManagement.reset_folder(chemin_dossier_out + contenu, recreate=False)
@@ -906,7 +974,6 @@ def check_send_new_emails(offusc_conf_agent, type_co):
             client_id, client_secret, tenant_id, user_email = keys_manager.lire_config_oauth2(
                 offusc_conf_agent, type_co
             )
-
             agent = user_email
             chemin_dossier_in, chemin_dossier_out = mail_in_folder(agent, "out")
             authority = f"https://login.microsoftonline.com/{tenant_id}"
@@ -993,6 +1060,7 @@ def check_send_new_emails(offusc_conf_agent, type_co):
                                     response = requests.post(send_url, headers=headers, json=message_data)
                                     response.raise_for_status()
                                 except requests.exceptions.HTTPError as e:
+                                    print(f"Graph error body: {response.json()}")  # ← ajoute cette ligne
                                     if response.status_code == 403:
                                         raise Exception("❌ Permission Mail.Send manquante.")
                                     else:
@@ -1035,7 +1103,7 @@ if __name__ == "__main__":
     while True:
         for offusc_conf_agent in offusc_conf_agents:
             print("offusc conf agent : ", offusc_conf_agent)
-            check_new_emails(offusc_conf_agent,type_co, list_agent_email)
-            time.sleep(1)
+            #check_new_emails(offusc_conf_agent,type_co, list_agent_email)
+            #time.sleep(1)
             check_send_new_emails(offusc_conf_agent,type_co)
             time.sleep(1)

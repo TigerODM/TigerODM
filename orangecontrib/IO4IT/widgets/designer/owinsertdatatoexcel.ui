@@ -6,38 +6,37 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>474</width>
-    <height>400</height> </rect>
+    <width>800</width>
+    <height>479</height>
+   </rect>
   </property>
-  
   <property name="minimumSize">
    <size>
-    <width>474</width>
-    <height>400</height>
+    <width>800</width>
+    <height>420</height>
    </size>
   </property>
   <property name="maximumSize">
    <size>
     <width>474</width>
-    <height>400</height>
+    <height>800</height>
    </size>
   </property>
   <property name="windowTitle">
    <string>Insert Data to Excel</string>
   </property>
-  
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
     <rect>
      <x>10</x>
      <y>10</y>
      <width>451</width>
-     <height>320</height> </rect>
+     <height>321</height>
+    </rect>
    </property>
    <property name="title">
     <string>Configuration</string>
    </property>
-
    <widget class="QLabel" name="Description">
     <property name="geometry">
      <rect>
@@ -56,14 +55,14 @@ Other required columns in Parameters: sheet_name, col, row.</string>
      <bool>true</bool>
     </property>
    </widget>
-
    <widget class="QGroupBox" name="groupVariable">
     <property name="geometry">
      <rect>
       <x>10</x>
       <y>110</y>
       <width>431</width>
-      <height>200</height> </rect>
+      <height>200</height>
+     </rect>
     </property>
     <property name="title">
      <string>Select File Path Column</string>
@@ -74,31 +73,71 @@ Other required columns in Parameters: sheet_name, col, row.</string>
        <x>10</x>
        <y>30</y>
        <width>411</width>
-       <height>160</height> </rect>
+       <height>160</height>
+      </rect>
      </property>
     </widget>
    </widget>
   </widget>
-
   <widget class="QCheckBox" name="checkBox_send">
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>340</y> <width>131</width>
-     <height>40</height>
+     <y>340</y>
+     <width>131</width>
+     <height>21</height>
     </rect>
    </property>
    <property name="text">
     <string>Auto send data</string>
    </property>
   </widget>
-
+  <widget class="QCheckBox" name="checkBox_create_sheet">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>365</y>
+     <width>151</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Create missing sheet</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="checkBox_create_missing_file">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>390</y>
+     <width>141</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Create missing file</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="checkBox_include_headers">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>415</y>
+     <width>171</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Include column headers</string>
+   </property>
+  </widget>
   <widget class="QPushButton" name="pushButton_run">
    <property name="geometry">
     <rect>
-     <x>170</x>
-     <y>340</y> <width>291</width>
-     <height>40</height>
+     <x>200</x>
+     <y>360</y>
+     <width>261</width>
+     <height>60</height>
     </rect>
    </property>
    <property name="text">

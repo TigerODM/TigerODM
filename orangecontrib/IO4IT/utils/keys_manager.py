@@ -35,7 +35,7 @@ def ask_secure():
         if resp in ("n", "no"):
             return False
         print("Please enter Y or N.")
-#  FONCTIOSN D'OBFUSCATION GÉNÉRALES & CHEMIN
+# FONCTIONS D'OBFUSCATION GÉNÉRALES & CHEMIN
 # Fonction pour générer une clé simple à partir du nom d'utilisateur
 def get_user_key():
     try:
@@ -115,7 +115,7 @@ def lire_list_email(chemin_fichier):
         return None
 
 
-def enregistrer_config_imap4_ssl(agent, my_domain, password, interval_second, alias=""):
+def enregistrer_config_imap4_ssl(agent, my_domain, password, interval_second, alias="", server_imap="imap.gmail.com", port_imap=993, server_smtp="smtp.gmail.com", port_smtp=587):
     try:
         dossier = get_keys_dir("IMAP4_SSL")
         # Crée le dossier s'il n'existe pas
@@ -137,7 +137,11 @@ def enregistrer_config_imap4_ssl(agent, my_domain, password, interval_second, al
             "domain": my_domain,
             "interval_second": interval_second,
             "password_encrypted": mdp_chiffre,
-            "alias": alias
+            "alias": alias,
+            "server_imap": server_imap,
+            "port_imap": port_imap,
+            "server_smtp": server_smtp,
+            "port_smtp": port_smtp
         }
 
         # Écriture du fichier
@@ -151,7 +155,7 @@ def enregistrer_config_imap4_ssl(agent, my_domain, password, interval_second, al
         print(f"❌ Erreur lors de l'enregistrement : {e}")
         return 1
 
-def enregistrer_config_imap4_ssl_secure(agent, my_domain, password, interval_second, alias=""):
+def enregistrer_config_imap4_ssl_secure(agent, my_domain, password, interval_second, alias="", server_imap="imap.gmail.com", port_imap=993, server_smtp="smtp.gmail.com", port_smtp=587):
     try:
         dossier = get_keys_dir("IMAP4_SSL")
         # Crée le dossier s'il n'existe pas
@@ -171,7 +175,11 @@ def enregistrer_config_imap4_ssl_secure(agent, my_domain, password, interval_sec
             "domain": my_domain,
             "interval_second": interval_second,
             "password": password,
-            "alias": alias
+            "alias": alias,
+            "server_imap": server_imap,
+            "port_imap": port_imap,
+            "server_smtp": server_smtp,
+            "port_smtp": port_smtp
         }
         sm = secret_manager.SecretManager(service_name)
         sm.store(contenu,overwrite=True)
@@ -326,7 +334,6 @@ def lire_config_imap4_ssl_dict_sec(chemin_fichier):
 
 # Fonction pour lire le fichier de configuration et déchiffrer le mot de passe
 def lire_config_imap4_ssl(chemin_fichier):
-    # renvoie une liste =["agent","domain",mdp,"interval_second"]
     if len(chemin_fichier)<5:
         print(f"❌ Error path not correct {chemin_fichier}")
         return None
@@ -341,7 +348,11 @@ def lire_config_imap4_ssl(chemin_fichier):
                 contenu["domain"],
                 contenu["password"],
                 int(contenu["interval_second"]),
-                contenu.get("alias", "")
+                contenu.get("alias", ""),
+                contenu.get("server_imap", "imap.gmail.com"),
+                contenu.get("port_imap", 993),
+                contenu.get("server_smtp", "smtp.gmail.com"),
+                contenu.get("port_smtp", 587)
             ]
 
         except Exception as e:
@@ -363,7 +374,11 @@ def lire_config_imap4_ssl(chemin_fichier):
             contenu["domain"],
             mdp_dechiffre,
             int(contenu["interval_second"]),
-            contenu.get("alias", "")
+            contenu.get("alias", ""),
+            contenu.get("server_imap", "imap.gmail.com"),
+            contenu.get("port_imap", 993),
+            contenu.get("server_smtp", "smtp.gmail.com"),
+            contenu.get("port_smtp", 587)
         ]
     except Exception as e:
         print(f"❌ Erreur lors de la lecture : {e}")
@@ -549,15 +564,19 @@ def enregistrer_config_cli_imap4_ssl():
     print("\n📝 Écriture d’un fichier de configuration :")
     agent = input("🤖 Nom de l’agent : ").strip()
     domaine = input("📨 @domain.com? : ").strip()
+    server_imap = input("📥 Serveur IMAP (ex: imap.nom.com) : ").strip()
+    port_imap = int(input("🔌 Port IMAP (ex: 993) : ").strip())
+    server_smtp = input("📤 Serveur SMTP (ex: smtp.nom.com) : ").strip()
+    port_smtp = int(input("🔌 Port SMTP (ex: 587) : ").strip())
     mdp = input("📨mot de passe? : ").strip()
     interval = int(input("⏱️ Intervalle en secondes : ").strip())
     alias = input("Nom de l'alias : ").strip()
     store = ask_secure()
     if not store:
-        if 0 != enregistrer_config_imap4_ssl(agent, domaine, mdp, interval, alias):
+        if 0 != enregistrer_config_imap4_ssl(agent, domaine, mdp, interval, alias, server_imap, port_imap, server_smtp, port_smtp):
             print("erreur!")
             return
-    if 0 != enregistrer_config_imap4_ssl_secure(agent, domaine, mdp, interval, alias):
+    if 0 != enregistrer_config_imap4_ssl_secure(agent, domaine, mdp, interval, alias, server_imap, port_imap, server_smtp, port_smtp):
         print("erreur!")
         return
 
