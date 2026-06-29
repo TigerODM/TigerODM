@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Fond blanc avec bordure -->
+  <rect width="64" height="64" rx="12" ry="12" fill="white" stroke="#222" stroke-width="2"/>
+
+  <!-- Ligne col1 -->
+  <rect x="6" y="10" width="10" height="10" rx="2" fill="white" stroke="#222" stroke-width="1.5"/>
+  <rect x="27" y="10" width="10" height="10" rx="2" fill="#222"/>
+  <rect x="48" y="10" width="10" height="10" rx="2" fill="white" stroke="#222" stroke-width="1.5"/>
+
+  <!-- Ligne col2 -->
+  <rect x="6" y="27" width="10" height="10" rx="2" fill="white" stroke="#222" stroke-width="1.5"/>
+  <rect x="27" y="27" width="10" height="10" rx="2" fill="#222"/>
+  <rect x="48" y="27" width="10" height="10" rx="2" fill="white" stroke="#222" stroke-width="1.5"/>
+
+  <!-- Flèche vers le bas -->
+  <line x1="32" y1="42" x2="32" y2="50" stroke="#222" stroke-width="2.5" stroke-linecap="round"/>
+  <polyline points="27,47 32,53 37,47" fill="none" stroke="#222" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- min≤  ≤max -->
+  <text x="5" y="55" font-family="monospace" font-size="9" fill="#222" font-weight="bold">min≤</text>
+  <text x="37" y="55" font-family="monospace" font-size="9" fill="#222" font-weight="bold">≤max</text>
+</svg>
