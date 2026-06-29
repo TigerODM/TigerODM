@@ -326,7 +326,7 @@ class AssistantMessageCard(QWidget):
         """)
         self.layout.addWidget(self.label)
         self.setLayout(self.layout)
-        QTimer.singleShot(0, lambda: help_management.override_help_action(self, "converse_llm.html"))
+
 
     def setText(self, text):
         """Update the card's text dynamically."""

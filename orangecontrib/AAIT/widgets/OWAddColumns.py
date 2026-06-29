@@ -45,7 +45,7 @@ class OWAddColumns(widget.OWWidget):
     want_control_area = False
 
     # Settings pour sauvegarder l'état des cases à cocher
-    selected_columns = Setting([])  # Liste des noms des colonnes sélectionnées
+    selected_columns = Setting([])
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -71,7 +71,7 @@ class OWAddColumns(widget.OWWidget):
 
         # 3) Si la zone de sélection n'existe pas dans le .ui d’origine, on la crée
         if self.varsLayout is None:
-            self._build_fallback_selector_panel()  # crée varsLayout + boutons
+            self._build_fallback_selector_panel()
 
         # 4) Etat interne
         self._var_checks: dict[str, QCheckBox] = {}
@@ -79,6 +79,27 @@ class OWAddColumns(widget.OWWidget):
 
         # 5) Peupler et connecter
         self._available_keys, _ = self._collect()
+
+        current_keys = set(self._available_keys)
+        saved_keys = set(self.selected_columns or [])
+
+        # Colonnes cochées dans les anciens settings mais supprimées du code
+        obsolete_checked = saved_keys - current_keys
+
+        # Erreur UNIQUEMENT si une ancienne colonne cochée n'existe plus
+        if obsolete_checked:
+            self.error(
+                f"Settings obsolètes détectés. "
+                f"Colonnes supprimées : {sorted(obsolete_checked)}"
+            )
+
+        # Nettoyage automatique des settings :
+        # on conserve uniquement les colonnes encore valides
+        self.selected_columns = [
+            k for k in self.selected_columns
+            if k in current_keys
+        ]
+
         self._build_dynamic_checkboxes(self._available_keys)
 
         if self.btnSelectAll:
@@ -90,65 +111,69 @@ class OWAddColumns(widget.OWWidget):
 
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
-    # ---------- Panneau de fallback (si le .ui n'a pas de zone) ----------
+    # ---------- Panneau de fallback ----------
     def _build_fallback_selector_panel(self):
-        """
-        Construit un panneau (boutons + scroll + layout) sous le .ui d’origine,
-        et renseigne: self.varsLayout, self.btnSelectAll, self.btnClearAll, self.btnApply.
-        """
         panel = QWidget(self)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         vroot = QVBoxLayout(panel)
         vroot.setContentsMargins(12, 12, 12, 12)
         vroot.setSpacing(8)
 
         # Ligne de boutons
         h = QHBoxLayout()
+
         self.btnSelectAll = QPushButton("Tout cocher", panel)
         self.btnClearAll = QPushButton("Tout décocher", panel)
+
         h.addWidget(self.btnSelectAll)
         h.addWidget(self.btnClearAll)
         h.addStretch(1)
+
         self.btnApply = QPushButton("Appliquer", panel)
         h.addWidget(self.btnApply)
+
         vroot.addLayout(h)
 
-        # Scroll + conteneur de cases à cocher
+        # Scroll + conteneur
         scroll = QScrollArea(panel)
         scroll.setWidgetResizable(True)
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         inner = QWidget(scroll)
         inner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         self.varsLayout = QVBoxLayout(inner)
         self.varsLayout.setContentsMargins(6, 6, 6, 6)
         self.varsLayout.setSpacing(6)
+
         scroll.setWidget(inner)
 
         vroot.addWidget(scroll)
 
-        # Ajouter ce panneau APRÈS le .ui d’origine
+        # Ajouter le panneau
         self.mainArea.layout().addWidget(panel)
 
-    # ---------- Dependencies: "pip freeze" en une string (séparateur espace) ----------
+    # ---------- Dependencies ----------
     @staticmethod
     def _dependencies_freeze_space() -> str:
-        """
-        Retourne l'équivalent d'un `pip freeze` (Package==Version ...) séparé par des espaces.
-        Utilise importlib.metadata (pas de subprocess).
-        """
         try:
             dists = sorted(
                 importlib_metadata.distributions(),
                 key=lambda d: (d.metadata.get("Name", "") or "").lower()
             )
+
             parts = []
+
             for dist in dists:
                 name = (dist.metadata.get("Name") or "").strip()
                 version = getattr(dist, "version", None)
+
                 if name and version:
                     parts.append(f"{name}=={version}")
+
             return "\n\r".join(parts)
+
         except Exception as e:
             return f"Error collecting dependencies: {e}"
 
@@ -156,13 +181,16 @@ class OWAddColumns(widget.OWWidget):
         keys = [
             "Row number",
             "Current Time",
-            "OS", "Machine", "Processor",
-            "Python Version", "Python Executable",
+            "OS",
+            "Machine",
+            "Processor",
+            "Python Version",
+            "Python Executable",
             "Dependencies"
         ]
 
         vals = [
-            None,  # Row number (géré dans _apply avec np.arange)
+            None,
             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             platform.platform(),
             platform.machine(),
@@ -174,34 +202,42 @@ class OWAddColumns(widget.OWWidget):
 
         return keys, vals
 
-
-    # ---------- Cases à cocher dynamiques ----------
+    # ---------- Cases à cocher ----------
     def _build_dynamic_checkboxes(self, keys):
         if not self.varsLayout:
-            return  # sécurité (ne devrait plus arriver)
+            return
 
         # Nettoyer
         while self.varsLayout.count():
             item = self.varsLayout.takeAt(0)
             w = item.widget()
+
             if w:
                 w.setParent(None)
 
         self._var_checks.clear()
+
         for k in keys:
             cb = QCheckBox(k)
-            # Restaurer l'état sauvegardé ou cocher par défaut
-            cb.setChecked(k in self.selected_columns if self.selected_columns else True)
+
+            if self.selected_columns:
+                cb.setChecked(k in self.selected_columns)
+            else:
+                cb.setChecked(True)
+
             cb.stateChanged.connect(self._update_selected_columns)
+
             self.varsLayout.addWidget(cb)
             self._var_checks[k] = cb
 
         self.varsLayout.addStretch(1)
 
-    # ---------- Mise à jour des settings ----------
+    # ---------- Mise à jour settings ----------
     def _update_selected_columns(self):
-        """Met à jour la liste des colonnes sélectionnées quand une case est cochée/décochée"""
-        self.selected_columns = [k for k, cb in self._var_checks.items() if cb.isChecked()]
+        self.selected_columns = [
+            k for k, cb in self._var_checks.items()
+            if cb.isChecked()
+        ]
 
     # ---------- Slots ----------
     def _select_all(self):
@@ -221,36 +257,38 @@ class OWAddColumns(widget.OWWidget):
     # ---------- Application ----------
     def _apply(self):
         self.error("")
+
         data = self._current_data
+
         if data is None:
             self.Outputs.data.send(None)
             return
 
-
-
         keys, vals = self._collect()
         kv = dict(zip(keys, vals))
 
-
-
-        # Utiliser les colonnes sélectionnées (sauvegardées dans settings)
-        selected_keys = [k for k in self.selected_columns if k in kv] if self.selected_columns else [k for k, cb in
-                                                                                                     self._var_checks.items()
-                                                                                                     if
-                                                                                                     cb.isChecked() and k in kv]
+        # Utiliser uniquement les colonnes encore valides
+        selected_keys = [
+            k for k in self.selected_columns
+            if k in kv
+        ]
 
         if not selected_keys:
             self.Outputs.data.send(data)
             return
-        # This creates a list of all matches
+
         matches = [k for k in selected_keys if k in data.domain]
+
         if matches:
             self.error(f"Your input data cannot contain these columns: {matches}")
             self.Outputs.data.send(None)
             return
 
         existing_meta_vars = list(data.domain.metas)
-        new_meta_vars = [Orange.data.StringVariable.make(k) for k in selected_keys]
+        new_meta_vars = [
+            Orange.data.StringVariable.make(k)
+            for k in selected_keys
+        ]
 
         new_domain = Orange.data.Domain(
             attributes=list(data.domain.attributes),
@@ -259,27 +297,42 @@ class OWAddColumns(widget.OWWidget):
         )
 
         n = len(data)
-        left = data.metas if (data.metas is not None and data.metas.size) else np.empty((n, len(existing_meta_vars)),
-                                                                                        dtype=object)
+
+        left = (
+            data.metas
+            if (data.metas is not None and data.metas.size)
+            else np.empty((n, len(existing_meta_vars)), dtype=object)
+        )
+
         right = np.empty((n, len(new_meta_vars)), dtype=object)
+
         for j, k in enumerate(selected_keys):
             if k == "Row number":
-                # Numérotation humaine 1..N (met en 0..N-1 si tu préfères)
                 right[:, j] = np.arange(1, n + 1).astype(object)
             else:
                 right[:, j] = kv.get(k, "")
 
         metas = np.hstack([left, right]) if left.size else right
 
-        out = Orange.data.Table(new_domain, data.X, data.Y, metas=metas, W=data.W)
+        out = Orange.data.Table(
+            new_domain,
+            data.X,
+            data.Y,
+            metas=metas,
+            W=data.W
+        )
+
         out.name = data.name or "Data with added columns"
+
         self.Outputs.data.send(out)
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
     w = OWAddColumns()
     w.show()
+
     if hasattr(app, "exec"):
         app.exec()
     else:

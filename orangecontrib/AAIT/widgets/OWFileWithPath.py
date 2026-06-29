@@ -118,7 +118,7 @@ class OWFileWithPath(base_widget.BaseListWidget):
         Charge un fichier Orange et renvoie un Table où toutes les colonnes
         (features, class, metas) sont converties en StringVariable et placées en metas.
         """
-        missing_as_empty=False # si on passe a True on met "" à la place de ?
+        missing_as_empty=True # si on passe a True on met "" à la place de ?
         t = Orange.data.Table.from_file(filepath)
         dom = t.domain
 

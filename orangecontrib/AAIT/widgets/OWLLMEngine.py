@@ -6,10 +6,12 @@ import Orange.data
 from AnyQt.QtWidgets import QApplication, QLabel
 from AnyQt import QtGui
 from Orange.widgets import widget
+
 from Orange.widgets.utils.signals import Input, Output
 from Orange.widgets.settings import Setting
 from AnyQt.QtWidgets import QLineEdit, QTextBrowser, QSpinBox, QDoubleSpinBox
 from AnyQt.QtCore import QTimer
+
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import answers_llama
@@ -53,23 +55,28 @@ class OWQEdgeLLM(widget.OWWidget):
     k_cache = Setting(1)
     v_cache = Setting(1)
 
+
     @Inputs.data
     def set_data(self, in_data):
         self.data = in_data
-        if self.autorun:
-            self.run()
+        # if self.autorun:
+        #     self.run()
 
     @Inputs.model_path
     def set_model_path(self, in_model_path):
         self.model_path = in_model_path
-        if self.autorun:
-            self.run()
+        # if self.autorun:
+        #     self.run()
+
+    def handleNewSignals(self):
+        self.run()
 
     def __init__(self):
         super().__init__()
         # Qt Management
         self.setFixedWidth(700)
         self.setFixedHeight(700)
+        self.mode_convers=False
         uic.loadUi(self.gui, self)
         self.label_description = self.findChild(QLabel, 'Description')
         # Context size
@@ -91,6 +98,7 @@ class OWQEdgeLLM(widget.OWWidget):
         self.edit_top_p = self.bind_spinbox("boxTopP", self.top_p, is_double=True)
         self.edit_top_k = self.bind_spinbox("boxTopK", self.top_k)
         self.edit_repeat_penalty = self.bind_spinbox("boxRepeatPenalty", self.repeat_penalty, is_double=True)
+
 
         # Text browser
         self.textBrowser = self.findChild(QTextBrowser, 'textBrowser')
@@ -123,6 +131,8 @@ class OWQEdgeLLM(widget.OWWidget):
 
     def update_workflow_id(self):
         self.workflow_id = self.edit_ID.text()
+
+
 
     def bind_spinbox(self, name, value, is_double=False):
         widget_type = QDoubleSpinBox if is_double else QSpinBox
@@ -163,14 +173,64 @@ class OWQEdgeLLM(widget.OWWidget):
             self.Outputs.data.send(None)
             return
 
-        if not "prompt" in self.data.domain:
-            self.Outputs.data.send(None)
-            return
+        domain = self.data.domain
 
-        if "Answer" in self.data.domain:
-            self.error('You cannot have "Answer" in your input data. Please rename or remove the column.')
-            self.Outputs.data.send(None)
-            return
+        # Vérifie uniquement les StringVariable
+        string_vars = [
+            var.name
+            for var in list(domain.attributes) + list(domain.class_vars) + list(domain.metas)
+            if isinstance(var, Orange.data.StringVariable)
+        ]
+
+        has_role = "role" in string_vars
+        has_type = "type" in string_vars
+        has_content = "content" in string_vars
+        has_prompt = "prompt" in string_vars
+
+        # Cas erreur : les 4 colonnes présentes
+        if has_role and has_type and has_content and has_prompt:
+            self.error("Cannot have role/type/content and prompt simultaneously.")
+
+        # Mode conversation
+        elif has_role and has_type and has_content:
+            self.mode_convers = True
+
+        # Mode prompt
+        elif has_prompt:
+            self.mode_convers = False
+
+        # Aucun cas valide
+        else:
+            self.error(
+                "The table must contain either (StringVariable):\n"
+                "- role + type + content\n"
+                "or:\n"
+                "- prompt (image paths)"
+            )
+
+
+        # Différencier les modes Conv / Request ici
+        if self.mode_convers:
+            if not "role" in self.data.domain:
+                self.error('[Conversation enabled] You need a "role" column in your input data.')
+                self.Outputs.data.send(None)
+                return
+            if not "type" in self.data.domain:
+                self.error('[Conversation enabled] You need a "type" column in your input data.')
+                self.Outputs.data.send(None)
+                return
+            if not "content" in self.data.domain:
+                self.error('[Conversation enabled] You need a "content" column in your input data.')
+                self.Outputs.data.send(None)
+                return
+        else:
+            if not "prompt" in self.data.domain:
+                self.Outputs.data.send(None)
+                return
+            if "Answer" in self.data.domain:
+                self.error('You cannot have "Answer" in your input data. Please rename or remove the column.')
+                self.Outputs.data.send(None)
+                return
 
         #answers_llama.check_gpu(self.model_path, self)
         if not self.can_run:
@@ -197,8 +257,12 @@ class OWQEdgeLLM(widget.OWWidget):
         # --> progress is used in the main function to track progress (with a callback)
         # --> result is used to collect the result from main function
         # --> finish is just an empty signal to indicate that the thread is finished
-        self.thread = thread_management.Thread(answers_llama.generate_answers, self.data, self.model_path,
-                                               self.use_gpu, int(self.n_ctx), query_parameters, self.workflow_id)
+        if self.mode_convers:
+            self.thread = thread_management.Thread(answers_llama.continue_conversation, self.data, self.model_path,
+                                                   self.use_gpu, int(self.n_ctx), query_parameters, self.workflow_id)
+        else:
+            self.thread = thread_management.Thread(answers_llama.generate_answers, self.data, self.model_path,
+                                                   self.use_gpu, int(self.n_ctx), query_parameters, self.workflow_id)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
@@ -249,6 +313,9 @@ class OWQEdgeLLM(widget.OWWidget):
 
     def post_initialized(self):
         pass
+
+
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

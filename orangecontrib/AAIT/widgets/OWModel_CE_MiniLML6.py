@@ -7,15 +7,14 @@ from Orange.widgets.utils.signals import Output
 from AnyQt.QtCore import QTimer
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from orangecontrib.AAIT.utils import SimpleDialogQt
+    from orangecontrib.AAIT.utils import help_management
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
-    from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import GetFromRemote, get_local_store_path
+    from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
-    from Orange.widgets.orangecontrib.AAIT.utils import help_management
 else:
-    from orangecontrib.AAIT.utils import SimpleDialogQt, help_management
+    from orangecontrib.AAIT.utils import help_management
+    from orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
     from orangecontrib.AAIT.utils.import_uic import uic
-    from orangecontrib.AAIT.utils.MetManagement import GetFromRemote, get_local_store_path
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 
 
@@ -38,22 +37,17 @@ class OWModel_CE_MiniLML6(widget.OWWidget):
         super().__init__()
         # Path management
         self.current_ows = ""
-        local_store_path = get_local_store_path()
-        model_name = "cross-encoder_MiniLM-L6"
-        self.model_path = os.path.join(local_store_path, "Models", "NLP", model_name)
 
         # Qt Management
         self.setFixedWidth(470)
         self.setFixedHeight(300)
         uic.loadUi(self.gui, self)
-        if not os.path.exists(self.model_path):
-            if not SimpleDialogQt.BoxYesNo("Model isn't in your computer. Do you want to download it from AAIT store?"):
-                return
-            try:
-                GetFromRemote("Cross encoder MiniLM L6")
-            except Exception as e:
-                SimpleDialogQt.BoxError(f"Unable to get the Model : {e}")
-                return
+
+        try:
+            self.model_path = get_path_or_retrieve("Cross encoder MiniLM L6")
+        except Exception as e:
+            self.error(str(e))
+            return
 
         if os.path.exists(self.model_path):
             self.Outputs.out_model_path.send(self.model_path)

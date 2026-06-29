@@ -6,6 +6,8 @@ from AnyQt.QtWidgets import QApplication
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
 from AnyQt.QtCore import QTimer
+from Orange.widgets.settings import Setting
+
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import process_documents
@@ -36,13 +38,16 @@ class OWLoadDocuments(widget.OWWidget):
 
     class Outputs:
         data = Output("Data", Orange.data.Table)
+        details = Output("Details", Orange.data.Table)
+
+    detailed_docx_loading = Setting(False)
+    autorun = Setting(True)
 
     @Inputs.data
     def set_data(self, in_data):
         self.data = in_data
         if self.autorun:
             self.run()
-
 
     def __init__(self):
         super().__init__()
@@ -54,10 +59,42 @@ class OWLoadDocuments(widget.OWWidget):
         # Data Management
         self.data = None
         self.thread = None
-        self.autorun = True
         self.result = None
+
+        self.pushButton_send.setEnabled(True) 
+        self.checkBox_send.setEnabled(True) 
+        self.checkBox_detailed.setEnabled(True) 
+
+        # Initialise the checkBoxes from the settings
+        self.checkBox_send.setChecked(bool(self.autorun))
+        self.checkBox_detailed.setChecked(bool(self.detailed_docx_loading))
+
+
         self.post_initialized()
+
+        # Auto-send checkbox (checkBox_send in the .ui)
+        self.checkBox_send.stateChanged.connect(self.on_autosend_checkbox_toggled)
+
+        # Detailed docx loading checkbox
+        self.checkBox_detailed.stateChanged.connect(self.on_detailed_checkbox_toggled)
+
+        # Run button
+        self.pushButton_send.clicked.connect(self.run)
+
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
+
+
+    def on_autosend_checkbox_toggled(self, state):
+        self.autorun = bool(state)
+        if self.autorun:
+            self.run()
+
+    def on_detailed_checkbox_toggled(self, state):
+        self.detailed_docx_loading = bool(state)
+        if not state:
+            self.Outputs.details.send(None)
+        if self.autorun:
+            self.run()
 
     def run(self):
         self.warning("")
@@ -70,33 +107,48 @@ class OWLoadDocuments(widget.OWWidget):
 
         if self.data is None:
             self.Outputs.data.send(None)
+            self.Outputs.details.send(None)
             return
 
-        if not "path" in self.data.domain:
+        if "path" not in self.data.domain:
             self.error("You need a 'path' column in your input data.")
             self.Outputs.data.send(None)
+            self.Outputs.details.send(None)
             return
 
         if "content" in self.data.domain:
             self.error("You must not have a 'content' column in your input data, because one will be added.")
             self.Outputs.data.send(None)
+            self.Outputs.details.send(None)
             return
 
         if "name" in self.data.domain:
             self.error("You must not have a 'name' column in your input data, because one will be added.")
             self.Outputs.data.send(None)
+            self.Outputs.details.send(None)
+            return
+
+        if self.detailed_docx_loading and "type" in self.data.domain:
+            self.error("You must not have a 'type' column in your input data when using detailed loading.")
+            self.Outputs.data.send(None)
+            self.Outputs.details.send(None)
             return
 
         # Start progress bar
         self.progressBarInit()
 
+        # Choose the loading function based on the checkbox
+        if self.detailed_docx_loading:
+            loading_fn = process_documents.load_documents_in_table_detailed
+        else:
+            loading_fn = process_documents.load_documents_in_table
+
         # Thread management
-        self.thread = thread_management.Thread(process_documents.load_documents_in_table, self.data)
+        self.thread = thread_management.Thread(loading_fn, self.data)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
         self.thread.start()
-
 
     def handle_progress(self, value: float) -> None:
         self.progressBarSet(value)
@@ -104,10 +156,18 @@ class OWLoadDocuments(widget.OWWidget):
     def handle_result(self, result):
         try:
             self.result = result
-            self.Outputs.data.send(result)
+            if self.detailed_docx_loading and isinstance(result, tuple):
+                main_table, details_table = result
+                self.Outputs.data.send(main_table)
+                self.Outputs.details.send(details_table)
+            else:
+                self.Outputs.data.send(result)
+                self.Outputs.details.send(None)
+
         except Exception as e:
             print("An error occurred when sending out_data:", e)
             self.Outputs.data.send(None)
+            self.Outputs.details.send(None)
             return
 
     def handle_finish(self):

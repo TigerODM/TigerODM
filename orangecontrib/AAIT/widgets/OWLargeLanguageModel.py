@@ -5,41 +5,26 @@ from AnyQt.QtWidgets import QApplication, QComboBox
 from AnyQt.QtCore import QTimer, Qt
 from AnyQt.QtGui import QIcon
 from Orange.widgets import widget
-from Orange.widgets.utils.signals import Output
+from Orange.widgets.utils.signals import Output, Input
 from Orange.widgets.settings import Setting
 from AnyQt.QtWidgets import QCheckBox
+import Orange
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils import help_management
-    from Orange.widgets.orangecontrib.AAIT.utils import SimpleDialogQt
-    from Orange.widgets.orangecontrib.AAIT.llm.okNokGpu import has_gpu_with_min_vram
+    from Orange.widgets.orangecontrib.AAIT.llm.okNokGpu import auto_choose_model,get_model_names
+    from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
-    from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import GetFromRemote, get_local_store_path,ensure_file_exists_recursive
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 else:
     from orangecontrib.AAIT.utils import help_management
-    from orangecontrib.AAIT.utils import SimpleDialogQt
-    from orangecontrib.AAIT.llm.okNokGpu import has_gpu_with_min_vram
+    from orangecontrib.AAIT.llm.okNokGpu import auto_choose_model,get_model_names
+    from orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
     from orangecontrib.AAIT.utils.import_uic import uic
-    from orangecontrib.AAIT.utils.MetManagement import GetFromRemote, get_local_store_path,ensure_file_exists_recursive
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 
 
-model_names = {
-    "Qwen3 1.7B (Q2)": "Qwen3-1.7B-Q2_K_L.gguf",
-    "Qwen3 1.7B": "Qwen3-1.7B-Q6_K.gguf",
-    "Qwen3 4B": "Qwen3-4B-Q4_K_M.gguf",
-    "Qwen3 8B": "Qwen3-8B-Q4_K_M.gguf",
-    "Qwen3 14B": "Qwen3-14B-Q4_K_M.gguf",
-    "Granite4 7B": "granite-4.0-h-tiny-Q4_K_M.gguf",
-    "Phi4 4B": "Phi-4-mini-reasoning-Q4_K_M.gguf",
-    "Gemma3 270m": "gemma-3-270m-Q8_0.gguf",
-    "Gemma3 12B": "gemma-3-12b-it-Q4_K_M.gguf",
-    "Deepseek 8B": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"
-}
 
-best_big_llm_ordered = ["Qwen3 14B","Qwen3 8B","Qwen3 4B"]
-best_small_llm_ordered = ["Qwen3 1.7B"]
 
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OWLargeLanguageModel(widget.OWWidget):
@@ -54,10 +39,20 @@ class OWLargeLanguageModel(widget.OWWidget):
     want_control_area = False
     autochoose_llm: str = Setting("False")
     # Settings
-    model_name = Setting("Qwen3 8B")
+    model_name = Setting("Qwen3.5 9B Q6")
+
+    class Inputs:
+        data = Input("path", Orange.data.Table, auto_summary=False)
 
     class Outputs:
         out_model_path = Output("Model", str, auto_summary=False)
+
+
+    @Inputs.data
+    def set_data(self, in_data):
+        self.data = in_data
+        self.run()
+
 
     def __init__(self):
         super().__init__()
@@ -75,13 +70,14 @@ class OWLargeLanguageModel(widget.OWWidget):
             self.checkBox.setChecked(True)
 
 
+        self.data = None
+
+        self.combobox_model.addItems(get_model_names().keys())
         self.display_local_models()
         self.combobox_model.setEnabled(True)
         if self.autochoose_llm=="True":
-            self.auto_choose_model()
+            self.model_name=auto_choose_model()
             self.combobox_model.setEnabled(False)
-
-
         self.combobox_model.setCurrentIndex(self.combobox_model.findText(self.model_name))
         self.combobox_model.currentTextChanged.connect(self.on_model_changed)
         self.checkBox.clicked.connect(self.update_checkbox)
@@ -89,22 +85,7 @@ class OWLargeLanguageModel(widget.OWWidget):
         self.run()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
-    def auto_choose_model(self):
-        if has_gpu_with_min_vram():
-           for element in best_big_llm_ordered:
-                filename = model_names[element]
-                path = os.path.join(get_local_store_path(), "Models", "NLP", filename)
-                model_path = str(path)
-                if os.path.exists(model_path):
-                    self.model_name=element
-                    return
-        for element in best_small_llm_ordered:
-            filename = model_names[element]
-            path = os.path.join(get_local_store_path(), "Models", "NLP", filename)
-            model_path = str(path)
-            if os.path.exists(model_path):
-                self.model_name = element
-                return
+
 
     def update_checkbox(self):
         if self.checkBox.isChecked():
@@ -120,19 +101,15 @@ class OWLargeLanguageModel(widget.OWWidget):
         self.run()
 
     def display_local_models(self):
-        local_store_path = get_local_store_path()
 
         # Prepare your icons
         icon_check = QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons/green_check.svg"))  # green check
         icon_down_body = QIcon(os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons/blue_down_arrow.svg"))  # blue arrow
-
+        model_names=get_model_names()
         for i in range(self.combobox_model.count()):
             item = self.combobox_model.model().item(i)
             filename = model_names[item.text()]
-            path = os.path.join(local_store_path, "Models", "NLP", filename)
-            model_path = str(path)
-            list_tr = [model_path]
-            if ensure_file_exists_recursive(list_tr):
+            if filename!="":
                 item.setForeground(Qt.black)
                 item.setIcon(icon_check)
             else:
@@ -143,30 +120,37 @@ class OWLargeLanguageModel(widget.OWWidget):
     def run(self):
         self.error("")
         self.warning("")
+
         if self.autochoose_llm=="True":
-            self.auto_choose_model()
+            self.model_name=auto_choose_model()
             self.warning("autochoose llm activated : "+str(self.model_name))
+
+        if self.data is not None:
+            if not "path" in self.data.domain:
+                self.error("Requires a 'path' variable")
+                return
+            else:
+                self.warning("")
+                self.model_name = self.data[0]["path"].value.replace('"', "").replace("'", "")
+                self.Outputs.out_model_path.send(self.model_name)
+                return
+
         # Get the model path based on the selected name
-        filename = model_names[self.model_name]
-        model_path = os.path.join(get_local_store_path(), "Models", "NLP", filename)
-        model_path=str(model_path)
-        list_tr=[model_path]
-        # Verify if model exists
-        if not ensure_file_exists_recursive(list_tr):
-            if not SimpleDialogQt.BoxYesNo("Model isn't in your computer. Do you want to download it from AAIT store ?"):
-                self.error("Model is not on your computer.")
-                return
+        model_names=get_model_names()
+
+        try:
+            filename = model_names[self.model_name]
+        except Exception as e:
+            print(e)
+            filename=""
+
+        if filename=="":
             try:
-                if 0 != GetFromRemote(self.model_name):
-                    self.error("Model is not on your computer.")
-                    return
-                ensure_file_exists_recursive(list_tr)
+                filename = get_path_or_retrieve(self.model_name)
             except Exception as e:
-                SimpleDialogQt.BoxError(f"Unable to get the Model ({e})")
-                self.error("Model is not on your computer.")
+                self.error(str(e))
                 return
-        model_path=list_tr[0]
-        self.Outputs.out_model_path.send(model_path)
+        self.Outputs.out_model_path.send(filename)
 
 
 if __name__ == "__main__":

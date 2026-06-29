@@ -6,8 +6,9 @@ from Orange.widgets.utils.signals import Input, Output
 from Orange.widgets.widget import OWWidget
 import fitz  # PyMuPDF
 from Orange.data import ContinuousVariable
-import copy
 from AnyQt.QtCore import QTimer
+from Orange.widgets.settings import Setting
+
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
@@ -18,7 +19,7 @@ else:
 
 class OWGetPages(OWWidget):
     name = "Get Pages"
-    description = ("Extract the PDF page number corresponding to a text chunk contained in the document. The data table must contain two columns: the PDF path (path) and the text chunks (Chunks)")
+    description = ("Extract the PDF page number(s) corresponding to a text chunk contained  in the document. The data table must contain two columns: the PDF path (path) and the text chunks (Chunks)")
     category = "AAIT - LLM INTEGRATION"
     icon = "icons/book.png"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
@@ -26,6 +27,8 @@ class OWGetPages(OWWidget):
     gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owgetpages.ui")
     want_control_area = False
     priority = 1060
+    one_row_per_chunk = Setting(False)
+    autorun = Setting(True)
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -40,7 +43,8 @@ class OWGetPages(OWWidget):
         if in_data is None:
             self.Outputs.data.send(None)
             return
-        self.run()
+        if self.autorun:
+            self.run()
 
     def __init__(self):
         super().__init__()
@@ -49,7 +53,27 @@ class OWGetPages(OWWidget):
         self.setFixedHeight(300)
         uic.loadUi(self.gui, self)
         self.data = None
+
+        # UI connections
+        self.checkBox.setChecked(bool(self.autorun))
+        self.pushButton.setEnabled(not self.autorun)
+        self.checkBox.toggled.connect(self.on_autorun_checkbox_toggled)
+        self.oneRowPerChunkCheckBox.setChecked(bool(self.one_row_per_chunk))
+        self.oneRowPerChunkCheckBox.toggled.connect(self.on_orpc_checkbox_toggled)
+        self.pushButton.clicked.connect(self.run)
+
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
+
+    def on_orpc_checkbox_toggled(self, state):
+        self.one_row_per_chunk = bool(state)
+        if self.data is not None:
+            self.run()
+    
+    def on_autorun_checkbox_toggled(self, state):
+        self.autorun = bool(state)
+        self.pushButton.setEnabled(not self.autorun)
+        if self.autorun and self.data is not None:
+            self.run()
 
     def load_pdf_with_sparse_mapping(self, pdf_path):
         """
@@ -88,25 +112,38 @@ class OWGetPages(OWWidget):
         :param extract: The text snippet to locate.
         :return: A list of page numbers the extract spans.
         """
-        # Find the start index of the extract in the full text
-        start_index = full_text.find(extract)
-        if start_index == -1:
-            return []  # Extract not found
+        if not extract:
+            return []
 
-        # Determine the end index of the extract
-        end_index = start_index + len(extract) - 1
+        occurrence_pages = []
 
-        # Find all pages the extract spans
-        pages = []
-        for page, (start, end) in page_mapping.items():
-            if start <= end_index and end >= start_index:
-                pages.append(page)
+        idx = full_text.find(extract)
 
-        return pages
+        occurrence_count = 0
 
+        while idx != -1:
+
+            occurrence_count += 1
+
+            start_index = idx
+            end_index = start_index + len(extract) - 1
+
+            # Find which page contains this occurrence
+            for page, (start, end) in page_mapping.items():
+
+                if start <= end_index and end >= start_index:
+                    occurrence_pages.append(page)
+
+                    break
+
+            idx = full_text.find(extract, idx + 1)
+
+        return occurrence_pages
 
     def run(self):
         self.error(None)
+        if self.data is None:
+            return
         if not "path" in self.data.domain:
             self.error('You don\'t have "path" column in your input data.')
             self.Outputs.data.send(None)
@@ -116,25 +153,64 @@ class OWGetPages(OWWidget):
             self.error('You don\'t have "Chunks" column in your input data.')
             self.Outputs.data.send(None)
             return
-        pages = []
+
+        new_rows = []
+        pages_column_data = []
+
+        # Checkbox state
+        one_row_per_chunk = self.one_row_per_chunk
+
         for row in self.data:
-            filepath = row["path"].value if os.path.isfile(row["path"].value) else os.path.join(row["path"].value,
-                                                                                                row["name"].value)
+            path_value = row["path"].value
+
+            if os.path.isfile(path_value):
+                filepath = path_value
+            elif "name" in self.data.domain:
+                filepath = os.path.join(path_value, row["name"].value)
+            else:
+                filepath = path_value
+
             search_text = row["Chunks"].value
             try:
                 full_text, page_mapping = self.load_pdf_with_sparse_mapping(filepath)
-                page = self.find_pages_for_extract(full_text, page_mapping, search_text)[0]
-            except:
-                page = 1
-            pages.append(page)
-        if pages:
-            print(f"The text was found on page(s): {pages}")
-        else:
-            print("The text was not found in the PDF.")
+                pages = self.find_pages_for_extract(full_text, page_mapping, search_text)
 
-        data = copy.deepcopy(self.data)
-        data = data.add_column(ContinuousVariable("page"), pages)
-        self.Outputs.data.send(data)
+            except Exception:
+                pages = []
+
+            # Default page if nothing found
+            if not pages:
+                pages = [1]
+
+            # -----------------------------------
+            # MODE 1:
+            # one row per occurrence
+            # -----------------------------------
+            if one_row_per_chunk:
+                for page in pages:
+                    new_rows.append(row)
+                    pages_column_data.append(page)
+
+            # -----------------------------------
+            # MODE 2, default mode:
+            # first occurrence only
+            # -----------------------------------
+            else:
+                new_rows.append(row)
+                pages_column_data.append(pages[0])
+
+        try:
+            domain = self.data.domain
+
+            # Build table directly from original rows
+            output_data = Orange.data.Table(domain, new_rows)
+
+            output_data = output_data.add_column(ContinuousVariable("page"), pages_column_data)
+            self.Outputs.data.send(output_data)
+
+        except Exception as e:
+            self.error(f"Error building output table: {str(e)}")
+            self.Outputs.data.send(None)
 
     def post_initialized(self):
         pass

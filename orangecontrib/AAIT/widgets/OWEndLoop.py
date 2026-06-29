@@ -42,17 +42,32 @@ class EndLoopWidget(OWWidget):
         self.data = None
         self.out_data = None
         self.in_pointer = None
-
+        self._pending_data = None
+        self._update_scheduled = False
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
     @Inputs.in_data
     def set_data(self, data,id=None):
         self.error("")
+        self._pending_data = data
+
+        if not self._update_scheduled:
+            self._update_scheduled = True
+            QTimer.singleShot(0, self._apply_pending_data)
+
+    def _apply_pending_data(self):
+        self._update_scheduled = False
+
+        data = self._pending_data
+        self._pending_data = None
+
         if data is None:
             self.data = None
             return
-        self.data = data
+
+        self.data = unlink_domain(data)
         self.run()
+
 
     @Inputs.in_pointer
     def set_pointer(self, pointer):

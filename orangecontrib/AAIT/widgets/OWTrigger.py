@@ -1,7 +1,5 @@
 import os
 import sys
-
-import Orange.data
 from AnyQt.QtWidgets import QApplication
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
@@ -30,11 +28,11 @@ class OWTrigger(widget.OWWidget):
     priority = 1060
 
     class Inputs:
-        data = Input("Data", Orange.data.Table)
+        data = Input("Data", object, auto_summary=False)
         trigger = Input("Trigger", object, auto_summary=False)
 
     class Outputs:
-        data = Output("Data", Orange.data.Table)
+        data = Output("Data", object, auto_summary=False)
 
     @Inputs.data
     def set_data(self, in_data):

@@ -15,12 +15,12 @@ if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).
     from Orange.widgets.orangecontrib.AAIT.llm import chunking
     from Orange.widgets.orangecontrib.AAIT.utils import thread_management, base_widget, help_management
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
-    from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import get_local_store_path
+    from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
 else:
     from orangecontrib.AAIT.llm import chunking
     from orangecontrib.AAIT.utils import thread_management, base_widget, help_management
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
-    from orangecontrib.AAIT.utils.MetManagement import get_local_store_path
+    from orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
 
 
 @apply_modification_from_python_file(filepath_original_widget=__file__)
@@ -80,12 +80,11 @@ class OWChunker(base_widget.BaseListWidget):
         # Chunk size
         self.edit_chunkSize = self.findChild(QLineEdit, 'chunkSize')
         self.edit_chunkSize.setText(str(self.chunk_size))
-        self.edit_chunkSize.textChanged.connect(self.update_chunk_size)
+        self.edit_chunkSize.editingFinished.connect(self.update_chunk_size)
         # Chunk overlap
         self.edit_overlap = self.findChild(QLineEdit, 'QLoverlap')
         self.edit_overlap.setText(str(self.overlap))
-        self.edit_overlap.textChanged.connect(self.update_overlap)
-
+        self.edit_overlap.editingFinished.connect(self.update_overlap)
 
         # Data Management
         self.data = None
@@ -93,7 +92,7 @@ class OWChunker(base_widget.BaseListWidget):
         self.tokenizer_path = None
         self.thread = None
         self.autorun = True
-        self.result=None
+        self.result = None
         self.meta_infos = None
         self.mode = self.edit_mode.currentText()
         self.chunk_size = self.edit_chunkSize.text() if self.edit_chunkSize.text().isdigit() else "300"
@@ -103,14 +102,20 @@ class OWChunker(base_widget.BaseListWidget):
 
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
-    def update_chunk_size(self, text):
-        self.chunk_size = text
+    def update_chunk_size(self):
+        self.chunk_size = self.edit_chunkSize.text()
+        if self.autorun:
+            self.run()
 
-    def update_overlap(self, text):
-        self.overlap = text
+    def update_overlap(self):
+        self.overlap = self.edit_overlap.text()
+        if self.autorun:
+            self.run()
 
     def update_edit_mode(self, text):
         self.mode = text
+        if self.autorun:
+            self.run()
 
     def run(self):
         self.error("")
@@ -154,10 +159,10 @@ class OWChunker(base_widget.BaseListWidget):
 
         if self.mode == "words":
             self.warning('"words" chunking method is deprecated and will soon be removed. Please use "tokens" instead.')
-            path_ugly = os.path.join(get_local_store_path(), "Models", "NLP", "all-mpnet-base-v2")
-            if not os.path.exists(path_ugly):
-                self.error("You need all-mpnet-base-v2 in your AAIT Store (Models/NLP/...) for this mode.")
-                return
+            try:
+                _ = get_path_or_retrieve("MPNET BASE V2")
+            except Exception as e:
+                raise ValueError(str(e))
 
 
         # Start progress bar

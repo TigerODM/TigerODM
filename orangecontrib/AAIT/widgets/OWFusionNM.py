@@ -13,6 +13,8 @@ from AnyQt.QtWidgets import (
     QApplication,
     QWidget,
     QComboBox,
+    QPushButton,
+    QCheckBox,
     QSizePolicy,
 )
 from AnyQt.QtCore import QTimer
@@ -31,13 +33,27 @@ else:
     )
     from orangecontrib.AAIT.utils import help_management
 
+# Maps display name -> (include_matched, include_only_a, include_only_b)
+JOIN_TYPES: List[Tuple[str, str]] = [
+    ("Full Outer Join  (A ∪ B)", "full_outer"),
+    ("Inner Join       (A ∩ B)", "inner"),
+    ("Left Join        (all A + B match)", "left"),
+    ("Right Join       (all B + A match)", "right"),
+    ("Left Anti Join   (only A unmatched)", "left_anti"),
+    ("Right Anti Join  (only B unmatched)", "right_anti"),
+    ("Index Join       (Merge on row index)", "index"),
+    ("Broadcast        (Impute with B row 0)", "broadcast"),
+]
+JOIN_LABELS = [label for label, _ in JOIN_TYPES]
+JOIN_CODES = [code for _, code in JOIN_TYPES]
+
 
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OWFusionNN(widget.OWWidget):
-    """Fusion NxM simplifiée avec gestion correcte des types Orange."""
+    """Fusion NxM avec sélection du type de jointure."""
 
     name = "Fusion NxM"
-    description = "Merge two Tables on a key; add the non-matched rows."
+    description = "Merge two Tables on a key or by index/broadcast with configurable join type."
     category = "AAIT - TOOLBOX"
     icon = "icons/owfusion_nm.png"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
@@ -50,6 +66,8 @@ class OWFusionNN(widget.OWWidget):
     # Paramètres persistés
     key1_a: Optional[str] = Setting(None)
     key1_b: Optional[str] = Setting(None)
+    join_type: str = Setting("full_outer")
+    auto_send: bool = Setting(True)
 
     class Inputs:
         data_a = Input("Table 1", Table)
@@ -74,10 +92,27 @@ class OWFusionNN(widget.OWWidget):
         self.mainArea.layout().addWidget(self.form)
         self.form.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        self.cb_key1_a: QComboBox = getattr(self.form, "cb_key1_a")
-        self.cb_key1_b: QComboBox = getattr(self.form, "cb_key1_b")
+        self.cb_key1_a: QComboBox = self.form.cb_key1_a
+        self.cb_key1_b: QComboBox = self.form.cb_key1_b
+        self.cb_join_type: QComboBox = self.form.cb_join_type
+        self.btn_send: QPushButton = self.form.pushButton_send
+        self.chk_auto: QCheckBox = self.form.checkBox_send
+
+        # Populate join type combo
+        self.cb_join_type.addItems(JOIN_LABELS)
+        if self.join_type in JOIN_CODES:
+            self.cb_join_type.setCurrentIndex(JOIN_CODES.index(self.join_type))
+
+        # Restore auto_send checkbox state and sync Run button
+        self.chk_auto.setChecked(self.auto_send)
+        self.btn_send.setEnabled(not self.auto_send)
+
+        # Connections
         self.cb_key1_a.currentIndexChanged.connect(self._on_key_changed)
         self.cb_key1_b.currentIndexChanged.connect(self._on_key_changed)
+        self.cb_join_type.currentIndexChanged.connect(self._on_join_type_changed)
+        self.chk_auto.stateChanged.connect(self._on_auto_send_changed)
+        self.btn_send.clicked.connect(self._apply_fusion)
 
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
@@ -85,17 +120,40 @@ class OWFusionNN(widget.OWWidget):
     def set_data_a(self, data: Optional[Table]):
         self._data_a = data
         self._update_combos()
-        self._apply_fusion()
+        if self.auto_send:
+            self._apply_fusion()
 
     @Inputs.data_b
     def set_data_b(self, data: Optional[Table]):
         self._data_b = data
         self._update_combos()
-        self._apply_fusion()
+        if self.auto_send:
+            self._apply_fusion()
+
+    def _on_auto_send_changed(self, state: int) -> None:
+        self.auto_send = bool(state)
+        self.btn_send.setEnabled(not self.auto_send)
+        if self.auto_send:
+            self._apply_fusion()
+
+    def _on_join_type_changed(self, index: int) -> None:
+        self.join_type = JOIN_CODES[index]
+        if self.auto_send:
+            self._apply_fusion()
+
+    def _on_key_changed(self) -> None:
+        """Appelé quand l'utilisateur change une clé."""
+        self.key1_a = self.cb_key1_a.currentText() or None
+        self.key1_b = self.cb_key1_b.currentText() or None
+        if self.auto_send:
+            self._apply_fusion()
+
+    # ------------------------------------------------------------------
+    # Data helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _get_var_names(table: Optional[Table]) -> List[str]:
-        """Retourne les noms de toutes les variables d'une table."""
         if table is None:
             return []
         domain = table.domain
@@ -107,7 +165,6 @@ class OWFusionNN(widget.OWWidget):
 
     @staticmethod
     def _get_column(table: Table, var_name: str) -> np.ndarray:
-        """Extrait une colonne d'une table par nom de variable."""
         domain = table.domain
         for i, var in enumerate(domain.attributes):
             if var.name == var_name:
@@ -124,7 +181,6 @@ class OWFusionNN(widget.OWWidget):
 
     @staticmethod
     def _find_var(table: Table, var_name: str) -> Tuple[Optional[Variable], str, int]:
-        """Trouve une variable et retourne (variable, type, index)."""
         domain = table.domain
         for i, var in enumerate(domain.attributes):
             if var.name == var_name:
@@ -139,7 +195,6 @@ class OWFusionNN(widget.OWWidget):
 
     @staticmethod
     def _is_valid_key(value) -> bool:
-        """Vérifie si une valeur peut être utilisée comme clé de fusion."""
         if value is None:
             return False
         try:
@@ -149,7 +204,6 @@ class OWFusionNN(widget.OWWidget):
 
     @staticmethod
     def _keys_equal(v1, v2) -> bool:
-        """Compare deux valeurs de clés."""
         if not OWFusionNN._is_valid_key(v1) or not OWFusionNN._is_valid_key(v2):
             return False
         return v1 == v2
@@ -185,147 +239,198 @@ class OWFusionNN(widget.OWWidget):
             self.cb_key1_b.setCurrentIndex(0)
         self.cb_key1_b.blockSignals(False)
 
-    def _on_key_changed(self) -> None:
-        """Appelé quand l'utilisateur change une clé."""
-        self.key1_a = self.cb_key1_a.currentText() or None
-        self.key1_b = self.cb_key1_b.currentText() or None
-        self._apply_fusion()
-
     def _apply_fusion(self) -> None:
         """Effectue la fusion des tables."""
-        # Vérifications préliminaires
         if self._data_a is None or self._data_b is None:
             self.Outputs.data.send(None)
             return
 
         self.Error.clear()
 
-        if not self.key1_a or not self.key1_b:
+        key_a = self.cb_key1_a.currentText() or None
+        key_b = self.cb_key1_b.currentText() or None
+        self.key1_a = key_a
+        self.key1_b = key_b
+
+        # Validation uniquement si on nécessite une clé
+        if self.join_type not in ["index", "broadcast"] and (not key_a or not key_b):
             self.Error.no_keys()
             self.Outputs.data.send(None)
             return
 
         try:
-            result = self._merge_tables(self._data_a, self._data_b, self.key1_a, self.key1_b)
+            result = self._merge_tables(self._data_a, self._data_b, key_a, key_b, self.join_type)
             self.Outputs.data.send(result)
         except Exception as e:
             self.Error.fusion_error(str(e))
             self.Outputs.data.send(None)
 
-    def _merge_tables(self, table_a: Table, table_b: Table, key_a: str, key_b: str) -> Table:
-        """Fusionne deux tables sur leurs clés."""
-        # Extraire les colonnes de clés
-        col_a = self._get_column(table_a, key_a)
-        col_b = self._get_column(table_b, key_b)
+    def _merge_tables(self, table_a: Table, table_b: Table,
+                      key_a: Optional[str], key_b: Optional[str], join_type: str) -> Table:
 
-        # Construire l'index B: valeur -> liste d'indices
-        index_b: Dict[any, List[int]] = defaultdict(list)
-        for j, val in enumerate(col_b):
-            if self._is_valid_key(val):
-                try:
-                    index_b[val].append(j)
-                except TypeError:
-                    # Non-hashable, on gérera avec fallback
-                    pass
-
-        # Trouver les correspondances
         matches: List[Tuple[int, int]] = []
-        matched_a = np.zeros(len(col_a), dtype=bool)
-        matched_b = np.zeros(len(col_b), dtype=bool)
+        rows_a_only: List[int] = []
+        rows_b_only: List[int] = []
 
-        for i, val_a in enumerate(col_a):
-            if not self._is_valid_key(val_a):
-                continue
+        if join_type == "index":
+            # Concaténation par index de ligne
+            len_a, len_b = len(table_a), len(table_b)
+            min_len = min(len_a, len_b)
+            matches = [(i, i) for i in range(min_len)]
+            rows_a_only = list(range(min_len, len_a))
+            rows_b_only = list(range(min_len, len_b))
 
-            # Chercher dans l'index
-            indices_b = index_b.get(val_a)
-            if indices_b is None:
-                # Fallback: comparaison directe
-                indices_b = [j for j, val_b in enumerate(col_b) if self._keys_equal(val_a, val_b)]
+        elif join_type == "broadcast":
+            # Imputation de la ligne 0 de la table B sur toutes les lignes de A
+            len_a, len_b = len(table_a), len(table_b)
+            if len_b > 0:
+                matches = [(i, 0) for i in range(len_a)]
+                rows_a_only = []
+            else:
+                matches = []
+                rows_a_only = list(range(len_a))
+            rows_b_only = []
 
-            for j in indices_b:
-                matches.append((i, j))
-                matched_a[i] = True
-                matched_b[j] = True
+        else:
+            # Jointures traditionnelles par clés
+            col_a = self._get_column(table_a, key_a)
+            col_b = self._get_column(table_b, key_b)
 
-        # Lignes non appariées
-        only_a = [i for i, m in enumerate(matched_a) if not m]
-        only_b = [j for j, m in enumerate(matched_b) if not m]
+            index_b: Dict = defaultdict(list)
+            for j, val in enumerate(col_b):
+                if self._is_valid_key(val):
+                    try:
+                        index_b[val].append(j)
+                    except TypeError:
+                        pass
 
-        # Construire le domaine de sortie
-        out_domain = self._build_output_domain(table_a, table_b, key_a, key_b)
+            matched_a = np.zeros(len(col_a), dtype=bool)
+            matched_b = np.zeros(len(col_b), dtype=bool)
 
-        # Construire les données de sortie
-        n_rows = len(matches) + len(only_a) + len(only_b)
+            for i, val_a in enumerate(col_a):
+                if not self._is_valid_key(val_a):
+                    continue
+
+                indices_b = index_b.get(val_a)
+                if indices_b is None:
+                    indices_b = [j for j, val_b in enumerate(col_b) if self._keys_equal(val_a, val_b)]
+
+                for j in indices_b:
+                    matches.append((i, j))
+                    matched_a[i] = True
+                    matched_b[j] = True
+
+            only_a = [i for i, m in enumerate(matched_a) if not m]
+            only_b = [j for j, m in enumerate(matched_b) if not m]
+
+            if join_type == "inner":
+                rows_a_only, rows_b_only = [], []
+            elif join_type == "left":
+                rows_a_only, rows_b_only = only_a, []
+            elif join_type == "right":
+                rows_a_only, rows_b_only = [], only_b
+            elif join_type == "left_anti":
+                matches, rows_a_only, rows_b_only = [], only_a, []
+            elif join_type == "right_anti":
+                matches, rows_a_only, rows_b_only = [], [], only_b
+            else:  # full_outer
+                rows_a_only, rows_b_only = only_a, only_b
+
+        out_domain = self._build_output_domain(table_a, table_b, key_a, key_b, join_type)
+        n_rows = len(matches) + len(rows_a_only) + len(rows_b_only)
+
+        if n_rows == 0:
+            return Table.from_numpy(out_domain,
+                                    np.empty((0, len(out_domain.attributes)), dtype=float),
+                                    np.empty((0, len(out_domain.class_vars)), dtype=float),
+                                    np.empty((0, len(out_domain.metas)), dtype=object))
+
         X_out, Y_out, M_out = self._allocate_output_arrays(out_domain, n_rows)
 
         # Remplir les données
         row = 0
 
-        # Lignes appariées (A + B)
         for i, j in matches:
-            self._fill_row(X_out, Y_out, M_out, row, out_domain, table_a, table_b, i, j, key_a, key_b)
+            self._fill_row(X_out, Y_out, M_out, row, out_domain,
+                           table_a, table_b, i, j, key_a, key_b, join_type)
+            row += 1
+        for i in rows_a_only:
+            self._fill_row(X_out, Y_out, M_out, row, out_domain,
+                           table_a, table_b, i, None, key_a, key_b, join_type)
+            row += 1
+        for j in rows_b_only:
+            self._fill_row(X_out, Y_out, M_out, row, out_domain,
+                           table_a, table_b, None, j, key_a, key_b, join_type)
             row += 1
 
-        # Lignes A uniquement
-        for i in only_a:
-            self._fill_row(X_out, Y_out, M_out, row, out_domain, table_a, table_b, i, None, key_a, key_b)
-            row += 1
-
-        # Lignes B uniquement
-        for j in only_b:
-            self._fill_row(X_out, Y_out, M_out, row, out_domain, table_a, table_b, None, j, key_a, key_b)
-            row += 1
-
-        # Créer la table de sortie
         result = Table.from_numpy(out_domain, X_out, Y_out, M_out)
         result.name = f"{table_a.name or 'A'} ⋈ {table_b.name or 'B'}"
 
         return result
 
     def _build_output_domain(self, table_a: Table, table_b: Table,
-                            key_a: str, key_b: str) -> Domain:
-        """Construit le domaine de sortie avec toutes les variables en StringVariable."""
-        same_key = (key_a == key_b)
+                             key_a: Optional[str], key_b: Optional[str], join_type: str) -> Domain:
+        # La clé commune n'a pas de sens pour un index ou broadcast merge
+        same_key = (key_a == key_b) and (key_a is not None) and join_type not in ["index", "broadcast"]
 
-        # Collecter tous les noms pour détecter les overlaps
         names_a = set(self._get_var_names(table_a))
         names_b = set(self._get_var_names(table_b))
         overlap = names_a & names_b
 
+        key_var_b, _, _ = self._find_var(table_b, key_b) if same_key else (None, "", -1)
+
+        def clone_variable(var: Variable, new_name: str, is_merged_key: bool = False) -> Variable:
+            if isinstance(var, DiscreteVariable):
+                if is_merged_key and isinstance(key_var_b, DiscreteVariable):
+                    merged_values = list(var.values)
+                    for v in key_var_b.values:
+                        if v not in merged_values:
+                            merged_values.append(v)
+                    return DiscreteVariable(new_name, values=merged_values)
+                return DiscreteVariable(new_name, values=var.values)
+            return var.__class__(new_name)
+
+        out_attrs: List[Variable] = []
+        out_classes: List[Variable] = []
         out_metas: List[Variable] = []
 
-        # Ajouter variables de A (toutes en metas/string)
-        for var in list(table_a.domain.attributes) + list(table_a.domain.class_vars) + list(table_a.domain.metas):
-            if var.name in overlap and not (same_key and var.name == key_a):
-                out_metas.append(StringVariable(var.name + "_A"))
-            else:
-                out_metas.append(StringVariable(var.name))
+        # Table A
+        for cat, vars_list in [("attr", table_a.domain.attributes),
+                               ("class", table_a.domain.class_vars),
+                               ("meta", table_a.domain.metas)]:
+            for var in vars_list:
+                is_merged = (same_key and var.name == key_a)
+                new_name = var.name + "_A" if (var.name in overlap and not is_merged) else var.name
+                cloned = clone_variable(var, new_name, is_merged_key=is_merged)
+                if cat == "attr":
+                    out_attrs.append(cloned)
+                elif cat == "class":
+                    out_classes.append(cloned)
+                elif cat == "meta":
+                    out_metas.append(cloned)
 
-        # Ajouter variables de B (toutes en metas/string)
-        for var in list(table_b.domain.attributes) + list(table_b.domain.class_vars) + list(table_b.domain.metas):
-            if same_key and var.name == key_b:
-                continue  # Éviter duplication de la clé
-            if var.name in overlap:
-                out_metas.append(StringVariable(var.name + "_B"))
-            else:
-                out_metas.append(StringVariable(var.name))
+        # Table B
+        for cat, vars_list in [("attr", table_b.domain.attributes),
+                               ("class", table_b.domain.class_vars),
+                               ("meta", table_b.domain.metas)]:
+            for var in vars_list:
+                if same_key and var.name == key_b:
+                    continue
+                new_name = var.name + "_B" if var.name in overlap else var.name
+                cloned = clone_variable(var, new_name, is_merged_key=False)
+                if cat == "attr":
+                    out_attrs.append(cloned)
+                elif cat == "class":
+                    out_classes.append(cloned)
+                elif cat == "meta":
+                    out_metas.append(cloned)
 
-        # Tout en metas (pas d'attributes ni de class_vars)
-        return Domain([], [], out_metas)
-
-    def _rename_var(self, var: Variable, suffix: str) -> Variable:
-        """Crée une nouvelle variable avec un suffixe (toujours en StringVariable)."""
-        new_name = var.name + suffix
-        # Toujours retourner une StringVariable pour éviter les problèmes de types
-        return StringVariable(new_name)
+        return Domain(out_attrs, out_classes, out_metas)
 
     def _allocate_output_arrays(self, domain: Domain, n_rows: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Alloue les arrays de sortie (tout en metas/string)."""
-        # Pas d'attributes ni de class_vars, tout est en metas
-        X_out = np.empty((n_rows, 0), dtype=float)
-        Y_out = np.empty((n_rows, 0), dtype=float)
-        M_out = np.full((n_rows, len(domain.metas)), "", dtype=object)
+        X_out = np.full((n_rows, len(domain.attributes)), np.nan, dtype=float)
+        Y_out = np.full((n_rows, len(domain.class_vars)), np.nan, dtype=float)
+        M_out = np.full((n_rows, len(domain.metas)), np.nan, dtype=object)
 
         return X_out, Y_out, M_out
 
@@ -333,29 +438,30 @@ class OWFusionNN(widget.OWWidget):
                   row_idx: int, out_domain: Domain,
                   table_a: Table, table_b: Table,
                   idx_a: Optional[int], idx_b: Optional[int],
-                  key_a: str, key_b: str) -> None:
-        """Remplit une ligne de sortie avec les données de A et/ou B (tout en metas/string)."""
-        same_key = (key_a == key_b)
+                  key_a: Optional[str], key_b: Optional[str], join_type: str) -> None:
 
-        # Tout est en metas maintenant
-        for out_idx, out_var in enumerate(out_domain.metas):
-            value = self._get_var_value(out_var, table_a, table_b, idx_a, idx_b, key_a, key_b, same_key, "meta")
-            # Convertir en string
-            if value is None or (isinstance(value, float) and np.isnan(value)):
-                M_out[row_idx, out_idx] = ""
-            elif isinstance(value, (list, tuple, np.ndarray)):
-                M_out[row_idx, out_idx] = str(value)
-            else:
-                M_out[row_idx, out_idx] = str(value)
+        same_key = (key_a == key_b) and (key_a is not None) and join_type not in ["index", "broadcast"]
+
+        for target_array, vars_list in [(X_out, out_domain.attributes),
+                                        (Y_out, out_domain.class_vars),
+                                        (M_out, out_domain.metas)]:
+            for out_idx, out_var in enumerate(vars_list):
+                value = self._get_var_value(out_var, table_a, table_b,
+                                            idx_a, idx_b, key_a, key_b, same_key)
+                target_array[row_idx, out_idx] = value
 
     def _get_var_value(self, out_var: Variable, table_a: Table, table_b: Table,
-                      idx_a: Optional[int], idx_b: Optional[int],
-                      key_a: str, key_b: str, same_key: bool, var_type: str):
-        """Récupère la valeur d'une variable depuis la table source appropriée."""
+                       idx_a: Optional[int], idx_b: Optional[int],
+                       key_a: Optional[str], key_b: Optional[str], same_key: bool):
         var_name = out_var.name
 
         # Déterminer si c'est une variable de A ou B
-        if var_name.endswith("_A"):
+        if same_key and var_name == key_a:
+            if idx_a is not None:
+                table, idx, source_name = table_a, idx_a, key_a
+            else:
+                table, idx, source_name = table_b, idx_b, key_b
+        elif var_name.endswith("_A"):
             source_name = var_name[:-2]
             table, idx = table_a, idx_a
         elif var_name.endswith("_B"):
@@ -380,7 +486,7 @@ class OWFusionNN(widget.OWWidget):
             return None
 
         # Récupérer la valeur brute
-        raw_value = None
+        raw_value = np.nan
         if vtype == "attr":
             raw_value = table.X[idx, vidx]
         elif vtype == "class":
@@ -391,15 +497,13 @@ class OWFusionNN(widget.OWWidget):
         elif vtype == "meta":
             raw_value = table.metas[idx, vidx]
 
-        # Convertir les variables discrètes en leurs noms de valeurs
-        if isinstance(var, DiscreteVariable) and raw_value is not None:
-            try:
-                if not np.isnan(raw_value):
-                    value_idx = int(raw_value)
-                    if 0 <= value_idx < len(var.values):
-                        return var.values[value_idx]
-            except (ValueError, TypeError):
-                pass
+        if same_key and var_name == key_a and table is table_b and isinstance(out_var, DiscreteVariable):
+            if isinstance(var, DiscreteVariable) and isinstance(raw_value, (int, float)) and not np.isnan(raw_value):
+                try:
+                    str_val = var.values[int(raw_value)]
+                    return float(out_var.values.index(str_val))
+                except (IndexError, ValueError):
+                    pass
 
         return raw_value
 

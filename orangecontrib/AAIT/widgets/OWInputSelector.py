@@ -149,7 +149,8 @@ class OWInputSelector(OWWidget):
         self.windowTitleEdit = self.findChild(QLineEdit, 'lineEdit_window_title')
         self.checkBox_launch_at_startup = self.findChild(QCheckBox, 'checkBox_launch_at_startup')
         self.pushButton_2 = self.findChild(QPushButton, 'pushButton_2')
-
+        self.pushButton_gguf=self.findChild(QPushButton, 'pushButton_gguf')
+        self.pushButton_gguf.clicked.connect(self.select_gguf_menu)
 
         if self.str_Launch_automatically_on_startup=="True":
             self.checkBox_launch_at_startup.setChecked(True)
@@ -167,6 +168,7 @@ class OWInputSelector(OWWidget):
         # based on the string you can modify orders and add without problem
         file_types = [
             "All (*.*)",
+            "Tiger Files (*.pdf,*.PDF,*.docx,*.DOCX,*.pptx,*.PPTX,*.md,*.MD,*.txt,*.TXT,*.py,*.PY,*.html,*.HTML,*.json,*.JSON,*.ows,*.OWS)",
             "Images (*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tiff;*.svg;*.webp;*.heic;*.JPG;*.JPEG;*.PNG;*.BMP;*.GIF;*.TIFF;*.SVG;*.WEBP;*.HEIC)",
             "Documents (*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.txt;*.rtf;*.odt;*.ods;*.odp;*.epub;*.PDF;*.DOC;*.DOCX;*.XLS;*.XLSX;*.PPT;*.PPTX;*.TXT;*.RTF;*.ODT;*.ODS;*.ODP;*.EPUB)",
             "Archives (*.zip;*.rar;*.7z;*.tar;*.gz;*.bz2;*.xz;*.iso;*.ZIP;*.RAR;*.7Z;*.TAR;*.GZ;*.BZ2;*.XZ;*.ISO)",
@@ -366,6 +368,98 @@ class OWInputSelector(OWWidget):
                     path += "/"
                 self.lineEdit.setText(path)
                 self.update_line_edit_setting()
+
+    def select_gguf_menu(self, parent=None):
+        if not isinstance(parent, QWidget):
+            parent = None
+
+        menu = QMenu(parent)
+
+        act_local_store = QAction("from local store", menu)
+        menu.addAction(act_local_store)
+
+        lmstudio_dir = os.path.join(os.path.expanduser("~"), ".lmstudio", "models")
+
+        act_lm_studio = None
+        if os.path.isdir(lmstudio_dir):
+            act_lm_studio = QAction("from lm studio local folder", menu)
+            menu.addAction(act_lm_studio)
+
+        action = menu.exec(QCursor.pos())
+
+        if action == act_local_store:
+            self.select_gguf_from_local_store()
+
+        elif act_lm_studio is not None and action == act_lm_studio:
+            self.select_gguf_from_lm_studio()
+
+
+    def select_gguf_from_local_store(self):
+        base_dir = os.path.join(
+            MetManagement.get_local_store_path(),
+            "Models",
+            "NLP"
+        )
+
+        gguf_files = []
+
+        if os.path.isdir(base_dir):
+            # GGUF directement dans Models/NLP/
+            for name in os.listdir(base_dir):
+                path = os.path.join(base_dir, name)
+                if os.path.isfile(path) and name.lower().endswith(".gguf") and "mmproj" not in name.lower():
+                    gguf_files.append(os.path.abspath(path))
+
+            # GGUF dans les sous-dossiers directs uniquement
+            for name in os.listdir(base_dir):
+                subdir = os.path.join(base_dir, name)
+                if os.path.isdir(subdir):
+                    for sub_name in os.listdir(subdir):
+                        path = os.path.join(subdir, sub_name)
+                        if os.path.isfile(path) and sub_name.lower().endswith(".gguf") and "mmproj" not in sub_name.lower():
+                            gguf_files.append(os.path.abspath(path))
+
+        self.show_gguf_list_menu(gguf_files)
+
+
+    def select_gguf_from_lm_studio(self):
+        base_dir = os.path.join(os.path.expanduser("~"), ".lmstudio", "models")
+
+        gguf_files = []
+
+        if os.path.isdir(base_dir):
+            for root, dirs, files in os.walk(base_dir):
+                for name in files:
+                    if name.lower().endswith(".gguf") and "mmproj" not in name.lower():
+                        gguf_files.append(os.path.abspath(os.path.join(root, name)))
+
+        self.show_gguf_list_menu(gguf_files)
+
+
+    def show_gguf_list_menu(self, gguf_files):
+        menu = QMenu(self)
+
+        act_cancel = QAction("cancel", menu)
+        menu.addAction(act_cancel)
+
+        actions = {}
+
+        for path in sorted(gguf_files):
+            act = QAction(path, menu)
+            menu.addAction(act)
+            actions[act] = path
+
+        action = menu.exec(QCursor.pos())
+
+        if action is None or action == act_cancel:
+            return
+
+        selected_path = actions.get(action)
+        if selected_path:
+            self.lineEdit.setText(selected_path)
+            self.update_line_edit_setting()
+
+
 
 
     def get_default_dialog_title(self):

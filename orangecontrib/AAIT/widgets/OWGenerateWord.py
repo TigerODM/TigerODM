@@ -1,6 +1,5 @@
 import os
 import sys
-import re
 from typing import Optional,Dict,List,Tuple
 from AnyQt.QtWidgets import QTableWidgetItem
 
@@ -19,9 +18,11 @@ from AnyQt.QtCore import QTimer
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils import help_management
+    from Orange.widgets.orangecontrib.AAIT.utils.color_prefix_utils import  normalize_hex, parse_color_prefix
 else:
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils import help_management
+    from orangecontrib.AAIT.utils.color_prefix_utils import  normalize_hex, parse_color_prefix
 
 class OWDocumentGenerator(widget.OWWidget):
     """
@@ -53,22 +54,7 @@ class OWDocumentGenerator(widget.OWWidget):
     # -----------------------------
     # Colors: %!color!% prefix (headers + cells)
     # -----------------------------
-    COLOR_MAP = {
-        # neutres
-        "blanc": "FFFFFF", "white": "FFFFFF",
-        "gris": "E0E0E0", "gray": "E0E0E0", "grey": "E0E0E0",
-        "gris_clair": "F2F2F2",
 
-        # pastel lisibles
-        "jaune": "FFF2CC", "yellow": "FFF2CC",
-        "vert": "E2F0D9", "green": "E2F0D9",
-        "rouge": "FCE4D6", "red": "FCE4D6",
-        "bleu": "DDEBF7", "blue": "DDEBF7",
-        "violet": "EDE7F6", "purple": "EDE7F6",
-        "orange": "FBE5D6",
-        "cyan": "E7F3F8", "turquoise": "E7F3F8",
-        "rose": "FCE4EC", "pink": "FCE4EC",
-    }
 
     def __init__(self):
         super().__init__()
@@ -142,31 +128,10 @@ class OWDocumentGenerator(widget.OWWidget):
         return v
 
     def _normalize_hex(self, color: str) -> str:
-        if not color:
-            return "FFFFFF"
-        c = str(color).strip().lower()
-        if c.startswith("#"):
-            c = c[1:]
-        if re.fullmatch(r"[0-9a-f]{6}", c):
-            return c.upper()
-        return self.COLOR_MAP.get(c, "FFFFFF")
+        return normalize_hex(color)
 
     def parse_color_prefix(self, value: str) -> Tuple[str, Optional[str]]:
-        """
-        Detect prefix %!color!% or %!#RRGGBB!%
-        Returns (text_without_prefix, hex_color_or_None)
-        """
-        if value is None:
-            return "", None
-
-        s = str(value)
-        m = re.match(r"^%!(.*?)!%", s)
-        if not m:
-            return s, None
-
-        token = m.group(1).strip()
-        text = s[m.end():]
-        return text, self._normalize_hex(token)
+        return parse_color_prefix(value)
 
     def set_cell_bg(self, cell, hex_rgb: str):
         hex_rgb = self._normalize_hex(hex_rgb)

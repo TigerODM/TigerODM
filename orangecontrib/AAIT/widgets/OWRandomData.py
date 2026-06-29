@@ -279,22 +279,41 @@ class OWWidgetRandomData(widget.OWWidget):
         if self.strWaitTwoinput!='False':
             if self.data_rules == None:
                 return
-        if "name" not in self.in_data.domain or "min" not in self.in_data.domain or "max" not in self.in_data.domain:
-                if "Feature" not in self.in_data.domain or "Min." not in self.in_data.domain or "Max." not in self.in_data.domain:
-                    self.error("You file need at least 3 headers : 'name', 'min', 'max' or 'Feature', 'Min.', 'Max.'")
-                    return
+        has_name = (
+                "name" in self.in_data.domain
+                or "Feature" in self.in_data.domain
+                or "Column" in self.in_data.domain
+        )
+        has_min = "min" in self.in_data.domain or "Min." in self.in_data.domain
+        has_max = "max" in self.in_data.domain or "Max." in self.in_data.domain
+
+        if not has_name or not has_min or not has_max:
+            self.error("You file need at least 3 headers : 'name' or 'Feature', 'min' or 'Min.', 'max' or 'Max.'")
+            return
+
+
+
+
         if self.nombre_generation == "0":
             self.error("Error in the numner of generation")
             return
-        if "Feature" in self.in_data.domain or "Min." in self.in_data.domain or "Max." in self.in_data.domain:
+
+        if (
+                "Feature" in self.in_data.domain
+                or "Column" in self.in_data.domain
+                or "Min." in self.in_data.domain
+                or "Max." in self.in_data.domain
+                or "Step" in self.in_data.domain
+        ):
             new_attributes = [
                 ContinuousVariable("min") if attr.name == "Min." else
                 ContinuousVariable("max") if attr.name == "Max." else
+                ContinuousVariable("step") if attr.name == "Step" else
                 attr
                 for attr in self.in_data.domain.attributes
             ]
             new_metas = [
-                StringVariable("name") if meta.name == "Feature" else meta
+                StringVariable("name") if meta.name in ["Feature", "Column"] else meta
                 for meta in self.in_data.domain.metas
             ]
             new_domain = Domain(new_attributes, metas=new_metas)

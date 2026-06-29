@@ -7,6 +7,7 @@ from typing import (
     Optional, Union, Sequence, List, TypedDict, Tuple, Any, Container
 )
 
+import numpy as np
 from scipy.sparse import issparse
 
 from AnyQt.QtWidgets import (
@@ -15,7 +16,8 @@ from AnyQt.QtWidgets import (
 )
 from AnyQt.QtGui import QColor, QClipboard, QPainter
 from AnyQt.QtCore import (
-    QTimer, Qt, QSize, QMetaObject, QItemSelectionModel, QModelIndex, QRect
+    QTimer, Qt, QSize, QMetaObject, QItemSelectionModel, QModelIndex, QRect,
+    QAbstractProxyModel, QObject, QEvent
 )
 from AnyQt.QtCore import Slot
 
@@ -50,28 +52,221 @@ else:
 SubsetRole = next(OrangeUserRole)
 
 
+# ---------------------------------------------------------------------------
+# Proxy de réordonnancement des lignes
+# ---------------------------------------------------------------------------
+class RowReorderProxyModel(QAbstractProxyModel):
+    """
+    Proxy intercalé entre _TableModel et la vue.
+    _row_order[i] = index source affiché à la position i.
+    Le tri est délégué au source (RichTableModel gère son propre tri interne).
+    _row_order est remis à [0..n-1] après chaque tri source.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._row_order: List[int] = []
+
+    def setSourceModel(self, source_model):
+        super().setSourceModel(source_model)
+        if source_model is not None:
+            self._row_order = list(range(source_model.rowCount()))
+        else:
+            self._row_order = []
+        self.beginResetModel()
+        self.endResetModel()
+
+    def setRowOrder(self, order: List[int]):
+        if self.sourceModel() is None:
+            return
+        n = self.sourceModel().rowCount()
+        if sorted(order) == list(range(n)):
+            self.beginResetModel()
+            self._row_order = list(order)
+            self.endResetModel()
+
+    def getRowOrder(self) -> List[int]:
+        return list(self._row_order)
+
+    def moveRow(self, from_pos: int, to_pos: int):
+        if from_pos == to_pos:
+            return
+        self.beginResetModel()
+        item = self._row_order.pop(from_pos)
+        self._row_order.insert(to_pos, item)
+        self.endResetModel()
+
+    def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder):
+        src = self.sourceModel()
+        if src is None:
+            return
+        # On délègue au source, puis on remet _row_order à plat.
+        # La restauration de l'ordre original est gérée dans le widget
+        # en remplaçant le source par un nouveau _TableModel vierge.
+        self.beginResetModel()
+        src.sort(column, order)
+        self._row_order = list(range(src.rowCount()))
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        if parent.isValid() or self.sourceModel() is None:
+            return 0
+        return len(self._row_order)
+
+    def columnCount(self, parent=QModelIndex()):
+        if parent.isValid() or self.sourceModel() is None:
+            return 0
+        return self.sourceModel().columnCount()
+
+    def mapToSource(self, proxy_index: QModelIndex) -> QModelIndex:
+        if not proxy_index.isValid() or self.sourceModel() is None:
+            return QModelIndex()
+        src_row = self._row_order[proxy_index.row()]
+        return self.sourceModel().index(src_row, proxy_index.column())
+
+    def mapFromSource(self, source_index: QModelIndex) -> QModelIndex:
+        if not source_index.isValid():
+            return QModelIndex()
+        try:
+            proxy_row = self._row_order.index(source_index.row())
+        except ValueError:
+            return QModelIndex()
+        return self.index(proxy_row, source_index.column())
+
+    def index(self, row, column, parent=QModelIndex()):
+        if parent.isValid():
+            return QModelIndex()
+        return self.createIndex(row, column)
+
+    def parent(self, index=QModelIndex()):
+        return QModelIndex()
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):
+        return self.sourceModel().data(self.mapToSource(index), role)
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if orientation == Qt.Vertical and self.sourceModel() is not None:
+            src_row = self._row_order[section] if section < len(self._row_order) else section
+            return self.sourceModel().headerData(src_row, orientation, role)
+        if self.sourceModel() is not None:
+            return self.sourceModel().headerData(section, orientation, role)
+        return None
+
+    def flags(self, index: QModelIndex):
+        return self.sourceModel().flags(self.mapToSource(index))
+
+
+# ---------------------------------------------------------------------------
+# Event filter installé sur le VIEWPORT du header vertical
+# ---------------------------------------------------------------------------
+class RowDragEventFilter(QObject):
+    def __init__(self, header: QHeaderView, on_move_callback):
+        super().__init__(header)
+        self._header = header
+        self._on_move = on_move_callback
+        self._drag_row: Optional[int] = None
+        self._drag_start_y: int = 0
+        self._active: bool = False
+        self._indicator_row: Optional[int] = None
+
+    def _row_at(self, y: int) -> int:
+        return self._header.logicalIndexAt(y)
+
+    def eventFilter(self, obj, event) -> bool:
+        t = event.type()
+
+        if t == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            row = self._row_at(event.pos().y())
+            if row >= 0:
+                self._drag_row = row
+                self._drag_start_y = event.pos().y()
+                self._active = False
+                self._indicator_row = None
+            return False
+
+        elif t == QEvent.MouseMove and (event.buttons() & Qt.LeftButton):
+            if self._drag_row is not None:
+                dy = abs(event.pos().y() - self._drag_start_y)
+                if dy > 6:
+                    self._active = True
+                if self._active:
+                    target = self._row_at(event.pos().y())
+                    if target < 0:
+                        target = self._header.count() - 1
+                    if target != self._indicator_row:
+                        self._indicator_row = target
+                        self._header.viewport().update()
+                    return True
+
+        elif t == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            if self._drag_row is not None and self._active:
+                from_row = self._drag_row
+                to_row = self._indicator_row if self._indicator_row is not None else from_row
+                self._drag_row = None
+                self._active = False
+                self._indicator_row = None
+                self._header.viewport().update()
+                if from_row != to_row:
+                    self._on_move(from_row, to_row)
+                return True
+            self._drag_row = None
+            self._active = False
+            self._indicator_row = None
+
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Header vertical avec indicateur visuel
+# ---------------------------------------------------------------------------
+class DraggableVerticalHeader(QHeaderView):
+    def __init__(self, parent=None):
+        super().__init__(Qt.Vertical, parent)
+        self._filter: Optional[RowDragEventFilter] = None
+        self.setSectionsClickable(True)
+        self.setHighlightSections(True)
+
+    def installDragFilter(self, on_move_callback):
+        if self._filter is not None:
+            self.viewport().removeEventFilter(self._filter)
+        self._filter = RowDragEventFilter(self, on_move_callback)
+        self.viewport().installEventFilter(self._filter)
+
+    def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
+        super().paintSection(painter, rect, logical_index)
+        if self._filter is None or not self._filter._active:
+            return
+        if logical_index == self._filter._drag_row:
+            painter.save()
+            painter.fillRect(rect, QColor(60, 120, 255, 45))
+            painter.restore()
+        if logical_index == self._filter._indicator_row:
+            painter.save()
+            pen = painter.pen()
+            pen.setColor(QColor(60, 120, 255))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawLine(rect.left(), rect.top(), rect.right(), rect.top())
+            painter.restore()
+
+
 class HeaderViewWithSubsetIndicator(HeaderView):
     _IndicatorChar = "\N{BULLET}"
 
-    def paintSection(
-            self, painter: QPainter, rect: QRect, logicalIndex: int
-    ) -> None:
+    def paintSection(self, painter: QPainter, rect: QRect, logicalIndex: int) -> None:
         opt = QStyleOptionHeader()
         self.initStyleOption(opt)
         self.initStyleOptionForIndex(opt, logicalIndex)
         model = self.model()
         if model is None:
-            return  # pragma: no cover
+            return
         opt.rect = rect
         issubset = model.headerData(logicalIndex, Qt.Vertical, SubsetRole)
         style = self.style()
-        # draw background
         style.drawControl(QStyle.CE_HeaderSection, opt, painter, self)
         indicator_rect = QRect(rect)
         text_rect = QRect(rect)
-        indicator_width = opt.fontMetrics.horizontalAdvance(
-            self._IndicatorChar + " "
-        )
+        indicator_width = opt.fontMetrics.horizontalAdvance(self._IndicatorChar + " ")
         indicator_rect.setWidth(indicator_width)
         text_rect.setLeft(indicator_width)
         if issubset:
@@ -79,10 +274,8 @@ class HeaderViewWithSubsetIndicator(HeaderView):
             optindicator.rect = indicator_rect
             optindicator.textAlignment = Qt.AlignCenter
             optindicator.text = self._IndicatorChar
-            # draw subset indicator
             style.drawControl(QStyle.CE_HeaderLabel, optindicator, painter, self)
         opt.rect = text_rect
-        # draw section label
         style.drawControl(QStyle.CE_HeaderLabel, opt, painter, self)
 
     def sectionSizeFromContents(self, logicalIndex: int) -> QSize:
@@ -96,11 +289,17 @@ class HeaderViewWithSubsetIndicator(HeaderView):
 class DataTableView(gui.HScrollStepMixin, RichTableView):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        vheader = HeaderViewWithSubsetIndicator(
-            Qt.Vertical, self, highlightSections=True
-        )
+        self._install_draggable_header()
+
+    def _install_draggable_header(self):
+        vheader = DraggableVerticalHeader(self)
         vheader.setSectionsClickable(True)
         self.setVerticalHeader(vheader)
+
+    def setModel(self, model):
+        super().setModel(model)
+        if not isinstance(self.verticalHeader(), DraggableVerticalHeader):
+            self._install_draggable_header()
 
 
 class _TableDataDelegate(TableDataDelegate):
@@ -112,10 +311,7 @@ class SubsetTableDataDelegate(_TableDataDelegate):
         super().__init__(*args, **kwargs)
         self.subset_opacity = 0.5
 
-    def paint(
-            self, painter: QPainter, option: QStyleOptionViewItem,
-            index: QModelIndex
-    ) -> None:
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         issubset = self.cachedData(index, SubsetRole)
         opacity = painter.opacity()
         if not issubset:
@@ -125,8 +321,7 @@ class SubsetTableDataDelegate(_TableDataDelegate):
             painter.setOpacity(opacity)
 
 
-class TableBarItemDelegate(SubsetTableDataDelegate, gui.TableBarItem,
-                           _TableDataDelegate):
+class TableBarItemDelegate(SubsetTableDataDelegate, gui.TableBarItem, _TableDataDelegate):
     pass
 
 
@@ -151,7 +346,7 @@ class _TableModel(RichTableModel):
         row = self.mapToSourceRows(row)
         try:
             id_ = self.source.ids[row]
-        except (IndexError, AttributeError):  # pragma: no cover
+        except (IndexError, AttributeError):
             return False
         return int(id_) in self._subset
 
@@ -202,13 +397,13 @@ class OWTable(OWWidget):
 
     class Warning(OWWidget.Warning):
         missing_sort_columns = Msg(
-            ( "Cannot restore sorting.\n" + "Missing columns in input table: {}")
+            ("Cannot restore sorting.\n" + "Missing columns in input table: {}")
         )
         non_sortable_input = Msg(
-            ( "Cannot restore sorting.\n" + "Input table cannot be sorted due to implementation constraints.")
+            ("Cannot restore sorting.\n" + "Input table cannot be sorted due to implementation constraints.")
         )
 
-    str_WidgetPositionning: str=Setting("None")
+    str_WidgetPositionning: str = Setting("None")
     buttons_area_orientation = Qt.Vertical
 
     show_distributions = Setting(False)
@@ -220,9 +415,9 @@ class OWTable(OWWidget):
     stored_selection: _Selection = Setting(
         {"rows": [], "columns": []}, schema_only=True
     )
-    stored_sort: _Sorting = Setting(
-        [], schema_only=True
-    )
+    stored_sort: _Sorting = Setting([], schema_only=True)
+    stored_row_order: List[int] = Setting([], schema_only=True)
+
     settings_version = 1
 
     def __init__(self):
@@ -235,10 +430,12 @@ class OWTable(OWWidget):
         self.__have_new_subset = False
         self.dist_color = QColor(220, 220, 220, 255)
 
+        self._reorder_proxy = RowReorderProxyModel()
+
         info_box = gui.vBox(self.controlArea, "Info")
         self.info_text = gui.widgetLabel(info_box)
 
-        box = gui.vBox(self.controlArea,  "Variables")
+        box = gui.vBox(self.controlArea, "Variables")
         self.c_show_attribute_labels = gui.checkBox(
             box, self, "show_attribute_labels",
             "Show variable labels (if present)",
@@ -250,18 +447,24 @@ class OWTable(OWWidget):
         gui.checkBox(box, self, "color_by_class", 'Color by instance classes',
                      callback=self._on_distribution_color_changed)
 
-        box = gui.vBox(self.controlArea,  "Selection")
-
+        box = gui.vBox(self.controlArea, "Selection")
         gui.checkBox(box, self, "select_rows", "Select full rows",
                      callback=self._on_select_rows_changed)
 
         gui.rubber(self.controlArea)
 
-        gui.button(self.buttonsArea, self,  "Restore Original Order",
+        gui.button(self.buttonsArea, self, "Restore Original Order",
                    callback=self.restore_order,
                    tooltip="Show rows in the original order",
                    autoDefault=False,
                    attribute=Qt.WA_LayoutUsesWidgetRect)
+
+        gui.button(self.buttonsArea, self, "Reset Row Order",
+                   callback=self._reset_row_order,
+                   tooltip="Remet les lignes dans l'ordre d'origine",
+                   autoDefault=False,
+                   attribute=Qt.WA_LayoutUsesWidgetRect)
+
         gui.auto_send(self.buttonsArea, self, "auto_commit")
 
         view = DataTableView(sortingEnabled=True)
@@ -283,9 +486,8 @@ class OWTable(OWWidget):
         self.view = view
         self.mainArea.layout().addWidget(self.view)
         self._update_input_summary()
-        widget_positioning.show_and_adjust_at_opening(self,str(self.str_WidgetPositionning))
+        widget_positioning.show_and_adjust_at_opening(self, str(self.str_WidgetPositionning))
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
-
 
     def copy_to_clipboard(self):
         self.copy()
@@ -295,7 +497,6 @@ class OWTable(OWWidget):
 
     @Inputs.data
     def set_dataset(self, data: Optional[Table]):
-        """Set the input dataset."""
         if data is not None:
             summary = tsummary.table_summary(data)
             self.input = InputData(
@@ -305,8 +506,7 @@ class OWTable(OWWidget):
             )
             if isinstance(summary.len, concurrent.futures.Future):
                 def update(_):
-                    QMetaObject.invokeMethod(
-                        self, "_update_info", Qt.QueuedConnection)
+                    QMetaObject.invokeMethod(self, "_update_info", Qt.QueuedConnection)
                 summary.len.add_done_callback(update)
         else:
             self.input = None
@@ -314,7 +514,6 @@ class OWTable(OWWidget):
 
     @Inputs.data_subset
     def set_subset_dataset(self, subset: Optional[Table]):
-        """Set the data subset"""
         if subset is not None and not isinstance(subset, SqlTable):
             ids = set(subset.ids)
         else:
@@ -325,8 +524,7 @@ class OWTable(OWWidget):
     @Inputs.input_autoshow
     def set_input_autoshow(self, le_str):
         if le_str is not None:
-            self.str_WidgetPositionning=str(le_str)
-
+            self.str_WidgetPositionning = str(le_str)
 
     def handleNewSignals(self):
         super().handleNewSignals()
@@ -345,9 +543,7 @@ class OWTable(OWWidget):
             if data is not None and self.__pending_selection is not None:
                 selection = self.__pending_selection
                 self.__pending_selection = None
-                rows = selection["rows"]
-                columns = selection["columns"]
-                self.set_selection(rows, columns)
+                self.set_selection(selection["rows"], selection["columns"])
 
         if self.__have_new_subset and model is not None:
             model.setSubsetRowIds(self._subset_ids or set())
@@ -356,11 +552,13 @@ class OWTable(OWWidget):
         self._setup_view_delegate()
 
         if self.__have_new_data:
-            self.commit.now()
+            if self.auto_commit:
+                self.commit.now()
+            else:
+                self.commit.deferred()
             self.__have_new_data = False
 
     def _setup_table_view(self):
-        """Setup the view with current input data."""
         if self.input is None:
             self.view.setModel(None)
             return
@@ -368,30 +566,31 @@ class OWTable(OWWidget):
         datamodel = self.input.model
         datamodel.setSubsetRowIds(self._subset_ids or set())
 
+        self._reorder_proxy.setSourceModel(datamodel)
+        if self.stored_row_order:
+            self._reorder_proxy.setRowOrder(self.stored_row_order)
+
         view = self.view
         data = self.input.table
         rowcount = data.approx_len()
-        view.setModel(datamodel)
+        view.setModel(self._reorder_proxy)
 
         vheader = view.verticalHeader()
-        option = view.viewOptions()
-        size = view.style().sizeFromContents(
-            QStyle.CT_ItemViewItem, option,
-            QSize(20, 20), view)
+        if isinstance(vheader, DraggableVerticalHeader):
+            vheader.installDragFilter(self._on_row_moved)
 
-        vheader.setDefaultSectionSize(size.height() + 2)
+        vheader.setDefaultSectionSize(
+            view.style().sizeFromContents(
+                QStyle.CT_ItemViewItem, view.viewOptions(), QSize(20, 20), view
+            ).height() + 2
+        )
         vheader.setMinimumSectionSize(5)
         vheader.setSectionResizeMode(QHeaderView.Fixed)
 
-        # Limit the number of rows displayed in the QTableView
-        # (workaround for QTBUG-18490 / QTBUG-28631)
         maxrows = (2 ** 31 - 1) // (vheader.defaultSectionSize() + 2)
         if rowcount > maxrows:
-            sliceproxy = TableSliceProxy(
-                parent=view, rowSlice=slice(0, maxrows))
-            sliceproxy.setSourceModel(datamodel)
-            # First reset the view (without this the header view retains
-            # it's state - at this point invalid/broken)
+            sliceproxy = TableSliceProxy(parent=view, rowSlice=slice(0, maxrows))
+            sliceproxy.setSourceModel(self._reorder_proxy)
             view.setModel(None)
             view.setModel(sliceproxy)
 
@@ -399,17 +598,26 @@ class OWTable(OWWidget):
         assert vheader.sectionSize(0) > 1 or datamodel.rowCount() == 0
 
         self._setup_view_delegate()
-        # update the header (attribute names)
         self._update_variable_labels()
+
+    def _on_row_moved(self, from_pos: int, to_pos: int):
+        self._reorder_proxy.moveRow(from_pos, to_pos)
+        self.stored_row_order = self._reorder_proxy.getRowOrder()
+        self.commit.deferred()
+
+    def _reset_row_order(self):
+        if self.input is None:
+            return
+        n = self.input.model.rowCount()
+        self._reorder_proxy.setRowOrder(list(range(n)))
+        self.stored_row_order = []
+        self.commit.deferred()
 
     def _update_input_summary(self):
         def format_summary(summary):
             if isinstance(summary, tsummary.ApproxSummary):
-                length = summary.len.result() if summary.len.done() else \
-                    summary.approx_len
-            elif isinstance(summary, tsummary.Summary):
-                length = summary.len
-            return length
+                return summary.len.result() if summary.len.done() else summary.approx_len
+            return summary.len
 
         summary, details = self.info.NoInput, ""
         if self.input:
@@ -418,26 +626,22 @@ class OWTable(OWWidget):
         self.info.set_input_summary(summary, details)
 
         if self.input is None:
-            summary = [ "No data."]
+            self.info_text.setText("No data.")
         else:
-            summary = tsummary.format_summary(self.input.summary)
-        self.info_text.setText("\n".join(summary))
+            self.info_text.setText("\n".join(tsummary.format_summary(self.input.summary)))
 
     def _update_variable_labels(self):
-        """Update the variable labels visibility for current view."""
         if self.input is None:
             return
         model = self.input.model
         if self.show_attribute_labels:
-            model.setRichHeaderFlags(
-                RichTableModel.Labels | RichTableModel.Name
-            )
+            model.setRichHeaderFlags(RichTableModel.Labels | RichTableModel.Name)
         else:
             model.setRichHeaderFlags(RichTableModel.Name)
 
     def _on_distribution_color_changed(self):
         if self.input is None:
-            return  # pragma: no cover
+            return
         self._setup_view_delegate()
 
     def _setup_view_delegate(self):
@@ -466,7 +670,6 @@ class OWTable(OWWidget):
         selection_model.setSelectBlocks(not self.select_rows)
         if self.select_rows:
             self.view.setSelectionBehavior(QTableView.SelectRows)
-            # Expand the current selection to full row selection.
             selection_model.select(
                 selection_model.selection(),
                 QItemSelectionModel.Select | QItemSelectionModel.Rows
@@ -475,10 +678,50 @@ class OWTable(OWWidget):
             self.view.setSelectionBehavior(QTableView.SelectItems)
 
     def restore_order(self):
-        """Restore the original data order of the current view."""
-        self.view.sortByColumn(-1, Qt.AscendingOrder)
+        """
+        Restaure l'ordre original en recréant un _TableModel vierge
+        depuis la Table Orange originale (non triée).
+        C'est la seule façon fiable de réinitialiser RichTableModel
+        qui maintient son propre état de tri interne.
+        """
+        if self.input is None:
+            return
+
+        # Recrée un modèle source vierge depuis la Table originale
+        new_model = _TableModel(self.input.table)
+        new_model.setSubsetRowIds(self._subset_ids or set())
+        self.input = InputData(
+            table=self.input.table,
+            summary=self.input.summary,
+            model=new_model,
+        )
+
+        # Rebrancher le proxy sur le nouveau modèle vierge
+        self._reorder_proxy.setSourceModel(new_model)
+
+        # Mettre à jour l'affichage
+        if self.show_attribute_labels:
+            new_model.setRichHeaderFlags(RichTableModel.Labels | RichTableModel.Name)
+        else:
+            new_model.setRichHeaderFlags(RichTableModel.Name)
+
+        # Réinstaller le drag filter sur le nouveau modèle
+        vheader = self.view.verticalHeader()
+        if isinstance(vheader, DraggableVerticalHeader):
+            vheader.installDragFilter(self._on_row_moved)
+
+        # Remettre l'indicateur de tri à zéro visuellement
+        with disconnected(
+            self.view.horizontalHeader().sortIndicatorChanged,
+            self._on_sort_indicator_changed,
+            Qt.UniqueConnection
+        ):
+            self.view.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+
         self.stored_sort = []
+        self.stored_row_order = []
         self.Warning.missing_sort_columns.clear()
+        self.commit.deferred()
 
     @Slot()
     def _update_info(self):
@@ -492,30 +735,16 @@ class OWTable(OWWidget):
             coldesc = model.columns[index]
             colid = self.__encode_column_id(coldesc)
             order = -1 if order == Qt.DescendingOrder else 1
-            # Drop any previously applied sort on this column
-            self.stored_sort = [(n, d) for n, d in self.stored_sort
-                                if n != colid]
+            self.stored_sort = [(n, d) for n, d in self.stored_sort if n != colid]
             self.stored_sort.append((colid, order))
         self.update_selection()
         self.Warning.missing_sort_columns.clear()
 
     def set_sort_columns(self, sorting: List[Tuple[str, int]]):
-        """
-        Set the model sorting parameters.
-
-        Parameters
-        ----------
-        sorting: List[Tuple[str, int]]
-            For each (name: str, inc: int) tuple where `name` is the column
-            name and `inc` is 1 for increasing order and -1 for decreasing
-            order, the model is sorted by that column.
-        """
         if self.input is None:
-            return  # pragma: no cover
+            return
         self.stored_sort = []
-        # Map header ids (names) to column indices
         columns = {id_: i for i, id_ in enumerate(self.__header_ids())}
-        # Suppress the _on_sort_indicator_changed -> commit calls
         with disconnected(self.view.horizontalHeader().sortIndicatorChanged,
                           self._on_sort_indicator_changed, Qt.UniqueConnection):
             for colid, order in sorting:
@@ -531,12 +760,11 @@ class OWTable(OWWidget):
         sort = self.__pending_sort
         self.__pending_sort = None
         if sort is None:
-            return  # pragma: no cover
+            return
         if not self.view.isSortingEnabled() and sort:
             self.Warning.non_sortable_input()
             self.Warning.missing_sort_columns.clear()
             return
-        # Map header ids (names) to column indices
         columns = {id_: i for i, id_ in enumerate(self.__header_ids())}
         missing_columns = []
         sort_ = []
@@ -550,112 +778,116 @@ class OWTable(OWWidget):
             self.Warning.missing_sort_columns(", ".join(missing_columns))
 
     @staticmethod
-    def __encode_column_id(
-            coldesc: Union[TableModel.Column, TableModel.Basket]
-    ) -> str:
-        def escape(s: str) -> str:  # escape possible leading slash
-            if s.startswith("\\"):
-                return "\\" + s
-            return s
+    def __encode_column_id(coldesc):
+        def escape(s):
+            return ("\\" + s) if s.startswith("\\") else s
         if isinstance(coldesc, TableModel.Column):
             return escape(coldesc.var.name)
-        else:
-            lookup = ("TARGET", "META", "FEATURES",)
-            return f"\\BASKET({lookup[coldesc.role]})"
+        lookup = ("TARGET", "META", "FEATURES",)
+        return f"\\BASKET({lookup[coldesc.role]})"
 
     @staticmethod
     def __decode_column_id(cid: str) -> str:
-        if cid.startswith("\\"):
-            return cid[1:]
-        return cid
+        return cid[1:] if cid.startswith("\\") else cid
 
     def __header_ids(self) -> List[str]:
         if self.input is None:
             return []
         return [self.__encode_column_id(c) for c in self.input.model.columns]
 
+    @staticmethod
+    def _normalize_indices(values):
+        if values is None:
+            return []
+
+        arr = np.asarray(values)
+
+        if arr.ndim == 0:
+            return [int(arr.item())]
+
+        return [int(v) for v in arr.ravel().tolist()]
+
     def update_selection(self, *_):
         self.commit.deferred()
 
     def set_selection(self, rows: Sequence[int], columns: Sequence[int]) -> None:
-        """
-        Set the selected `rows` and `columns`.
-
-        `rows` are indices into underlying :class:`Table`
-        """
+        rows = self._normalize_indices(rows)
+        columns = self._normalize_indices(columns)
         self.view.setBlockSelection(rows, columns)
 
     def get_selection(self):
-        """
-        Return the selected row and column indices of the selection in view.
-        """
-        return self.view.blockSelection()
+        rows, cols = self.view.blockSelection()
+        # blockSelection() peut retourner des index décalés quand un proxy
+        # est intercalé. On prend les rows depuis selectedRows() à la place.
+        sel_model = self.view.selectionModel()
+        correct_rows = [int(i.row()) for i in sel_model.selectedRows()]
+        if correct_rows:
+            return correct_rows, self._normalize_indices(cols)
+        return self._normalize_indices(rows), self._normalize_indices(cols)
 
     @gui.deferred
     def commit(self):
-        """
-        Commit/send the current selected row/column selection.
-        """
-        selected_data = table = rowsel = None
+        selected_data = table = None
+        annotated_rows = []
+
         if self.input is not None:
             model = self.input.model
             table = self.input.table
 
-            # Selections of individual instances are not implemented
-            # for SqlTables
             if isinstance(table, SqlTable):
                 self.Outputs.selected_data.send(selected_data)
                 self.Outputs.annotated_data.send(None)
                 return
 
             rowsel, colsel = self.get_selection()
-            self.stored_selection = {"rows": rowsel, "columns": colsel}
+            self.stored_selection = {"rows": list(rowsel), "columns": list(colsel)}
 
             domain = table.domain
-
             if len(colsel) < len(domain.variables) + len(domain.metas):
-                # only a subset of the columns is selected
                 allvars = domain.class_vars + domain.metas + domain.attributes
-                columns = [(c, model.headerData(c, Qt.Horizontal,
-                                                TableModel.DomainRole))
+                columns = [(c, model.headerData(c, Qt.Horizontal, TableModel.DomainRole))
                            for c in colsel]
                 assert all(role is not None for _, role in columns)
 
                 def select_vars(role):
-                    """select variables for role (TableModel.DomainRole)"""
                     return [allvars[c] for c, r in columns if r == role]
 
                 attrs = select_vars(TableModel.Attribute)
                 if attrs and issparse(table.X):
-                    # for sparse data you can only select all attributes
                     attrs = table.domain.attributes
                 class_vars = select_vars(TableModel.ClassVar)
                 metas = select_vars(TableModel.Meta)
                 domain = Orange.data.Domain(attrs, class_vars, metas)
 
-            sortsection = self.view.horizontalHeader().sortIndicatorSection()
             if rowsel:
-                selected_data = table.from_table(domain, table, rowsel)
-            elif sortsection != -1:
-                # Send sorted data
-                permutation = model.mapToSourceRows(...)
-                selected_data = table.from_table(table.domain, table, permutation)
+                row_order = self._reorder_proxy.getRowOrder()
+                proxy_rows = [row_order[r] for r in rowsel if r < len(row_order)]
+                src_rows = [int(model.mapToSourceRows(r)) for r in proxy_rows]
+                selected_data = table.from_table(domain, table, src_rows)
+                annotated_rows = src_rows
             else:
-                # Send all data by default
-                selected_data = table
+                row_order = self._reorder_proxy.getRowOrder()
+                sortsection = self.view.horizontalHeader().sortIndicatorSection()
+
+                if sortsection != -1:
+                    src_rows = [int(model.mapToSourceRows(r)) for r in row_order]
+                    selected_data = table.from_table(table.domain, table, src_rows)
+                else:
+                    if row_order and row_order != list(range(len(row_order))):
+                        src_rows = [int(model.mapToSourceRows(r)) for r in row_order]
+                        selected_data = table.from_table(table.domain, table, src_rows)
+                    else:
+                        selected_data = table
 
         self.Outputs.selected_data.send(selected_data)
-        self.Outputs.annotated_data.send(create_annotated_table(table, rowsel))
+        self.Outputs.annotated_data.send(
+            create_annotated_table(table, annotated_rows) if table is not None else None
+        )
 
     def copy(self):
-        """
-        Copy current table selection to the clipboard.
-        """
         if self.input is not None:
             mime = table_selection_to_mime_data(self.view)
-            QApplication.clipboard().setMimeData(
-                mime, QClipboard.Clipboard
-            )
+            QApplication.clipboard().setMimeData(mime, QClipboard.Clipboard)
 
     def send_report(self):
         if self.input is None:

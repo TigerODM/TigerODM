@@ -184,15 +184,7 @@ class ContinuousVariableEditor(VariableEditor):
             except TypeError:
                 pass
 
-        # Invoking self.setFocusProxy(self._spin), causes the
-        # self._spin.lineEdit()s to have selected texts (focus is set to
-        # provide keyboard functionality, i.e.: pressing ESC after changing
-        # spinbox value). Since the spin text is selected only after the
-        # delegate draws it, it cannot be deselected during initialization.
-        # Therefore connect the deselect() function to
-        # self._spin.lineEdit().selectionChanged only for editor creation.
         self._spin.lineEdit().selectionChanged.connect(deselect)
-
         self._slider.installEventFilter(self)
         self._spin.installEventFilter(self)
 
@@ -206,7 +198,6 @@ class ContinuousVariableEditor(VariableEditor):
             self._value = value
             self.valueChanged.emit(self.value)
             self._spin.setValue(self.value)
-            # prevent emitting self.valueChanged again, due to slider change
             slider_value = self.__map_to_slider(self.value)
             self._value = self.__map_from_slider(slider_value)
             self._slider.setValue(slider_value)
@@ -229,8 +220,7 @@ class ContinuousVariableEditor(VariableEditor):
     def __map_from_slider(self, value: int) -> float:
         return value * 10 ** (-self._n_decimals)
 
-    def eventFilter(self, obj: Union[QSlider, QDoubleSpinBox], event: QEvent) \
-            -> bool:
+    def eventFilter(self, obj: Union[QSlider, QDoubleSpinBox], event: QEvent) -> bool:
         if event.type() == QEvent.Wheel:
             return True
         return super().eventFilter(obj, event)
@@ -262,8 +252,7 @@ class TimeVariableEditor(VariableEditor):
     DATE_FORMAT = "yyyy-MM-dd"
     TIME_FORMAT = "hh:mm:ss"
 
-    def __init__(self, parent: QWidget, variable: TimeVariable,
-                 callback: Callable):
+    def __init__(self, parent: QWidget, variable: TimeVariable, callback: Callable):
         super().__init__(parent, callback)
         self._value: float = 0
         self._variable: TimeVariable = variable
@@ -273,7 +262,8 @@ class TimeVariableEditor(VariableEditor):
         elif not variable.have_date and variable.have_time:
             self._format = TimeVariableEditor.TIME_FORMAT
         else:
-            self._format = (f"{TimeVariableEditor.DATE_FORMAT} " + f"{TimeVariableEditor.TIME_FORMAT}")
+            self._format = (f"{TimeVariableEditor.DATE_FORMAT} "
+                            f"{TimeVariableEditor.TIME_FORMAT}")
 
         class DateTimeEdit(QDateTimeEdit):
             def sizeHint(self) -> QSize:
@@ -287,10 +277,8 @@ class TimeVariableEditor(VariableEditor):
             sizePolicy=QSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         )
         self._edit.dateTimeChanged.connect(self._apply_edit_value)
-
         self.layout().addWidget(self._edit)
         self.setFocusProxy(self._edit)
-
         self._edit.installEventFilter(self)
 
     @property
@@ -311,8 +299,7 @@ class TimeVariableEditor(VariableEditor):
         return self._variable.to_val(date_time.toString(self._format))
 
     def __map_to_datetime(self, value: float) -> QDateTime:
-        return QDateTime.fromString(self._variable.repr_val(value),
-                                    self._format)
+        return QDateTime.fromString(self._variable.repr_val(value), self._format)
 
     def eventFilter(self, obj: QDateTimeEdit, event: QEvent) -> bool:
         if event.type() == QEvent.Wheel:
@@ -321,8 +308,7 @@ class TimeVariableEditor(VariableEditor):
 
 
 class VariableDelegate(QStyledItemDelegate):
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem,
-              index: QModelIndex):
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):
         self.parent().view.openPersistentEditor(index)
         super().paint(painter, option, index)
 
@@ -424,8 +410,7 @@ class VariableItemModel(QStandardItemModel):
             else:
                 values = np.array([])
             color = TableModel.ColorForRole.get(place)
-            self._add_row(variable, values, color,
-                          saved_values.get(variable.name))
+            self._add_row(variable, values, color, saved_values.get(variable.name))
 
     def _add_row(self, variable: Variable, values: np.ndarray, color: QColor,
                  saved_value: Optional[Union[int, float, str]]):
@@ -478,7 +463,7 @@ class VariableItemModel(QStandardItemModel):
 
 
 class OWCreateInstance(OWWidget):
-    name =  "Auto show Create Instance"
+    name = "Auto show Create Instance"
     description = "Interactively create a data instance from sample dataset."
     icon = "icons/CreateInstance.svg"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
@@ -488,21 +473,20 @@ class OWCreateInstance(OWWidget):
     priority = 2310
 
     class Inputs:
-        data = Input( "Data", Table)
+        data = Input("Data", Table)
         reference = Input("Reference", Table)
         input_autoshow = Input("AutoShowConfiguration", str, auto_summary=False)
-
 
     class Outputs:
         data = Output("Data", Table)
 
     class Information(OWWidget.Information):
-        nans_removed = Msg(("Variables with only missing values were " +"removed from the list."))
+        nans_removed = Msg("Variables with only missing values were removed from the list.")
 
-    str_WidgetPositionning: str=Setting("None")
+    str_WidgetPositionning: str = Setting("None")
 
     want_main_area = False
-    BUTTONS = ["Median",  "Mean", "Random", "Input"]
+    BUTTONS = ["Median", "Mean", "Random", "Input"]
     ACTIONS = ["median", "mean", "random", "input"]
     HEADER = [["name", "Variable"],
               ["variable", "Value"]]
@@ -513,14 +497,16 @@ class OWCreateInstance(OWWidget):
     values: Dict[str, Union[float, str]] = Setting({}, schema_only=True)
     append_to_data = Setting(True)
     auto_commit = Setting(True)
-
-    # NOUVEAU (optionnel): applique automatiquement la référence à l'UI
     auto_apply_reference = Setting(True)
-    
+
     def __init__(self):
         super().__init__()
         self.data: Optional[Table] = None
         self.reference: Optional[Table] = None
+
+        # When True, dataChanged from the model does NOT trigger _do_commit.
+        # Set before every programmatic model update, cleared in finally.
+        self._silent_update = False
 
         self.filter_edit = QLineEdit(textChanged=self.__filter_edit_changed,
                                      placeholderText="Filter...")
@@ -561,35 +547,72 @@ class OWCreateInstance(OWWidget):
 
         gui.checkBox(self.buttonsArea, self, "append_to_data",
                      "Append this instance to input data",
-                     callback=self.commit.deferred)
+                     callback=self._do_commit_if_auto)
 
         gui.checkBox(
             self.buttonsArea, self, "auto_apply_reference",
             self.tr("Auto-apply Reference to UI"),
             callback=self._on_auto_apply_reference_changed
         )
-        
+
         gui.rubber(self.buttonsArea)
-        gui.auto_apply(self.buttonsArea, self, "auto_commit")
+
+        # Apply button (always enabled) + "Apply automatically" checkbox
+        apply_box = gui.hBox(self.buttonsArea)
+        self._apply_button = gui.button(
+            apply_box, self, "Apply",
+            callback=self._do_commit,   # appel direct, pas via gui.deferred
+            autoDefault=False
+        )
+        gui.checkBox(
+            apply_box, self, "auto_commit", "Apply automatically",
+            callback=self._on_auto_commit_changed
+        )
 
         self.settingsAboutToBePacked.connect(self.pack_settings)
-        widget_positioning.show_and_adjust_at_opening(self,str(self.str_WidgetPositionning))
+        widget_positioning.show_and_adjust_at_opening(self, str(self.str_WidgetPositionning))
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
+    # ------------------------------------------------------------------
+    # Core output method — plain Python, no Orange deferred machinery
+    # ------------------------------------------------------------------
+
+    def _do_commit(self):
+        """Build and send the output. Always executes immediately."""
+        output_data = None
+        if self.data:
+            output_data = self._create_data_from_values()
+            if self.append_to_data:
+                output_data = self._append_to_data(output_data)
+        self.Outputs.data.send(output_data)
+
+    def _do_commit_if_auto(self):
+        """Send only when 'Apply automatically' is checked."""
+        if self.auto_commit:
+            self._do_commit()
+
+    # ------------------------------------------------------------------
+    # UI callbacks
+    # ------------------------------------------------------------------
+
+    def _on_auto_commit_changed(self):
+        if self.auto_commit:
+            self._do_commit()
 
     def _on_auto_apply_reference_changed(self):
-        # si on active, on applique tout de suite si possible
         if self.auto_apply_reference:
             self._apply_reference_to_ui()
 
     def __filter_edit_changed(self):
         self.proxy_model.setFilterFixedString(self.filter_edit.text().strip())
-        # si référence active + auto, réapplique sur les variables visibles
         if self.auto_apply_reference and self.reference is not None:
             self._apply_reference_to_ui()
 
     def __table_data_changed(self):
-        self.commit.deferred()
+        """Fired when the user manually moves a slider / combo.
+        Suppressed during all programmatic updates via _silent_update."""
+        if not self._silent_update and self.auto_commit:
+            self._do_commit()
 
     def __menu_requested(self, point: QPoint):
         index = self.view.indexAt(point)
@@ -610,51 +633,48 @@ class OWCreateInstance(OWWidget):
             actions.append(action)
         return actions
 
+    # ------------------------------------------------------------------
+    # Reference application — always silent, never commits
+    # ------------------------------------------------------------------
 
     def _apply_reference_to_ui(self, indices: List[QModelIndex] = None):
-        if not self.data or self.reference is None:
-            return
-        if len(self.reference) < 1:
+        """Update UI values from reference row. Never triggers a commit."""
+        if not self.data or self.reference is None or len(self.reference) < 1:
             return
 
-        ref_table = self.reference  # garde une Table, pas RowInstance
-
-        self.model.dataChanged.disconnect(self.__table_data_changed)
+        ref_table = self.reference
+        self._silent_update = True
         try:
             if indices is not None:
-                source_indexes = indices  # indices source (menu)
+                source_indexes = indices
             else:
-                source_indexes = []
-                for prow in range(self.proxy_model.rowCount()):
-                    pindex = self.proxy_model.index(prow, self.Header.variable)
-                    source_indexes.append(self.proxy_model.mapToSource(pindex))
+                source_indexes = [
+                    self.proxy_model.mapToSource(
+                        self.proxy_model.index(prow, self.Header.variable)
+                    )
+                    for prow in range(self.proxy_model.rowCount())
+                ]
 
             for sindex in source_indexes:
                 var = self.model.data(sindex, VariableRole)
-                if var is None:
+                if var is None or var.name not in ref_table.domain:
                     continue
-
-                if var.name not in ref_table.domain:
-                    continue
-
                 ref_var = ref_table.domain[var.name]
-
-                # (optionnel) garde-fou type
                 if (var.is_discrete != ref_var.is_discrete) or \
                         (var.is_continuous != ref_var.is_continuous) or \
                         (var.is_string != ref_var.is_string) or \
                         (var.is_time != ref_var.is_time):
                     continue
-
-                col = ref_table.get_column(ref_var)  # OK sur Table
+                col = ref_table.get_column(ref_var)
                 value = col[0] if len(col) else np.nan
-
                 self.model.setData(sindex, value, ValueRole)
-
         finally:
-            self.model.dataChanged.connect(self.__table_data_changed)
+            self._silent_update = False
 
-        self.commit.deferred()
+    # ------------------------------------------------------------------
+    # Button actions — silent UI update, no automatic commit
+    # ------------------------------------------------------------------
+
     def _initialize_values(self, fun: str, indices: List[QModelIndex] = None):
         cont_fun = {"median": np.nanmedian,
                     "mean": np.nanmean,
@@ -668,37 +688,25 @@ class OWCreateInstance(OWWidget):
         if not self.data or (fun == "input" and not self.reference):
             return
 
-        # "input" devient: appliquer 1 ligne de référence directement aux valeurs UI
         if fun == "input":
             self._apply_reference_to_ui(indices)
             return
-                                                               
-                                                           
 
-        self.model.dataChanged.disconnect(self.__table_data_changed)
+        self._silent_update = True
         try:
-            # correction: rows viennent du proxy -> il faut mapper vers source
             if indices is None:
-                proxy_rows = range(self.proxy_model.rowCount())
                 source_indexes = [
                     self.proxy_model.mapToSource(
                         self.proxy_model.index(r, self.Header.variable)
                     )
-                    for r in proxy_rows
+                    for r in range(self.proxy_model.rowCount())
                 ]
             else:
-                # indices venant du menu sont déjà SOURCE
                 source_indexes = indices
 
             for sindex in source_indexes:
                 variable = self.model.data(sindex, VariableRole)
                 values = self.model.data(sindex, ValuesRole)
-                                      
-                                        
-                                    
-                          
-                 
-                                         
 
                 if variable.is_continuous:
                     value = cont_fun(values)
@@ -712,25 +720,28 @@ class OWCreateInstance(OWWidget):
 
                 self.model.setData(sindex, value, ValueRole)
         finally:
-            self.model.dataChanged.connect(self.__table_data_changed)
+            self._silent_update = False
 
-        self.commit.deferred()
+    # ------------------------------------------------------------------
+    # Inputs — always silent, no automatic commit on arrival
+    # ------------------------------------------------------------------
 
     @Inputs.data
     def set_data(self, data: Table):
         self.data = data
-        self._set_model_data()
-        # si reference déjà là + auto, appliquer sur UI après refresh du modèle
-        if self.auto_apply_reference and self.reference is not None:
-            self._apply_reference_to_ui()
-        self.commit.now()
+        self._silent_update = True
+        try:
+            self._set_model_data()
+            if self.auto_apply_reference and self.reference is not None:
+                self._apply_reference_to_ui()
+        finally:
+            self._silent_update = False
 
     def _set_model_data(self):
         self.Information.nans_removed.clear()
         self.model.removeRows(0, self.model.rowCount())
         if not self.data:
             return
-
         self.model.set_data(self.data, self.values)
         self.values = {}
         self.view.horizontalHeader().setStretchLastSection(False)
@@ -741,28 +752,17 @@ class OWCreateInstance(OWWidget):
     @Inputs.reference
     def set_reference(self, data: Table):
         self.reference = data
-        # mise à jour immédiate de l'UI à l'arrivée de la référence (1 ligne)
         if self.auto_apply_reference:
             self._apply_reference_to_ui()
-        else:
-            # au moins, un commit pour que l’output reflète les valeurs si besoin
-            self.commit.deferred()
-
 
     @Inputs.input_autoshow
     def set_input_autoshow(self, le_str):
         if le_str is not None:
-            self.str_WidgetPositionning=str(le_str)
+            self.str_WidgetPositionning = str(le_str)
 
-
-    @gui.deferred
-    def commit(self):
-        output_data = None
-        if self.data:
-            output_data = self._create_data_from_values()
-            if self.append_to_data:
-                output_data = self._append_to_data(output_data)
-        self.Outputs.data.send(output_data)
+    # ------------------------------------------------------------------
+    # Output builders
+    # ------------------------------------------------------------------
 
     def _create_data_from_values(self) -> Table:
         data = Table.from_domain(self.data.domain, 1)
@@ -774,7 +774,6 @@ class OWCreateInstance(OWWidget):
                 data.Y[:] = np.nan
             for i, m in enumerate(self.data.domain.metas):
                 data.metas[:, i] = "" if m.is_string else np.nan
-
             values = self._get_values()
             for var_name, value in values.items():
                 data[:, var_name] = value
@@ -789,12 +788,12 @@ class OWCreateInstance(OWWidget):
         domain = self.data.domain
         with data.unlocked():
             for attrs, part in ((domain.attributes, data.X),
-                            (domain.class_vars, data.Y.reshape(len(data), -1)),
-                            (domain.metas, data.metas)):
+                                (domain.class_vars, data.Y.reshape(len(data), -1)),
+                                (domain.metas, data.metas)):
                 for idx, var in enumerate(attrs):
                     if var.attributes.get(source_label) == OWCreateInstance:
-                            part[-1, idx] = 1
-                            return data
+                        part[-1, idx] = 1
+                        return data
 
         name = get_unique_names(self.data.domain, "Source ID")
         var = DiscreteVariable(name, values=(self.data.name, instance.name))
@@ -815,6 +814,10 @@ class OWCreateInstance(OWWidget):
                 self.model.data(index, ValueRole)
         return values
 
+    # ------------------------------------------------------------------
+    # Misc
+    # ------------------------------------------------------------------
+
     def send_report(self):
         if not self.data:
             return
@@ -827,7 +830,7 @@ class OWCreateInstance(OWWidget):
             if var.is_primitive():
                 val = var.repr_val(val)
             items.append([f"{var.name}:", val])
-        self.report_table( "Values", items)
+        self.report_table("Values", items)
 
     @staticmethod
     def sizeHint():
