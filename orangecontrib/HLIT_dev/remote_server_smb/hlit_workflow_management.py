@@ -302,19 +302,24 @@ def start_workflow(list_config_html_ows,name):
     str_python_path=str(python_path)
     str_python_path=f'{str_python_path}'
     str_workflow_path = f'{workflow_path}'
-    command = [
-        str_python_path,
-        "-m",
-        "Orange.canvas",
-        str_workflow_path
-    ]
-    print(command)
-
     PID=None
     try:
         if with_terminal:
+            command = [
+                str_python_path,
+                "-m",
+                "Orange.canvas",
+                str_workflow_path
+
+            ]
             PID = subprocess_management.open_terminal(command, with_qt=gui, env=env)
         else:
+            command = [
+                str_python_path,
+                "-m",
+                "Orange.canvas.run",
+                str_workflow_path
+            ]
             PID = subprocess_management.open_hide_terminal(command, with_qt=gui, env=env)
     except Exception as e:
         print(e)
@@ -605,8 +610,9 @@ def dupplicate_workflow(data, id=None):
     data[0]["name"] = data[0]["name"] + "_temp_" + str(id)
     data[0]["ows_file"] = new_workflow
     if aait_store_path not in new_workflow:
-        new_workflow = aait_store_path + new_workflow
-        path = aait_store_path + path
+        if not os.path.isabs(new_workflow):
+            new_workflow = aait_store_path + new_workflow
+            path = aait_store_path + path
     if os.path.exists(new_workflow):
         print("Workflow already exist")
         return
@@ -635,9 +641,9 @@ def delete_temp(id):
         return 1
 
 def change_workflow_id(fichier, time):
-    with open(fichier, "r", encoding="cp1252") as f:
+    with open(fichier, "r", encoding="utf-8") as f:
         contenu = f.read()
-    contenu = re.sub(r"[^\x20-\x7E]", "", contenu)
+    #contenu = re.sub(r"[^\x20-\x7E]", "", contenu)
     pattern = r"('workflow_id'\s*:\s*')([^']*)(')"
 
     def remplacer(match):

@@ -4,6 +4,9 @@ import subprocess
 import urllib.parse
 import sys
 import os
+import tempfile
+
+
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils import subprocess_management
     from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert
@@ -176,80 +179,125 @@ def call_output_workflow(ip_port: str, workflow_id: str,temporisation:float=0.3,
             return 0
         #autre cas res == 2 on continue
         time.sleep(temporisation)
-
 def call_output_workflow_unique(ip_port: str, workflow_id: str, out_tab_output=[]) -> int:
     """
-    Calls a REST API endpoint using curl to retrieve the output of a workflow identified by key_name
-    on the server at ip_port.
+    Calls a REST API endpoint using curl to retrieve the output of a workflow.
 
-    This function is cross-platform (macOS/Windows) and uses subprocess to invoke curl safely.
-    It URL-encodes the workflow key, handles various system and network errors,
-    and returns 0 if everything went well, or 1 if any error occurred.
-
-    Parameters:
-    - ip_port (str): The IP address and port of the target server (e.g. "127.0.0.1:8000")
-    - key_name (str): The workflow name to retrieve output for (e.g. "chatbot basique")
+    Uses temporary files for large responses:
+    - response body is written to a temp .json file
+    - HTTP code is captured separately from stdout
 
     Returns:
-    - int: 0 if success (HTTP 200), 2 if servor is wroking, 1 otherwise (any failure or non-200 or 204 response)
+        0 if success HTTP 200
+        2 if server is working / busy
+        1 otherwise
     """
+
     del out_tab_output[:]
+    temp_output_path = None
+
     try:
-        # Validate input IP:port format
         if not ip_port or ':' not in ip_port:
             print(f"Error: Invalid IP:port format: {ip_port}", file=sys.stderr)
             return 1
 
-        # URL-encode the workflow key
         encoded_key = urllib.parse.quote(workflow_id, safe='')
-
-        # Construct the full URL
         url = f"http://{ip_port}/output-workflow/{encoded_key}"
 
-        # Prepare the curl command with safe options
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".json",
+            delete=False,
+            encoding="utf-8"
+        ) as f:
+            temp_output_path = f.name
+
         curl_cmd = [
-            "curl","--noproxy", '*', "-X", "GET",
+            "curl",
+            "--noproxy", "*",
+            "-X", "GET",
             url,
             "-H", "accept: application/json",
-            "--fail",
             "--silent",
             "--show-error",
             "--write-out", "%{http_code}",
-            "--output", "-"
+            "--output", temp_output_path
         ]
 
-        # Run the curl command and capture output
-        result = subprocess.run(curl_cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW, encoding="utf-8")
-        # Check curl execution status
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        result = subprocess.run(
+            curl_cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags
+        )
+
         if result.returncode != 0:
             print(f"Error: curl execution failed: {result.stderr.strip()}", file=sys.stderr)
             return 1
 
-        # Extract HTTP status code from the last 3 characters of output
-        http_code = result.stdout[-3:]
+        http_code = result.stdout.strip()[-3:]
+
+        if not http_code.isdigit():
+            print(f"Error: Invalid HTTP code returned by curl: {result.stdout}", file=sys.stderr)
+            return 1
+
         if http_code == "200":
             print("Output request succeeded with HTTP 200")
-            # Parse the JSON response
+
             try:
-                data = json.loads(result.stdout[:-3])
-                data_table = convert.convert_json_implicite_to_data_table(data["_result"])
+                with open(temp_output_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                data_table = None
+
+                for _ in range(10):
+                    data_table = convert.convert_json_implicite_to_data_table(data["_result"])
+
+                    if data_table is not None:
+                        break
+
+                    print(data)
+                    time.sleep(0.5)
+
                 out_tab_output.append(data_table)
+
             except json.JSONDecodeError as e:
                 print(f"Error: Failed to parse JSON: {str(e)}", file=sys.stderr)
                 return 1
+
+            except KeyError:
+                print("Error: JSON response does not contain '_result'", file=sys.stderr)
+                return 1
+
             return 0
 
         if 200 < int(http_code) <= 230:
-            #print("server busy try again")
             return 2
+
+        print(f"Error: Unexpected HTTP code: {http_code}", file=sys.stderr)
         return 1
+
     except FileNotFoundError:
         print("Error: curl is not installed on this system.", file=sys.stderr)
+        return 1
+
     except Exception as e:
         print(f"Error: Unexpected exception: {str(e)}", file=sys.stderr)
+        return 1
 
-    return 1
-
+    finally:
+        if temp_output_path:
+            try:
+                if os.path.exists(temp_output_path):
+                    os.remove(temp_output_path)
+            except Exception:
+                pass
 
 
 
@@ -543,29 +591,28 @@ def post_input_to_workflow(ip_port: str, data: str) -> int:
     """
     Sends input data to a specific workflow using a POST request with curl.
 
-    This function is cross-platform (macOS/Windows), and uses subprocess to invoke curl safely.
-    It expects JSON-formatted string for the 'data' parameter and constructs the body accordingly.
-
-    Parameters:
-    - ip_port (str): The IP address and port of the target server (e.g. "127.0.0.1:8000")
-    - data (str): A JSON string representing the 'data' block of the request body
+    Uses a temporary JSON file instead of passing the payload directly in the command line.
+    This avoids command-line length limits with very large payloads.
 
     Returns:
-    - int:
-        0 if the HTTP response code is 200,
-        2 if the HTTP response code is 202, and worklow is starting
-        1 for any other error or non-expected code
+        0 if HTTP 200
+        2 if HTTP 202 and workflow is starting
+        1 otherwise
     """
+    import os
+    import sys
+    import json
+    import tempfile
+    import subprocess
+
+    temp_json_path = None
 
     try:
-        # Validate inputs
         if not ip_port or ':' not in ip_port:
             print(f"Error: Invalid IP:port format: {ip_port}", file=sys.stderr)
             return 1
 
-        # Validate and normalize the JSON input
         try:
-            # Handle double-encoded strings if needed
             parsed = json.loads(data)
             if isinstance(parsed, str):
                 parsed = json.loads(parsed)
@@ -573,60 +620,95 @@ def post_input_to_workflow(ip_port: str, data: str) -> int:
             print(f"Error: Invalid JSON input: {str(e)}", file=sys.stderr)
             return 1
 
-        # Serialize it back to clean JSON (compact and properly formatted)
-        json_payload = json.dumps(parsed)
+        json_payload = json.dumps(parsed, ensure_ascii=False)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".json",
+            delete=False,
+            encoding="utf-8"
+        ) as f:
+            f.write(json_payload)
+            temp_json_path = f.name
 
         url = f"http://{ip_port}/input-workflow"
 
         curl_cmd = [
-            "curl","--noproxy", '*', "-X", "POST",
+            "curl",
+            "--noproxy", "*",
+            "-X", "POST",
             url,
             "-H", "accept: application/json",
             "-H", "Content-Type: application/json",
-            "--fail",
             "--silent",
             "--show-error",
             "--write-out", "%{http_code}",
             "--output", "-",
-            "-d", json_payload
+            "--data-binary", f"@{temp_json_path}",
         ]
 
-        # print("###############################")
-        # print(curl_cmd)
-        # print("###########################")
-        # Execute the command
-        result = subprocess.run(curl_cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags = subprocess.CREATE_NO_WINDOW
 
-        # Check for curl execution error
+        result = subprocess.run(
+            curl_cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags
+        )
+
         if result.returncode != 0:
             print(f"Error: curl execution failed: {result.stderr.strip()}", file=sys.stderr)
             return 1
 
-        # Extract HTTP status code
+        if len(result.stdout) < 3:
+            print(f"Error: Empty or invalid curl response: {result.stdout}", file=sys.stderr)
+            return 1
+
         http_code = result.stdout[-3:]
+        json_part = result.stdout[:-3]
 
         if http_code == "200":
             print("POST succeeded with HTTP 200")
             return 0
+
         elif http_code == "202":
-            json_part = result.stdout[:-3]  # Retirer les 3 derniers caractères (le code HTTP)
-            response_json = json.loads(json_part)
+            try:
+                response_json = json.loads(json_part) if json_part.strip() else {}
+            except json.JSONDecodeError:
+                response_json = {}
+
             message = response_json.get("_message", "")
             if message == "The workflow is already running":
                 print("error POST Workflow already running")
                 return 1
-            #print("POST succeeded with HTTP 202 (accepted)")
+
             return 2
+
         else:
             print(f"Error: Unexpected HTTP code: {http_code}", file=sys.stderr)
+            if json_part.strip():
+                print(f"Response body: {json_part}", file=sys.stderr)
             return 1
 
     except FileNotFoundError:
         print("Error: curl is not installed on this system.", file=sys.stderr)
+        return 1
+
     except Exception as e:
         print(f"Error: Unexpected exception: {str(e)}", file=sys.stderr)
+        return 1
 
-    return 1
+    finally:
+        if temp_json_path:
+            try:
+                if os.path.exists(temp_json_path):
+                    os.remove(temp_json_path)
+            except Exception:
+                pass
 
 def expected_from_max_output(ip_port: str, key_name: str):
     out_tab_input=[]
@@ -724,6 +806,10 @@ def daemonizer_with_input_output(input_data, ip_port: str, key_name: str,tempori
             return 1
         if 0 != call_output_workflow(ip_port, workflow_id, temporisation, out_tab_output):
             print("erreur getting output", key_name)
+            print("kill process")
+            if 0 != call_kill_process(ip_port, key_name):
+                print("error quitting orange", key_name)
+                return 1
             return 1
         break
     if 0!=call_kill_process(ip_port,key_name):

@@ -273,6 +273,8 @@ class OWAgentIA(widget.OWWidget):
         else:
             if not server_uvicorn.is_port_in_use("127.0.0.1", 8000):
                 self.error("An error occurred you need to start server")
+                print("An error occurred you need to start server")
+                self.progressBarFinished()
                 return
             self.thread = thread_management.Thread(self._run_daemonizer,data, self.ip_port, self.key_name, self.poll_sleep)
 

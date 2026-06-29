@@ -1,6 +1,6 @@
 import uvicorn
 import time
-from fastapi import FastAPI, Depends, HTTPException, Security, Request
+from fastapi import FastAPI, Depends, HTTPException, Security, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -17,12 +17,14 @@ from typing import Optional
 import argparse
 import platform
 import subprocess
+import io, base64, zipfile
+
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert, hlit_workflow_management
+    from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert, hlit_workflow_management, management_workflow_sans_api
     from Orange.widgets.orangecontrib.AAIT.utils import MetManagement
     from Orange.widgets.orangecontrib.HLIT_dev.utils import extract_property_ows
 else:
-    from orangecontrib.HLIT_dev.remote_server_smb import convert, hlit_workflow_management
+    from orangecontrib.HLIT_dev.remote_server_smb import convert, hlit_workflow_management, management_workflow_sans_api
     from orangecontrib.AAIT.utils import MetManagement
     from orangecontrib.HLIT_dev.utils import extract_property_ows
 
@@ -126,6 +128,7 @@ def custom_openapi():
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
 
 class InputWorkflowJson(BaseModel):
     workflow_id: str = Field(..., json_schema_extra={"example":"toto.ows"})
@@ -328,8 +331,6 @@ def start_daemon(key_name, api_key: str = Depends(get_api_key)):
             status_code=404,
             content={"message": "Error occurs to get json aait store file"}
         )
-
-
     res = hlit_workflow_management.start_daemon(list_config_html_ows, key_name)
     print(res)
 
@@ -343,24 +344,24 @@ def reset_data_folder_workflow(api_key: str = Depends(get_api_key)):
     else:
         return {"message": "Error no folder found"}
 
-@app.post("/input-workflow", summary="Envoie de donner au process", description="On appelle cette route pour initialiser le process. Lorsqu'elle est appelée le process commence son exécution. Il n'est pas possible de rappeler cette route pour relancer le même process tant que celui ci n'est pas terminé. Pour le rappeler alors qu'il n'a pas fini il faut utiliser la route /reset-data-folder-workflow et ensuite rappeler cette route pour exécuter de nouveau le process. Si le timeout n est pas definit il sera de base de 3,1 ans.")
-def receive_data(input_data: InputWorkflowJson, api_key: str = Depends(get_api_key)):
-    input_data = input_data.model_dump() if hasattr(input_data, "model_dump") else input_data
-    chemin_dossier =""
+def _process_workflow_input(input_data, upload_files=None, files_num_input=1):
+    """Logique commune JSON + multipart. upload_files = liste de Starlette UploadFile (ou None)."""
     data_config = []
-    # check if ODM finidhed to load
-    if input_data["workflow_id"] is None:
+
+    # check if ODM finished to load
+    if input_data.get("workflow_id") is None:
         return JSONResponse(
             status_code=404,
             content={"_message": "The input data is not at good format"}
         )
-    if input_data["data"] is None:
+    if input_data.get("data") is None:
         return JSONResponse(
             status_code=404,
             content={"_message": "The input data is not at good format"}
         )
-    liste_input_num_input=[]
-    for data in input_data["data"] :
+
+    liste_input_num_input = []
+    for data in input_data["data"]:
         if data["num_input"] is None:
             return JSONResponse(
                 status_code=404,
@@ -368,13 +369,17 @@ def receive_data(input_data: InputWorkflowJson, api_key: str = Depends(get_api_k
             )
         liste_input_num_input.append(data["num_input"])
 
-    res=hlit_workflow_management.workflow_id_is_loaded(input_data["workflow_id"],liste_input_num_input)
-    if res==2:
+    # num_input des fichiers (vient de metadata, pas du nom)
+    if upload_files:
+        liste_input_num_input.append(files_num_input)
+
+    res = hlit_workflow_management.workflow_id_is_loaded(input_data["workflow_id"], liste_input_num_input)
+    if res == 2:
         return JSONResponse(
             status_code=404,
             content={"_message": "Internal Error"}
         )
-    if res!=0:
+    if res != 0:
         return JSONResponse(
             status_code=202,
             content={"_message": "The workflow is starting"}
@@ -407,14 +412,227 @@ def receive_data(input_data: InputWorkflowJson, api_key: str = Depends(get_api_k
         table.save(chemin_dossier + "input_data_" + str(data["num_input"]) + ".tab")
         data_config.append({"num_input": data["num_input"], "path": "input_data_" + str(data["num_input"]) + ".tab"})
 
+    if upload_files:
+        CHUNK = 1024 * 1024
+        dossier_files = os.path.join(chemin_dossier, "files")
+        os.makedirs(dossier_files, exist_ok=True)
+        names = []
+        for f in upload_files:
+            safe_name = os.path.basename(f.filename)
+            file_path = os.path.join(dossier_files, safe_name)
+            with open(file_path, "wb") as out:
+                while chunk := f.file.read(CHUNK):
+                    out.write(chunk)
+            f.file.close()
+            names.append(file_path.replace("\\", "/"))
+
+        data_file = {
+            "num_input": files_num_input,
+            "values": [["path"], ["str"], [[name] for name in names]]
+        }
+        table = convert.convert_json_to_orange_data_table(data_file)
+        if table == 1 or table is None or table == []:
+            MetManagement.reset_folder(chemin_dossier, recreate=False)
+            return JSONResponse(
+                status_code=404,
+                content={"_message": "Error creating table from files"}
+            )
+        table.save(chemin_dossier + "input_data_" + str(files_num_input) + ".tab")
+        data_config.append({"num_input": files_num_input, "path": "input_data_" + str(files_num_input) + ".tab"})
+
     with open(chemin_dossier + "config.json", "w") as fichier:
         json.dump({"workflow_id": input_data["workflow_id"], "timeout": input_data["timeout"], "data_config": data_config}, fichier, indent=4)
     with open(chemin_dossier + ".ok", "w") as fichier:
         pass
-    MetManagement.write_file_time(chemin_dossier+"time.txt")
-    return {"_message" : "the input file has been created", "_statut": "Started", "_result": None}
+    MetManagement.write_file_time(chemin_dossier + "time.txt")
+    return {"_message": "the input file has been created", "_statut": "Started", "_result": None}
 
 
+@app.post("/input-workflow", summary="Envoie de donner au process", description="On appelle cette route pour initialiser le process. Lorsqu'elle est appelée le process commence son exécution. Il n'est pas possible de rappeler cette route pour relancer le même process tant que celui ci n'est pas terminé. Pour le rappeler alors qu'il n'a pas fini il faut utiliser la route /reset-data-folder-workflow et ensuite rappeler cette route pour exécuter de nouveau le process. Si le timeout n est pas definit il sera de base de 3,1 ans. Accepte aussi du multipart/form-data avec un champ 'metadata' (JSON string) + des fichiers pour les gros volumes.",
+          openapi_extra={
+              "requestBody": {
+                  "required": True,
+                  "content": {
+                      "application/json": {
+                          "schema": InputWorkflowJson.model_json_schema(),
+                          "example": {
+                              "workflow_id": "toto.ows",
+                              "timeout": 60,
+                              "data": [{
+                                  "num_input": 0,
+                                  "values": [["col1", "col2"], ["float", "str"], [[3, "test"], [3, "test"]]]
+                              }]
+                          }
+                      },
+                      "multipart/form-data": {
+                          "schema": {
+                              "type": "object",
+                              "properties": {
+                                  "metadata": {
+                                      "type": "string",
+                                      "description": "JSON string : {workflow_id, timeout, files_num_input, data}"
+                                  },
+                                  "files": {
+                                      "type": "array",
+                                      "items": {"type": "string", "format": "binary"}
+                                  }
+                              },
+                              "required": ["metadata"]
+                          }
+                      }
+                  }
+              }
+          },
+        )
+async def receive_data(request: Request, api_key: str = Depends(get_api_key)):
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        try:
+            input_data = json.loads(form["metadata"])
+        except (KeyError, json.JSONDecodeError):
+            return JSONResponse(
+                status_code=404,
+                content={"_message": "metadata is missing or not valid JSON"}
+            )
+        input_data.setdefault("timeout", 100000000)
+        input_data.setdefault("data", [])
+        files_num_input = input_data.get("files_num_input", 1)
+        upload_files = form.getlist("files")
+        return _process_workflow_input(input_data, upload_files=upload_files, files_num_input=files_num_input)
+
+    body = await request.json()
+    try:
+        input_data = InputWorkflowJson(**body).model_dump()
+    except Exception:
+        return JSONResponse(
+            status_code=404,
+            content={"_message": "The input data is not at good format"}
+        )
+    return _process_workflow_input(input_data, upload_files=None)
+
+def old_process_workflow_input(input_data, upload_files=None, files_num_input=1):
+    chemin_dossier = ""
+    data_config = []
+
+    if input_data["workflow_id"] is None:
+        return JSONResponse(
+            status_code=404,
+            content={"_message": "The input data is not at good format"}
+        )
+
+    if input_data["data"] is None:
+        return JSONResponse(
+            status_code=404,
+            content={"_message": "The input data is not at good format"}
+        )
+
+    liste_input_num_input = []
+
+    for data in input_data["data"]:
+        if data["num_input"] is None:
+            return JSONResponse(
+                status_code=404,
+                content={"_message": "The input data is not at good format"}
+            )
+        liste_input_num_input.append(data["num_input"])
+
+    # Si fichiers uploadés, on ajoute leurs num_input
+    if upload_files:
+        for i in range(files_num_input):
+            liste_input_num_input.append(i)
+
+    res = hlit_workflow_management.workflow_id_is_loaded(
+        input_data["workflow_id"],
+        liste_input_num_input
+    )
+
+    if res == 2:
+        return JSONResponse(
+            status_code=404,
+            content={"_message": "Internal Error"}
+        )
+
+    if res != 0:
+        return JSONResponse(
+            status_code=202,
+            content={"_message": "The workflow is starting"}
+        )
+
+    chemin_dossier = MetManagement.get_api_local_folder(
+        workflow_id=input_data["workflow_id"]
+    )
+
+    if not os.path.exists(chemin_dossier):
+        os.makedirs(chemin_dossier)
+    else:
+        print(f"Dossier '{chemin_dossier}' existe déjà.")
+        return JSONResponse(
+            status_code=202,
+            content={"_message": "The workflow is already running"}
+        )
+
+    # Ancienne logique JSON -> .tab
+    for key, data in enumerate(input_data["data"]):
+        table = convert.convert_json_to_orange_data_table(data)
+
+        if table == 1:
+            MetManagement.reset_folder(chemin_dossier, recreate=False)
+            return JSONResponse(
+                status_code=404,
+                content={"_message": "The input data table is not a dict"}
+            )
+
+        if table is None or table == []:
+            MetManagement.reset_folder(chemin_dossier, recreate=False)
+            return JSONResponse(
+                status_code=404,
+                content={"_message": "The input data table is empty"}
+            )
+
+        filename = "input_data_" + str(data["num_input"]) + ".tab"
+        table.save(chemin_dossier + filename)
+
+        data_config.append({
+            "num_input": data["num_input"],
+            "path": filename
+        })
+
+    # Nouvelle logique fichiers uploadés
+    if upload_files:
+        for i, file in enumerate(upload_files):
+            filename = file.filename
+            file_path = chemin_dossier + filename
+
+            with open(file_path, "wb") as f:
+                f.write(file.file.read())
+
+            data_config.append({
+                "num_input": i,
+                "path": filename
+            })
+
+    with open(chemin_dossier + "config.json", "w") as fichier:
+        json.dump(
+            {
+                "workflow_id": input_data["workflow_id"],
+                "timeout": input_data["timeout"],
+                "data_config": data_config
+            },
+            fichier,
+            indent=4
+        )
+
+    with open(chemin_dossier + ".ok", "w") as fichier:
+        pass
+
+    MetManagement.write_file_time(chemin_dossier + "time.txt")
+
+    return {
+        "_message": "the input file has been created",
+        "_statut": "Started",
+        "_result": None
+    }
 
 @app.get("/output-workflow/{workflow_id}", summary="Récupération de la sortie d'un process", description="On appelle cette route tant que le process n'a pas fini de générer sa sortie. On lui passe le workflow id d'un process en paramètre. Tant que le process n'a pas fini de générer sa sortie et que le timout n'est pas atteint (définition du timeout optionnel) le process s'éxécute. Lorsque c'est fini il renvoie la table de sortie au format JSON classique de type : {'_message': f'Your workflow is finished.', '_statut': 'Finished', '_result': data} ou data est la table de sortie du workflow formaté aussi au format JSON. Lorsque le process est fini, il supprime le sous dossier dans 'exchangeApi' et on peut donc rappeler le process avec la route /input-workflow .")
 def read_root(workflow_id, api_key: str = Depends(get_api_key)):
@@ -444,6 +662,12 @@ def read_root(workflow_id, api_key: str = Depends(get_api_key)):
                 status_code=202,
                 content={"_message": "Your data are still being processed.", "_statut": None, "_result": None}
             )
+    # je ne comprend pas pourquoi ce n'est pas pris en compte avant je le rajoute ici par protection
+    if not os.path.exists(chemin_dossier + ".out_ok"):
+        return JSONResponse(
+            status_code=202,
+            content={"_message": "Your data are still being processed.", "_statut": None, "_result": None}
+        )
 
     output_path = os.path.join(chemin_dossier, "output.json")
 
@@ -455,11 +679,62 @@ def read_root(workflow_id, api_key: str = Depends(get_api_key)):
                 data = json.load(file)
             except json.JSONDecodeError:
                 data = {}
+
+    output_dir = os.path.join(chemin_dossier, "output_file")
+    if os.path.isdir(output_dir):
+        return JSONResponse(
+            status_code=200,
+            content={"_message": "Your workflow is finished.",
+                     "_statut": "You have file to get",
+                     "_result": data}
+        )
+    else:
+        MetManagement.reset_folder(chemin_dossier, recreate=False)
+        return JSONResponse(
+                    status_code=200,
+                    content={"_message": "Your workflow is finished.", "_statut": "Finished", "_result": data}
+                )
+
+@app.get("/get-file-output-workflow/{workflow_id}",
+            summary="Récupère les fichiers de sortie (zip base64) et libère le workflow")
+def get_file_output_workflow(workflow_id: str, api_key: str = Depends(get_api_key)):
+    chemin_dossier = MetManagement.get_api_local_folder(workflow_id=workflow_id)
+
+    if not os.path.exists(chemin_dossier):
+        return JSONResponse(
+            status_code=404,
+            content={"_message": "Error no folder found"}
+        )
+
+    if not os.path.exists(chemin_dossier + ".out_ok"):
+        return JSONResponse(
+            status_code=202,
+            content={"_message": "Your data are still being processed.", "_statut": None, "_result": None}
+        )
+
+    output_dir = os.path.join(chemin_dossier, "output_file")
+    data = None
+
+    if os.path.isdir(output_dir):
+        fichiers = [
+            f for f in os.listdir(output_dir)
+            if os.path.isfile(os.path.join(output_dir, f))
+        ]
+        if fichiers:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in fichiers:
+                    zf.write(os.path.join(output_dir, f), arcname=f)
+            buffer.seek(0)
+            data = base64.b64encode(buffer.read()).decode("utf-8")
+
     MetManagement.reset_folder(chemin_dossier, recreate=False)
+
     return JSONResponse(
-                status_code=200,
-                content={"_message": "Your workflow is finished.", "_statut": "Finished", "_result": data}
-            )
+        status_code=200,
+        content={"_message": "Your workflow is finished.", "_statut": "Finished", "_result": data}
+    )
+
 
 @app.get("/chat/{workflow_id}",  summary="Stream pour LLM", description="On passe workflow id d'un process. Cela écoute si le workflow écrit un fichier chat_output.txt. Si oui le retour est stream par cette route. Elle reste ouverte tant que le chat n'a pas fini de générer des tokens.")
 def chat(workflow_id, api_key: str = Depends(get_api_key)):
@@ -550,6 +825,20 @@ def delete_dupplicate(id, api_key: str = Depends(get_api_key)):
         content={"message": "Workflow deleted"}
     )
 
+@app.post("/daemon-job", summary="Envoie de donner au process", description="On appelle cette route pour initialiser le process. Lorsqu'elle est appelée le process commence son exécution. Il n'est pas possible de rappeler cette route pour relancer le même process tant que celui ci n'est pas terminé. Pour le rappeler alors qu'il n'a pas fini il faut utiliser la route /reset-data-folder-workflow et ensuite rappeler cette route pour exécuter de nouveau le process. Si le timeout n est pas definit il sera de base de 3,1 ans.")
+def daemon_job(input_data: dict = Body(...), api_key: str = Depends(get_api_key)):
+    data = input_data["data"]
+    key_name = input_data["key_name"]
+    output_data = []
+    if 0 != management_workflow_sans_api.call_workflow_without_api(data, key_name, output_data, start_workflow=False, convert_input=False):
+        return JSONResponse(
+            status_code=404,
+            content={"message": "Error occurs to get json aait store file"}
+        )
+    return JSONResponse(
+        status_code=200,
+        content=output_data[0]
+    )
 
 @app.get("/exit-srv", include_in_schema=False,summary="Quit the server instance", description="On  quitte l instance actuelle")
 def exit_srv(api_key: str = Depends(get_api_key)):

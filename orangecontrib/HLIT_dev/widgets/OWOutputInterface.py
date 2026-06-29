@@ -102,13 +102,18 @@ class OutputInterface(OWWidget):
         json_output = convert.convert_data_table_to_json(self.data)
         if json_output == None:
             return
-
+        # supprime le fichier .out_ok s'il existe
+        if os.path.exists(path_file + ".out_ok"):
+            os.remove(path_file + ".out_ok")
         with open(path_file + "output.json", "w", encoding="utf-8") as file_out:
             json.dump(json_output, file_out, indent=4, ensure_ascii=False)
+            # force le flush Python
+            file_out.flush()
+            # force l'écriture disque OS
+            os.fsync(file_out.fileno())
 
-        with open(path_file + ".out_ok", "w") as fichier:
+        with open(path_file + ".out_ok", "w"):
             pass
-        fichier.close()
 
     def send_data_example(self):
         if self.expected_output == "":

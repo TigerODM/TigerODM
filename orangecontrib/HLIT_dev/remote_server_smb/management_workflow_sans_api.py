@@ -60,7 +60,7 @@ def expected_input_for_workflow(key_name: str, out_tab_input=[]) -> int:
 
 def input_workflow(data_json):
     data_json = json.loads(data_json)
-    result = server_uvicorn.receive_data(data_json)
+    result = server_uvicorn.old_process_workflow_input(data_json)
     return result
 
 def output_workflow(workflow_id):
@@ -113,7 +113,7 @@ def expected_output_for_workflow(key_name: str, out_tab_output=[]) -> int:
         return 1
 
 
-def call_workflow_without_api(input_data=[], key_name: str="", out_tab_output=[]):
+def call_workflow_without_api(input_data=[], key_name: str="", out_tab_output=[], start_workflow=True, convert_input=True):
     del out_tab_output[:]
     #reset_all()
     all_config = server_uvicorn.read_config_file_ows_html()
@@ -136,9 +136,16 @@ def call_workflow_without_api(input_data=[], key_name: str="", out_tab_output=[]
     else:
         input_json = input_data
         input_json["timeout"] = config["timeout_daemon"]
-    server_uvicorn.receive_data(input_json)
-    server_uvicorn.start_workflow(key_name)
-    time.sleep(10)
+    result = server_uvicorn.old_process_workflow_input(input_json)
+    if hasattr(result, 'body'):
+        result = json.loads(result.body.decode('utf-8'))
+    if result.get("_statut") != "Started":
+        data = duplicate_workflow_and_call_api(key_name, input_data)
+        out_tab_output.append(data)
+        return 0
+    if start_workflow:
+        server_uvicorn.start_workflow(key_name)
+    #time.sleep(10)
     while True:
         res = server_uvicorn.read_root(input_json["workflow_id"])
         data = {}
@@ -147,12 +154,29 @@ def call_workflow_without_api(input_data=[], key_name: str="", out_tab_output=[]
             return 1
         if "_result" in data:
             if data["_result"] is not None:
-                data_table = convert.convert_json_implicite_to_data_table(data["_result"])
-                out_tab_output.append(data_table)
+                if convert_input:
+                    data_table = convert.convert_json_implicite_to_data_table(data["_result"])
+                    out_tab_output.append(data_table)
+                else:
+                    out_tab_output.append(data["_result"])
                 break
         time.sleep(0.1)
     server_uvicorn.kill_process(key_name)
     return 0
+
+def duplicate_workflow_and_call_api(key_name: str, input_data=[], out_tab_output=[]):
+    del out_tab_output[:]
+    data = server_uvicorn.dupplicate(key_name)
+    if hasattr(data, 'body'):
+        data = json.loads(data.body.decode('utf-8'))
+    input_data["workflow_id"] = input_data["workflow_id"] + "_" + str(data["id"])
+    out_tab_output = []
+    if 0 != call_workflow_without_api(input_data, data["key_name"], out_tab_output, start_workflow=True, convert_input=False):
+        print("Erreur lors de l'appel call workflow pendant la dupplication")
+        return []
+    server_uvicorn.delete_dupplicate(data["id"])
+    return out_tab_output[0]
+
 
 if __name__ == "__main__":
     key_name = "export_md"

@@ -20,15 +20,17 @@ VALID_UNITS = {
     "days": lambda n: schedule.every(n).days,
 }
 
-WEEKDAYS = {
-    "monday": schedule.every().monday,
-    "tuesday": schedule.every().tuesday,
-    "wednesday": schedule.every().wednesday,
-    "thursday": schedule.every().thursday,
-    "friday": schedule.every().friday,
-    "saturday": schedule.every().saturday,
-    "sunday": schedule.every().sunday,
-}
+def _get_weekday(unit: str):
+    return {
+        "monday":    schedule.every().monday,
+        "tuesday":   schedule.every().tuesday,
+        "wednesday": schedule.every().wednesday,
+        "thursday":  schedule.every().thursday,
+        "friday":    schedule.every().friday,
+        "saturday":  schedule.every().saturday,
+        "sunday":    schedule.every().sunday,
+    }[unit]
+
 
 AVAILABLE_UNITS_EVERY = ["seconds", "minutes", "hours", "days"]
 
@@ -54,7 +56,7 @@ class SchedulerApp:
         print(f"[{now}] Appel API... job={name}")
 
         try:
-            management_workflow_sans_api.call_workflow_without_api(key_name=name)
+            management_workflow_sans_api.call_workflow_without_api(key_name=name, convert_input=False)
         except Exception as e:
             print(f"[{now}] Erreur job={name}: {e}")
 
@@ -84,8 +86,8 @@ class SchedulerApp:
         if "at" in job:
             at_time = job["at"]
 
-            if unit in WEEKDAYS:
-                WEEKDAYS[unit].at(at_time).do(self.run_script_async, job).tag(name)
+            if unit in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]:
+                _get_weekday(unit).at(at_time).do(self.run_script_async, job).tag(name)
                 return
 
             if unit in ["day", "daily"]:
@@ -95,6 +97,7 @@ class SchedulerApp:
         raise ValueError(f"Invalid job configuration: {job}")
 
     def main(self, jobs=None):
+        schedule.clear()
         if jobs is None:
             config = server_uvicorn.read_config_file_ows_html()
             jobs = config["message"]
