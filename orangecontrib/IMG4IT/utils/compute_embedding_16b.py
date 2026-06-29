@@ -3,12 +3,6 @@ import numpy as np
 from torchvision import models, transforms as T
 from transformers import AutoModel, AutoImageProcessor
 from PIL import Image
-import os
-if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import get_local_store_path
-else:
-    from orangecontrib.AAIT.utils.MetManagement import get_local_store_path
-
 
 def load_tif_image(path):
     img = Image.open(path)
@@ -24,8 +18,7 @@ def load_tif_image(path):
 
 
 
-def compute_dinov2_embedding(list_tif_in,progress_callback=None,argself=None):
-    dino_path = get_local_store_path() + "/Models/ComputerVision/dinov2-base"
+def compute_dinov2_embedding(list_tif_in,dino_path,progress_callback=None,argself=None):
     dino_model = AutoModel.from_pretrained(dino_path).to(torch.device("cpu")).eval()
     dino_processor = AutoImageProcessor.from_pretrained(dino_path,use_fast=False)
     result_vects=[]
@@ -63,8 +56,7 @@ def compute_dinov2_embedding(list_tif_in,progress_callback=None,argself=None):
     result_vects_transpose= [list(col) for col in zip(*[row.tolist() for row in result_vects])]
     return result_vects_transpose
 
-def compute_resnet_embedding(list_tif_in,progress_callback=None,argself=None):
-    resnet_path = get_local_store_path() + "models/ComputerVision/resnet50/resnet50-0676ba61.pth"
+def compute_resnet_embedding(list_tif_in,resnet_path,progress_callback=None,argself=None):
     resnet = models.resnet50()
     state_dict = torch.load(resnet_path, map_location=torch.device("cpu"))
     resnet.load_state_dict(state_dict)

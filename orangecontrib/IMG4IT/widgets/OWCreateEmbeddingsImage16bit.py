@@ -55,13 +55,16 @@ class OWCreateEmbeddings(widget.OWWidget):
     @Inputs.model
     def set_model(self, model):
         self.error("")
+        self.model_path=None
         if model is None:
             self.Outputs.data.send(None)
             return
         if "resnet50-0676ba61.pth" in model:
             self.model="resnet50"
+            self.model_path=model
         elif "dinov2-base"in model:
             self.model="dinov2"
+            self.model_path=model
         else :
             self.error("This model can not be loaded")
             self.model=None
@@ -82,6 +85,7 @@ class OWCreateEmbeddings(widget.OWWidget):
         self.list_image=[]
         # Data Management
         self.model = None
+        self.model_path=None
         self.data = None
         self.thread = None
         self.autorun = True
@@ -163,11 +167,10 @@ class OWCreateEmbeddings(widget.OWWidget):
         # --> progress is used in the main function to track progress (with a callback)
         # --> result is used to collect the result from main function
         # --> finish is just an empty signal to indicate that the thread is finished
-
         if self.model=="dinov2":
-            self.thread = thread_management.Thread(compute_embedding_16b.compute_dinov2_embedding, self.list_image)
+            self.thread = thread_management.Thread(compute_embedding_16b.compute_dinov2_embedding,self.list_image,self.model_path)
         elif self.model=="resnet50":
-            self.thread = thread_management.Thread(compute_embedding_16b.compute_resnet_embedding, self.list_image)
+            self.thread = thread_management.Thread(compute_embedding_16b.compute_resnet_embedding, self.list_image,self.model_path)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)

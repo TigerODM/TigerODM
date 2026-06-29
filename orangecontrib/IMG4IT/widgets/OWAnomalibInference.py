@@ -4,7 +4,6 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-
 from Orange.data import StringVariable, ContinuousVariable, Domain, Table
 from AnyQt.QtWidgets import QApplication, QPushButton, QCheckBox
 from Orange.widgets.settings import Setting
@@ -134,7 +133,6 @@ def run_inference(images_table, image_col_name, model_table, progress_callback=N
 class OWAnomalibInference(base_widget.BaseListWidget):
     name = "Anomalib Inference"
     description = "Run Anomalib inference on a list of images using a trained model."
-    category = "Computer Vision"
     icon = "icons/anomaly_detection.png"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
         icon = "icons_dev/anomaly_detection.png"

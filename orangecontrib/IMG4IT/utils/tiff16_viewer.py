@@ -69,6 +69,137 @@ else:
 
 from scipy.ndimage import gaussian_filter
 import pydicom
+
+# Police 8x8 simplifiée (1 = pixel allumé, 0 = éteint)
+FONT_8x8 = {
+    'A': [0x18, 0x3C, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
+    'B': [0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00],
+    'C': [0x3C, 0x66, 0x06, 0x06, 0x06, 0x66, 0x3C, 0x00],
+    'D': [0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00],
+    'E': [0x7E, 0x06, 0x06, 0x3E, 0x06, 0x06, 0x7E, 0x00],
+    'F': [0x7E, 0x06, 0x06, 0x3E, 0x06, 0x06, 0x06, 0x00],
+    'G': [0x3C, 0x66, 0x06, 0x56, 0x66, 0x66, 0x3C, 0x00],
+    'H': [0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00],
+    'I': [0x3C, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00],
+    'J': [0x1C, 0x0C, 0x0C, 0x0C, 0x0C, 0x6C, 0x38, 0x00],
+    'L': [0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x7E, 0x00],
+    'M': [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00],
+    'N': [0x63, 0x73, 0x7B, 0x6F, 0x67, 0x63, 0x63, 0x00],
+    'O': [0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
+    'P': [0x7C, 0x66, 0x66, 0x7C, 0x06, 0x06, 0x06, 0x00],
+    'R': [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00],
+    'S': [0x3C, 0x66, 0x06, 0x3C, 0x60, 0x66, 0x3C, 0x00],
+    'T': [0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00],
+    'U': [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
+    'V': [0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00],
+    'W': [0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00],
+    'X': [0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00],
+    'Y': [0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00],
+    'Z': [0x7E, 0x60, 0x30, 0x18, 0x0C, 0x06, 0x7E, 0x00],
+    '0': [0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00],
+    '1': [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00],
+    '2': [0x3C, 0x66, 0x60, 0x30, 0x18, 0x0C, 0x7E, 0x00],
+    '3': [0x3C, 0x66, 0x60, 0x3C, 0x60, 0x66, 0x3C, 0x00],
+    '4': [0x66, 0x66, 0x66, 0x7E, 0x60, 0x60, 0x60, 0x00],
+    '5': [0x7E, 0x06, 0x06, 0x7C, 0x60, 0x66, 0x3C, 0x00],
+    '6': [0x3C, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3C, 0x00],
+    '7': [0x7E, 0x60, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00],
+    '8': [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00],
+    '9': [0x3C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x3C, 0x00],
+    ' ': [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    '_': [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00],
+    '-': [0x00, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00, 0x00],
+    '.': [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
+    ':': [0x00, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00],
+}
+
+
+def _draw_char_inplace(arr: np.ndarray, char: str, x: int, y: int, size: int, value: int):
+    """Dessine un caractère unique en utilisant la grille bitmap."""
+    bitmap = FONT_8x8.get(char.upper(), [0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF, 0x00])
+    H, W = arr.shape[:2]
+
+    for row_idx, row_val in enumerate(bitmap):
+        for col_idx in range(8):
+            # On vérifie si le bit est à 1 (pixel allumé)
+            if (row_val >> (7 - col_idx)) & 1:
+                # Dessin d'un bloc de taille 'size x size'
+                r0, r1 = y + row_idx * size, y + (row_idx + 1) * size
+                c0, c1 = x + col_idx * size, x + (col_idx + 1) * size
+
+                # Clamp aux limites de l'image
+                r0, r1 = max(0, min(r0, H)), max(0, min(r1, H))
+                c0, c1 = max(0, min(c0, W)), max(0, min(c1, W))
+
+                if r1 > r0 and c1 > c0:
+                    if arr.ndim == 2:
+                        arr[r0:r1, c0:c1] = value
+                    else:
+                        arr[r0:r1, c0:c1, :3] = value
+
+
+def draw_text_on_image(arr: np.ndarray, text: str, x: int, y: int, size: int, value: int):
+    """Dessine une chaîne de caractères complète."""
+    curr_x = x
+    spacing = 2 * size
+    char_w = 8 * size
+
+    for char in text:
+        _draw_char_inplace(arr, char, curr_x, y, size, value)
+        curr_x += char_w + spacing
+
+
+def write_text_by_spec(src_path: str, dst_path: str, write_spec: str) -> Dict[str, Any]:
+    """
+    Parse et applique plusieurs écritures si présentes.
+    Supporte : "Write | line=... | Write | line=..."
+    """
+    # Chargement Image initiale
+    arr = tiff.imread(src_path)
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
+    out = np.array(arr, copy=True)
+
+    # On découpe la chaîne par le mot clé "Write"
+    # [1:] pour ignorer le premier élément vide avant le premier "Write"
+    commands = re.split(r'Write\s*\|', write_spec, flags=re.I)
+
+    applied_ops = []
+
+    for cmd in commands:
+        if not cmd.strip(): continue
+
+        raw = cmd.strip()
+
+        # Extraction du texte
+        m_text = re.search(r"text\s*=\s*([^|]+)", raw, re.I)
+        text = m_text.group(1).strip() if m_text else "T"
+
+        def get_int(key, default):
+            # Recherche du pattern key = valeur
+            m = re.search(rf"\b{key}\s*=\s*(\d+)", raw, re.I)
+            return int(m.group(1)) if m else default
+
+        col = get_int("col", 0)
+        line = get_int("line", 0)
+        size = get_int("size", 1)
+        val = get_int("value", 255)  # 255 pour 8bits, 65535 pour 16bits
+
+        # Application du texte sur l'image en cours
+        draw_text_on_image(out, text, col, line, size, val)
+        applied_ops.append({"text": text, "pos": (col, line)})
+
+    # Sauvegarde finale après toutes les écritures
+    photometric = "minisblack" if out.ndim == 2 else "rgb"
+    tiff.imwrite(dst_path, out, photometric=photometric)
+
+    return {
+        "src": src_path,
+        "dst": dst_path,
+        "operation": "multi-write",
+        "count": len(applied_ops),
+        "details": applied_ops
+    }
 # -------------------------------
 # Safe cast helpers (évite float(None))
 # -------------------------------
@@ -1602,6 +1733,8 @@ def _which_op(spec: str) -> str:
         return "convert"
     if head.startswith("draw"):
         return "draw"
+    if head.startswith("write"):
+        return "write"
     raise ValueError(f"Unknown operation type in spec header: '{head}'.")
 
 
@@ -1611,15 +1744,81 @@ def _is_Rt_spec(spec: str) -> bool:
     return bool(re.search(r"R\s*=\s*\[\[.*?\]\].*t\s*=\s*\[.*?\]", spec, flags=re.I | re.S))
 
 
+def _execute_write_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
+    """Applique une commande Write sur un array numpy en mémoire."""
+    m_text = re.search(r"text\s*=\s*([^|]+)", params, re.I)
+    text = m_text.group(1).strip() if m_text else "T"
+
+    def get_val(key, default):
+        m = re.search(rf"\b{key}\s*=\s*(\d+)", params, re.I)
+        return int(m.group(1)) if m else default
+
+    col = get_val("col", 0)
+    line = get_val("line", 0)
+    size = get_val("size", 1)
+    val = get_val("value", 255)
+
+    draw_text_on_image(arr, text, col, line, size, val)
+    return arr
+
+
+def _execute_draw_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
+    """Applique une commande Draw (Rectangle, Cross) sur un array numpy en mémoire."""
+    m_type = re.search(r"type\s*=\s*([^|]+)", params, re.I)
+    d_type = m_type.group(1).strip().lower() if m_type else "rectangle"
+
+    # Extraction des coordonnées (gère les listes séparées par des espaces ou des valeurs uniques)
+    m_line = re.search(r"\bline\s*=\s*([0-9\.\s]+)", params, re.I)
+    m_col = re.search(r"\bcol\s*=\s*([0-9\.\s]+)", params, re.I)
+
+    lines = [int(float(x.strip())) for x in m_line.group(1).split()] if m_line else [0]
+    cols = [int(float(x.strip())) for x in m_col.group(1).split()] if m_col else [0]
+
+    # Extraction largeur/hauteur
+    m_w = re.search(r"\b(?:width|delta[_\s]*col)\s*=\s*(\d+)", params, re.I)
+    m_h = re.search(r"\b(?:height|delta[_\s]*line)\s*=\s*(\d+)", params, re.I)
+    w = int(m_w.group(1)) if m_w else 10
+    h = int(m_h.group(1)) if m_h else 10
+
+    for x, y in zip(cols, lines):
+        if d_type == "rectangle":
+            _draw_white_rectangle_inplace(arr, x, y, w, h)
+        elif d_type == "invcross":
+            _draw_invcross_inplace(arr, x, y, radius=3)
+        else:
+            _draw_cross_inplace(arr, x, y, radius=3)
+    return arr
+
+
+def _execute_crop_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
+    """Applique un Crop sur un array numpy en mémoire."""
+
+    def get_int(pattern):
+        m = re.search(pattern, params, flags=re.I)
+        return int(m.group(1)) if m else None
+
+    line = get_int(r"\bline\s*=\s*(-?\d+)")
+    col = get_int(r"\bcol\s*=\s*(-?\d+)")
+    dline = get_int(r"\bdelta[_\s]*line\s*=\s*(\d+)")
+    dcol = get_int(r"\bdelta[_\s]*col\s*=\s*(\d+)")
+
+    if None not in (line, col, dline, dcol):
+        H, W = arr.shape[:2]
+        y0, x0 = max(0, line), max(0, col)
+        y1, x1 = min(H, y0 + dline), min(W, x0 + dcol)
+        return np.ascontiguousarray(arr[y0:y1, x0:x1, ...])
+    return arr
+
+
 def process_tiff_spec(src_path: str, dst_path: str, spec: str,
                       default_he_bins: int = 256, default_clahe_clip: float = 0.01) -> Dict[str, Any]:
     if _is_Rt_spec(spec):
         return apply_transform_to_image_file(src_path, dst_path, spec)
 
-    op = _which_op(spec)
+    op_head = spec.strip().split("|", 1)[0].strip().lower()
 
-    if op == "convert":
-        # ---- AJOUT: support "Convert | out = dcm/png/jpg/..." + params PDF/JPEG ----
+    # 1. Traitement spécifique isolé : Convert
+    if op_head.startswith("convert"):
         cfg = _parse_convert_spec(spec)
         out_ext = cfg.get("out")
         dst_eff = dst_path
@@ -1630,8 +1829,7 @@ def process_tiff_spec(src_path: str, dst_path: str, spec: str,
             dst_eff = base + "." + out_ext
 
         res = convert_file_to_image_best_effort(
-            src_path=src_path,
-            dst_path=dst_eff,
+            src_path=src_path, dst_path=dst_eff,
             pdf_page_index=int(cfg.get("pdf_page_index", 0)),
             pdf_zoom=float(cfg.get("pdf_zoom", 2.0)),
             jpeg_quality=int(cfg.get("jpeg_quality", 95)),
@@ -1640,28 +1838,54 @@ def process_tiff_spec(src_path: str, dst_path: str, spec: str,
         res["dst"] = dst_eff
         return res
 
-    if op == "transform":
-        res = transform_tiff16_to_tiff8(
-            src_path=src_path,
-            dst_path=dst_path,
-            transform_spec=spec,
-            default_he_bins=default_he_bins,
-            default_clahe_clip=default_clahe_clip,
-        )
+    # 2. Traitement spécifique isolé : Transform (S'il est seul)
+    if op_head.startswith("transform") and "write" not in spec.lower() and "draw" not in spec.lower():
+        res = transform_tiff16_to_tiff8(src_path, dst_path, spec, default_he_bins, default_clahe_clip)
         res["operation"] = "transform"
         return res
 
-    if op == "crop":
-        res = crop_tiff_by_spec(src_path=src_path, dst_path=dst_path, crop_spec=spec)
-        res["operation"] = "crop"
-        return res
+    # 3. Logique MULTI-OPÉRATIONS (Chaînes mixtes de Write, Draw, Crop)
+    arr = tiff.imread(src_path)
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
 
-    if op == "draw":
-        res = draw_on_image_by_spec(src_path=src_path, dst_path=dst_path, draw_spec=spec)
-        res["operation"] = "draw"
-        return res
+    working_image = np.array(arr, copy=True)
 
-    raise ValueError(f"Unsupported operation: {op}")
+    # On découpe la chaîne par les mots clés principaux
+    tokens = re.split(r'(?i)\b(Write|Draw|Crop)\s*\|', spec)
+    operations_count = 0
+
+    # tokens = ['', 'Write', ' line=... ', 'Draw', ' line=... ']
+    for i in range(1, len(tokens), 2):
+        cmd_type = tokens[i].strip().lower()
+        cmd_params = tokens[i + 1].strip() if (i + 1) < len(tokens) else ""
+
+        if not cmd_params: continue
+
+        if cmd_type == "write":
+            working_image = _execute_write_on_arr(working_image, cmd_params)
+        elif cmd_type == "draw":
+            working_image = _execute_draw_on_arr(working_image, cmd_params)
+        elif cmd_type == "crop":
+            working_image = _execute_crop_on_arr(working_image, cmd_params)
+
+        operations_count += 1
+
+    # Sauvegarde finale de l'image contenant toutes les annotations/crops
+    photometric = None
+    if working_image.ndim == 2:
+        photometric = "minisblack"
+    elif working_image.ndim == 3 and working_image.shape[2] in (3, 4):
+        photometric = "rgb"
+
+    tiff.imwrite(dst_path, working_image, photometric=photometric)
+
+    return {
+        "src": src_path,
+        "dst": dst_path,
+        "operation": "sequential_chain",
+        "count": operations_count
+    }
 
 
 def transform_tiff16_to_tiff8(src_path: str, dst_path: str, transform_spec: str,
@@ -2078,41 +2302,24 @@ def convert_file_to_image_best_effort(
         ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
         ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
 
-        ds.PatientName = "ANON"
-        ds.PatientID = "ANON"
-        ds.StudyInstanceUID = generate_uid()
-        ds.SeriesInstanceUID = generate_uid()
-        ds.Modality = "OT"
-        ds.InstanceNumber = 1
-
-        ds.Rows = int(arr.shape[0])
-        ds.Columns = int(arr.shape[1])
+        ds.Rows, ds.Columns = int(arr.shape[0]), int(arr.shape[1])
         ds.SamplesPerPixel = 1
-        ds.PhotometricInterpretation = "MONOCHROME1"
-        ds.PixelRepresentation = 0
+
+        # MONOCHROME2 signifie : 0 = noir, Max = blanc.
+        # C'est le standard pour éviter l'effet "négatif".
+        ds.PhotometricInterpretation = "MONOCHROME2"
 
         ds.BitsAllocated = 16
         ds.BitsStored = 16
         ds.HighBit = 15
-        ds.PlanarConfiguration = 0
+        ds.PixelRepresentation = 0  # unsigned integer
 
         ds.is_little_endian = True
         ds.is_implicit_VR = False
         ds.PixelData = arr.tobytes()
 
         ds.save_as(out_path, write_like_original=False)
-
-        return {
-            "ok": True,
-            "input": in_path,
-            "output": out_path,
-            "input_type": "tiff",
-            "output_format": "dcm",
-            "width": int(arr.shape[1]),
-            "height": int(arr.shape[0]),
-            "dtype": str(arr.dtype),
-            "via": "tifffile->pydicom",
-        }
+        return {"ok": True, "output_format": "dcm", "via": "tifffile->pydicom"}
 
     # ---------- DICOM (.dcm) -> image ----------
     if ext_in in (".dcm", ".dicom"):
@@ -2129,85 +2336,95 @@ def convert_file_to_image_best_effort(
 
         if arr.ndim == 3:
             arr = arr[0]
-        elif arr.ndim != 2:
-            raise RuntimeError(f"DICOM: forme non supportée: {arr.shape}")
 
-        photo = str(getattr(ds, "PhotometricInterpretation", "")).upper()
-
-        if ext_out == "dcm":
-            ds2 = ds.copy()
-
-            if arr.dtype == np.int16:
-                ds2.PixelRepresentation = 1
-            else:
-                ds2.PixelRepresentation = 0
-                if arr.dtype != np.uint16:
-                    arr = arr.astype(np.uint16)
-
-            ds2.BitsAllocated = 16
-            ds2.BitsStored = 16
-            ds2.HighBit = 15
-            ds2.SamplesPerPixel = 1
-            ds2.PhotometricInterpretation = "MONOCHROME2"
-
-            ds2.Rows, ds2.Columns = int(arr.shape[0]), int(arr.shape[1])
-            ds2.PixelData = arr.tobytes()
-
-            try:
-                from pydicom.uid import ExplicitVRLittleEndian
-                ds2.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-                ds2.is_implicit_VR = False
-                ds2.is_little_endian = True
-            except Exception:
-                pass
-
-            ds2.save_as(out_path, write_like_original=False)
-
-            return {
-                "ok": True,
-                "input": in_path,
-                "output": out_path,
-                "input_type": "dicom",
-                "output_format": "dcm",
-                "width": int(arr.shape[1]),
-                "height": int(arr.shape[0]),
-                "dtype": str(arr.dtype),
-                "photometric_in": photo or None,
-                "via": "pydicom",
-            }
-
-        if ext_out not in ("tif", "tiff"):
-            raise RuntimeError("ecriture autorisée depuis dcm : seulement le tif!!!")
-
-        import tifffile as tiff
-
-        if np.issubdtype(arr.dtype, np.integer):
-            info = np.iinfo(arr.dtype)
-            arr = info.max - arr
-        else:
-            arr = arr.max() - arr
-
+        # --- CORRECTIF : SUPPRESSION DE L'INVERSION ---
+        # On ne fait plus "info.max - arr". On garde les données brutes.
         if arr.dtype == np.int16:
-            pass
+            # Pour les CT scans, oiftin décale souvent pour éviter les valeurs négatives en TIFF
+            # mais on préserve la dynamique linéaire.
+            offset = abs(arr.min()) if arr.min() < 0 else 0
+            arr = (arr.astype(np.int32) + offset).astype(np.uint16)
         elif arr.dtype != np.uint16:
             arr = arr.astype(np.uint16)
 
-        tiff.imwrite(out_path, arr)
+        if ext_out not in ("tif", "tiff"):
+            raise RuntimeError("Seule la sortie .tif est autorisée depuis un DICOM pour préserver la qualité.")
+
+        import tifffile as tiff
+        # On stocke l'offset dans la description pour pouvoir le retrouver si besoin
+        tiff.imwrite(out_path, arr, compression='zlib')
 
         return {
             "ok": True,
             "input": in_path,
             "output": out_path,
             "input_type": "dicom",
-            "output_format": ext_out,
             "width": int(arr.shape[1]),
             "height": int(arr.shape[0]),
             "dtype": str(arr.dtype),
-            "photometric_in": photo or None,
             "via": "pydicom->tifffile",
             "note": "TIFF 16 bits inversé (blanc <-> noir).",
         }
+    
+    # ---------- RAW (RW2, CR2, NEF, ARW, ...) -> image ----------
+    RAW_EXTS = {".rw2", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".raf", ".dng", ".pef", ".raw"}
+    if ext_in in RAW_EXTS:
+        try:
+            import rawpy
+            from PIL import Image
 
+            with rawpy.imread(in_path) as raw:
+                rgb = raw.postprocess(
+                    use_camera_wb=True,
+                    half_size=False,
+                    no_auto_bright=False,
+                    output_bps=8,
+                )
+            # rgb est un ndarray uint8 (H, W, 3)
+            im = Image.fromarray(rgb, mode="RGB")
+
+            if ext_out in ("jpg", "jpeg"):
+                im.save(out_path, format="JPEG", quality=int(jpeg_quality), optimize=True)
+            elif ext_out in ("tif", "tiff"):
+                im.save(out_path)
+            else:
+                im.save(out_path)
+
+            return {
+                "ok": True,
+                "input": in_path,
+                "output": out_path,
+                "input_type": "raw",
+                "input_ext": ext_in,
+                "output_format": ext_out,
+                "width": int(im.size[0]),
+                "height": int(im.size[1]),
+                "mode": im.mode,
+                "via": "rawpy->Pillow",
+            }
+        except ImportError as e_raw:
+            raise RuntimeError(
+                f"Lecture RAW ({ext_in}) demandée, mais rawpy est indisponible: {e_raw}\n"
+                f"Installez-le avec: pip install rawpy"
+            ) from e_raw
+        
+        except rawpy.LibRawError as e_libraw:
+            raise RuntimeError(
+                f"Fichier RAW non reconnu ou corrompu ({os.path.basename(in_path)}): {e_libraw}\n"
+                f"Le fichier n'est peut-être pas un RAW photo valide (format .raw ambigu ?)."
+            ) from e_libraw
+
+        except rawpy.LibRawFatalError as e_fatal:
+            raise RuntimeError(
+                f"Erreur fatale libraw sur ({os.path.basename(in_path)}): {e_fatal}"
+            ) from e_fatal
+
+        except Exception as e_raw_generic:
+            raise RuntimeError(
+                f"Erreur inattendue lors de la lecture RAW ({ext_in}) "
+                f"de ({os.path.basename(in_path)}): {e_raw_generic}"
+            ) from e_raw_generic
+        
     # ---------- Image -> image ----------
     try:
         import pillow_heif  # noqa: F401

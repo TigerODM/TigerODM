@@ -16,7 +16,7 @@ else:
 
 
 class OWPatternMatching(OWWidget):
-    name = "Pattern Matcher"
+    name = "Pattern Matcher - rollback"
     description = "Detects objects using template matching"
     icon = "icons/ow_pattern_matching.png"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
@@ -256,8 +256,28 @@ class OWPatternMatching(OWWidget):
 
                 if len(final_boxes) > 0:
                     found_any_match_for_this_image = True
-                    tolerance = 50
-                    final_boxes = sorted(final_boxes, key=lambda b: (b[1] // tolerance, b[0]))
+
+                    # 1. Tri initial par coordonnée Y (de haut en bas)
+                    final_boxes = sorted(final_boxes, key=lambda b: b[1])
+
+                    # 2. Regroupement dynamique par ligne (clustering)
+                    row_idx = 0
+                    clustered_boxes = []
+                    prev_y = final_boxes[0][1]
+
+                    for box in final_boxes:
+                        # Si l'écart Y avec l'image précédente est significatif, on change de ligne
+                        if abs(box[1] - prev_y) > (h_ref // 4):
+                            row_idx += 1
+
+                        prev_y = box[1]
+                        clustered_boxes.append((row_idx, box))
+
+                    # 3. Tri final : par numéro de ligne, puis par coordonnée X (de gauche à droite)
+                    clustered_boxes.sort(key=lambda item: (item[0], item[1][0]))
+
+                    # 4. Récupération des boîtes proprement triées
+                    final_boxes = [item[1] for item in clustered_boxes]
 
                 for i, (x1, y1, x2, y2) in enumerate(final_boxes):
                     cv.rectangle(img_color, (x1, y1), (x2, y2), (255, 0, 255), 2)
