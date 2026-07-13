@@ -87,7 +87,7 @@ class OWLeTigre(widget.OWWidget):
 
     def __init__(self):
         super().__init__()
-        self.minimum_vram=7.9
+        self.minimum_vram=6.9
         # Charge l'UI dans un widget séparé
         self.ui = uic.loadUi(self.gui)
 
@@ -297,15 +297,42 @@ class OWLeTigre(widget.OWWidget):
     def update_font(self):
         if not self.large_font:
             return
-        self.label_folder.setStyleSheet("font-size: 12pt;")
-        self.label_conversation.setStyleSheet("font-size: 12pt;")
-        self.label_model.setStyleSheet("font-size: 12pt;")
-        self.label_freeText.setStyleSheet("font-size: 12pt;")
-        self.label_attachment.setStyleSheet("font-size: 12pt;")
-        self.groupBox_bdd.setStyleSheet("font-size: 12pt;")
-        self.groupBox_model.setStyleSheet("font-size: 12pt;")
-        self.textEdit_request.setStyleSheet("font-size: 12pt;")
-        self.list_conversations.setStyleSheet("font-size: 12pt;")
+        font = self.label_folder.font()
+        font.setPointSize(12)
+        self.label_folder.setFont(font)
+
+        font = self.label_conversation.font()
+        font.setPointSize(12)
+        self.label_conversation.setFont(font)
+
+        font = self.label_model.font()
+        font.setPointSize(12)
+        self.label_model.setFont(font)
+
+        font = self.label_freeText.font()
+        font.setPointSize(12)
+        self.label_freeText.setFont(font)
+        self.label_freeText.setStyleSheet("color: red;")
+
+        font = self.label_attachment.font()
+        font.setPointSize(12)
+        self.label_attachment.setFont(font)
+
+        font = self.groupBox_bdd.font()
+        font.setPointSize(12)
+        self.groupBox_bdd.setFont(font)
+
+        font = self.groupBox_model.font()
+        font.setPointSize(12)
+        self.groupBox_model.setFont(font)
+
+        font = self.textEdit_request.font()
+        font.setPointSize(12)
+        self.textEdit_request.setFont(font)
+
+        font = self.list_conversations.font()
+        font.setPointSize(12)
+        self.list_conversations.setFont(font)
 
     def run(self, func):
         # Clear error & warning
@@ -344,6 +371,11 @@ class OWLeTigre(widget.OWWidget):
 
     ### Send button
     def send_request(self, progress_callback):
+        text = self.label_model.text().strip().lower()
+        if text == "" or text == "modèle":
+            self.label_freeText.setText("Veuillez nourrir le tigre avec un modèle local (.gguf) avant de continuer.")
+            return
+
         # Get the request, return if it's empty
         request = self.textEdit_request.toPlainText()
         if not request:
