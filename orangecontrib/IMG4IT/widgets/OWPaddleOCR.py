@@ -1,7 +1,6 @@
 import os
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 import sys
-import tempfile
 import numpy as np
 
 import fitz
@@ -15,13 +14,13 @@ from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from Orange.widgets.orangecontrib.AAIT.utils import thread_management, MetManagement
+    from Orange.widgets.orangecontrib.AAIT.utils import thread_management
     from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 else:
-    from orangecontrib.AAIT.utils import thread_management, MetManagement
-    from orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
+    from orangecontrib.AAIT.utils import thread_management
+    from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 
@@ -68,32 +67,17 @@ class OWPaddleOCR(widget.OWWidget):
 
     def load_model(self):
         self.error("")
+        try:
+            model_path = get_path_or_retrieve("Paddle OCR")
+        except Exception as e:
+            self.error(str(e))
+            return
+        self.model = PaddleOCR(use_angle_cls=True, lang="fr",
+                               det_model_dir=os.path.join(model_path, "det"),
+                               rec_model_dir=os.path.join(model_path, "rec"),
+                               cls_model_dir=os.path.join(model_path, "cls"))
 
-        local_store_path = MetManagement.get_local_store_path()
-        det_model_path = os.path.join(local_store_path, "Models", "ComputerVision", "PaddleOCR", "PP-OCRv5_server_det")
-        rec_model_path = os.path.join(local_store_path, "Models", "ComputerVision", "PaddleOCR", "latin_PP-OCRv5_mobile_rec")
-
-        if not os.path.exists(det_model_path) or not os.path.exists(rec_model_path):
-            try:
-                get_path_or_retrieve("Paddle OCR")
-            except Exception as e:
-                self.error(str(e))
-                return
-
-        if os.path.exists(det_model_path) and os.path.exists(rec_model_path):
-            self.model = PaddleOCR(
-                text_recognition_model_name="latin_PP-OCRv5_mobile_rec",
-                text_recognition_model_dir=rec_model_path,
-                text_detection_model_name="PP-OCRv5_server_det",
-                text_detection_model_dir=det_model_path,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-            )
-            self.information("Paddle OCR model successfully loaded.")
-
-        else:
-            self.error("Paddle OCR model could not be loaded. Do you have 'latin_PP-OCRv5_mobile_rec' and 'PP-OCRv5_server_det' in your AAIT store ?")
+        self.information("Paddle OCR model successfully loaded.")
 
     def run(self):
         # if thread is running quit
@@ -104,9 +88,7 @@ class OWPaddleOCR(widget.OWWidget):
             return
 
         if self.model is None:
-            self.load_model()
-            if self.model is None:
-                return
+            return
 
         # Verification of in_data
         self.error("")
@@ -146,7 +128,7 @@ class OWPaddleOCR(widget.OWWidget):
             return
 
     def handle_finish(self):
-        print("OCR Finished")
+        print("Embeddings finished")
         self.progressBarFinished()
 
     def post_initialized(self):
@@ -167,7 +149,7 @@ class OWPaddleOCR(widget.OWWidget):
             features = [row[x] for x in attr_dom]
             targets = [row[y] for y in class_dom]
             metas = list(data.metas[i])
-            filepath = row["path"].value.strip("'").strip('"')
+            filepath = row["path"].value
             result_per_page = apply_OCR(filepath, model)
             for key, value in result_per_page.items():
                 new_row = features + targets + metas + [key, value]
@@ -213,60 +195,48 @@ def apply_OCR(filepath, model):
 
 
 def apply_OCR_on_image(filepath, model):
+    # Load image as RGB
+    img = Image.open(filepath).convert("RGB")
+    img = np.array(img)
+
     # Apply OCR
-    results = model.predict(filepath)
-    results = results[0] if results and results[0] else []
+    results = model.ocr(img, cls=True)
+    result_ocr = results[0] if results and results[0] else []
 
     # Concatenate all detected text
     full_text = ""
-    for text in results["rec_texts"]:
+    for line in result_ocr:
+        text = line[1][0]
+        # confidence = line[1][1]  # available if needed
         full_text += text + "\n"
+
     return {0: full_text}
 
 
 def apply_OCR_on_pdf(filepath, model, dpi=300):
-    """
-    Convert each PDF page to a temporary PNG, apply OCR,
-    return {page_number: extracted_text}.
-    """
+    # Load the document
     doc = fitz.open(filepath)
+    # Iterate over pages
     result_per_page = {}
+    for page_num in range(len(doc)):
+        page = doc.load_page(page_num)
 
-    try:
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
+        # Render page to a pixmap (RGB image)
+        mat = fitz.Matrix(dpi/72, dpi/72)
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
 
-            # Render page
-            mat = fitz.Matrix(dpi / 72, dpi / 72)
-            pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        # Apply OCR
+        results = model.ocr(img, cls=True)
+        result_ocr = results[0] if results and results[0] else []
 
-            # Create temporary PNG
-            with tempfile.NamedTemporaryFile(
-                suffix=".png",
-                delete=False
-            ) as tmp:
-                tmp_path = tmp.name
-
-            try:
-                pix.save(tmp_path)
-
-                # Same OCR logic as apply_OCR_on_image
-                results = model.predict(tmp_path)
-                results = results[0] if results and results[0] else []
-
-                full_text = ""
-                for text in results["rec_texts"]:
-                    full_text += text + "\n"
-
-                result_per_page[page_num + 1] = full_text
-
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-
-    finally:
-        doc.close()
-
+        # Concatenate all detected text
+        full_text = ""
+        for line in result_ocr:
+            text = line[1][0]
+            # confidence = line[1][1] # maybe useful later
+            full_text += text + "\n"
+        result_per_page[page_num+1] = full_text
     return result_per_page
 
 
