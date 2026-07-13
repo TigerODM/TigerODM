@@ -229,8 +229,6 @@ def load_documents_in_table_detailed(table, progress_callback=None, argself=None
     main_table = Table.from_list(domain=main_domain, rows=main_rows)
 
     # Build details_table (path, name, type, content)
-    type_var = StringVariable("type")
-    detail_content_var = StringVariable("content")
     detail_domain = Domain(
         attributes=[],
         metas=[
@@ -257,19 +255,11 @@ def _extract_header_footer_text(header_or_footer) -> str:
         para_lines = []
         for para in paragraphs:
             para_parts = []
-            inside_field_result = False
 
             for child in para._element.iter():
                 tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
 
-                if tag == "fldChar":
-                    fld_type = child.get(qn("w:fldCharType"))
-                    if fld_type == "separate":
-                        inside_field_result = True
-                    elif fld_type == "end":
-                        inside_field_result = False
-
-                elif tag == "t":
+                if tag == "t":
                     text = child.text or ""
                     if text.strip():
                         para_parts.append(text)

@@ -14,9 +14,11 @@
 # ---------------------------------------------------------------------------
 
 import re
+import os
 import sys
 import ast
 import csv
+import json
 import hashlib
 import platform
 import pkgutil
@@ -177,12 +179,6 @@ def packages_of(py_file):
     return pkgs
 
 
-def file_dates(py_file):
-    stats = py_file.stat()
-    return (datetime.fromtimestamp(stats.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
-            datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'))
-
-
 # ── Détection statique d'un widget (AST) ────────────────────────────────────
 
 def ast_widgets(tree):
@@ -232,7 +228,7 @@ def iter_widget_modules(pkg_name):
 
 # ── Colonnes de sortie (dynamiques selon les options) ───────────────────────
 
-def _columns_for(include_packages, include_dates):
+def _columns_for(include_packages, compare=False):
     """Retourne la liste ordonnée (en-tête, clé_interne) des colonnes."""
     cols = [
         ("Widget_Orange_Name", "name"),
@@ -241,10 +237,11 @@ def _columns_for(include_packages, include_dates):
     ]
     if include_packages:
         cols.append(("Package pip", "package"))
+        if compare:
+            cols.append(("Version lib (réf → actuelle)", "pkg_status"))
     cols.append(("Statut", "statut"))
-    if include_dates:
-        cols.append(("Date Création", "date_creation"))
-        cols.append(("Date Modification", "date_modification"))
+    if compare:
+        cols.append((".py modifié ?", "file_status"))
     cols.append(("Lancer le widget", "launch"))
     return cols
 
@@ -258,28 +255,23 @@ def launch_command(file_path):
 
 
 def _make_record(name, widget_label, category, statut, file_path,
-                 package="", include_dates=True):
+                 package="", file_status="", pkg_status=""):
     """Construit un enregistrement complet (dict) pour un widget."""
     if file_path is not None:
         widget = file_path.name
         launch = launch_command(file_path)
-        if include_dates:
-            dt_c, dt_m = file_dates(file_path)
-        else:
-            dt_c, dt_m = "", ""
     else:
         widget = widget_label if widget_label is not None else ""
         launch = ""
-        dt_c, dt_m = "", ""
     return {
         "name": name,
         "widget": widget,
         "category": category,
         "package": package,
         "statut": statut,
-        "date_creation": dt_c,
-        "date_modification": dt_m,
         "launch": launch,
+        "file_status": file_status,
+        "pkg_status": pkg_status,
     }
 
 
@@ -288,10 +280,16 @@ def _project(records, cols):
     return [[rec.get(key, "") for _, key in cols] for rec in records]
 
 
+def _sort_records(records):
+    """Tri stable : statut != 'OK' d'abord, en conservant l'ordre interne."""
+    return sorted(records, key=lambda r: 0 if (r.get("statut", "") != "OK") else 1)
+
+
 # ── Scan principal (paramétrable) ───────────────────────────────────────────
 
 def run_diagnostic(selected_categories=None, include_packages=True,
-                   include_dates=True, progress_callback=None, should_cancel=None):
+                   reference=None,
+                   progress_callback=None, should_cancel=None):
     """
     Lance le diagnostic.
 
@@ -304,8 +302,9 @@ def run_diagnostic(selected_categories=None, include_packages=True,
         widget -> une ligne par (widget, package) [grain fin].
         Si False, une seule ligne par widget, sans analyse des librairies
         [grain grossier, beaucoup plus rapide].
-    include_dates : bool
-        Si False, n'ajoute pas les colonnes "Date Création" / "Date Modification".
+    reference : dict | None
+        Si fourni (voir build_reference / load_reference), active la comparaison :
+        ajoute les colonnes ".py modifié ?" et "Version lib (réf → actuelle)".
     progress_callback : callable(done, total, message) | None
         Appelé régulièrement pour suivre l'avancement.
     should_cancel : callable() -> bool | None
@@ -314,9 +313,54 @@ def run_diagnostic(selected_categories=None, include_packages=True,
     Retourne
     --------
     (headers, rows)
+        Les widgets dont le statut n'est pas "OK" sont placés en premier.
         La colonne "Lancer le widget" contient la commande
         "<python.exe>" "<chemin_du_widget.py>" à coller dans un cmd.
     """
+    compare = reference is not None
+    cols = _columns_for(include_packages, compare=compare)
+    headers = [h for h, _ in cols]
+    records = []
+
+    for w in iter_widgets(selected_categories, progress_callback, should_cancel):
+        name = w["name"]
+        category = w["category"]
+        statut = w["statut"]
+        src = w["file_path"]
+        qualified = w["qualified"]
+
+        file_status = compare_file(qualified, src, reference) if compare else ""
+
+        if src is None:
+            records.append(_make_record(
+                name, "(fichier introuvable)", category, statut, None,
+                file_status=file_status))
+            continue
+
+        if include_packages:
+            pkgs = packages_of(src) or ["(aucun)"]
+            for pkg in pkgs:
+                pkg_status = compare_package(pkg, reference) if compare else ""
+                records.append(_make_record(
+                    name, None, category, statut, src,
+                    package=pkg,
+                    file_status=file_status, pkg_status=pkg_status))
+        else:
+            records.append(_make_record(
+                name, None, category, statut, src,
+                file_status=file_status))
+
+    records = _sort_records(records)
+    return headers, _project(records, cols)
+
+
+# ── Énumération unifiée des widgets ─────────────────────────────────────────
+
+def iter_widgets(selected_categories=None, progress_callback=None, should_cancel=None):
+    """Génère un dict par widget :
+        {name, category, statut, file_path (Path|None), qualified}
+    Réutilisé par run_diagnostic ET build_reference.
+    statut == 'OK' pour les widgets chargés ; sinon raison du problème."""
     registry = get_registry()
 
     selected = {c.strip().lower() for c in (selected_categories or [])}
@@ -327,15 +371,10 @@ def run_diagnostic(selected_categories=None, include_packages=True,
     def cancelled():
         return bool(should_cancel) and should_cancel()
 
-    cols = _columns_for(include_packages, include_dates)
-    headers = [h for h, _ in cols]
-    records = []
     loaded_modules = set()
 
-    # Phase 1 : widgets chargés (registry)
     phase1 = sorted(registry.widgets(), key=lambda d: (d.category or "", d.name))
 
-    # Phase 2 : widgets potentiellement cassés / non chargés
     phase2 = []
     for category, pkg_name in widget_packages():
         if not category_selected(category):
@@ -346,10 +385,10 @@ def run_diagnostic(selected_categories=None, include_packages=True,
     total = len(phase1) + len(phase2)
     done = 0
 
-    # --- Phase 1 ---
+    # --- Phase 1 : widgets chargés (registry) ---
     for desc in phase1:
         if cancelled():
-            return headers, _project(records, cols)
+            return
         loaded_modules.add(desc.qualified_name.rsplit(".", 1)[0])
         category = desc.category or "(sans catégorie)"
         done += 1
@@ -360,33 +399,25 @@ def run_diagnostic(selected_categories=None, include_packages=True,
 
         src = widget_source_file(desc)
         if src is None:
-            records.append(_make_record(
-                desc.name, "(fichier introuvable)", category, "introuvable",
-                None, include_dates=include_dates))
-            continue
-
-        if include_packages:
-            pkgs = packages_of(src) or ["(aucun)"]
-            for pkg in pkgs:
-                records.append(_make_record(
-                    desc.name, None, category, "OK", src,
-                    package=pkg, include_dates=include_dates))
+            yield {"name": desc.name, "category": category,
+                   "statut": "introuvable", "file_path": None,
+                   "qualified": desc.qualified_name}
         else:
-            records.append(_make_record(
-                desc.name, None, category, "OK", src,
-                include_dates=include_dates))
+            yield {"name": desc.name, "category": category,
+                   "statut": "OK", "file_path": src,
+                   "qualified": desc.qualified_name}
 
-    # --- Phase 2 ---
+    # --- Phase 2 : widgets cassés / non chargés ---
     for category, modname in phase2:
         if cancelled():
-            return headers, _project(records, cols)
+            return
         done += 1
         if progress_callback:
             progress_callback(done, total, modname)
 
         if modname in loaded_modules:
-            continue  # déjà présent dans le registry -> OK
-        f = module_file(modname)  # find_spec n'exécute pas le module
+            continue
+        f = module_file(modname)
         if f is None:
             continue
         try:
@@ -395,28 +426,521 @@ def run_diagnostic(selected_categories=None, include_packages=True,
             continue
         widgets_found = ast_widgets(tree)
         if not widgets_found:
-            continue  # ce module n'est pas un widget (helper, base abstraite…)
+            continue
 
         display = widgets_found[0][1]
-        # On tente l'import pour capturer la raison d'un éventuel échec
         try:
             importlib.import_module(modname)
             statut = "non chargé (import OK, absent du registry)"
         except Exception as e:
             statut = f"{type(e).__name__}: {e}"
 
-        if include_packages:
-            pkgs = packages_of(f) or ["(aucun)"]
-            for pkg in pkgs:
-                records.append(_make_record(
-                    display, None, category, statut, f,
-                    package=pkg, include_dates=include_dates))
-        else:
-            records.append(_make_record(
-                display, None, category, statut, f,
-                include_dates=include_dates))
+        yield {"name": display, "category": category,
+               "statut": statut, "file_path": f, "qualified": modname}
 
-    return headers, _project(records, cols)
+
+# ── Référence & comparaison ─────────────────────────────────────────────────
+
+def file_hash(path):
+    """SHA-256 d'un fichier, ou None si illisible."""
+    if not path:
+        return None
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def installed_version(pip_name_):
+    """Version installée d'un paquet pip, ou None."""
+    if not pip_name_ or pip_name_.startswith("("):
+        return None
+    try:
+        return importlib.metadata.version(pip_name_)
+    except Exception:
+        return None
+
+
+def snapshot_packages():
+    """Map {pip_name: version} de TOUTES les distributions installées."""
+    out = {}
+    try:
+        for dist in importlib.metadata.distributions():
+            try:
+                name = pip_name(dist.metadata["Name"])
+                out[name] = dist.version
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def build_reference(selected_categories=None, progress_callback=None, should_cancel=None):
+    """Construit une référence : versions pip + hash des .py de widgets.
+
+    Retourne un dict sérialisable JSON :
+        {created, machine, python_hash, packages:{...}, files:{qualified:{...}}}
+    """
+    files = {}
+    for w in iter_widgets(selected_categories, progress_callback, should_cancel):
+        src = w["file_path"]
+        if src is None:
+            continue
+        qn = w["qualified"]
+        if qn in files:
+            continue
+        files[qn] = {
+            "hash": file_hash(src),
+            "path": str(src),
+            "name": src.name,
+            "widget": w["name"],
+        }
+
+    return {
+        "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "machine": platform.node(),
+        "python_hash": python_hash(),
+        "packages": snapshot_packages(),
+        "files": files,
+    }
+
+
+def save_reference(path, ref):
+    p = Path(path)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(ref, f, ensure_ascii=False, indent=2)
+    return p
+
+
+def load_reference(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+# ── Emplacement fixe de la référence : <aait_store>/Parameters/ ─────────────
+
+REFERENCE_FILENAME = "widget_diagnostic_ref.json"
+
+# Surcharge éventuelle : renseigner ici, ou via la variable d'env AAIT_STORE.
+AAIT_STORE_OVERRIDE = None
+
+
+def aait_store_dir():
+    """Répertoire du 'aait store' d'Orange.
+
+    Source principale : orangecontrib.AAIT.utils.MetManagement.get_local_store_path()
+    (qui crée le dossier au besoin). Replis : AAIT_STORE_OVERRIDE, variable
+    d'env AAIT_STORE, puis ~/aait_store — utilisés seulement si AAIT n'est pas
+    importable (par ex. en test hors Orange)."""
+    if AAIT_STORE_OVERRIDE:
+        return Path(AAIT_STORE_OVERRIDE)
+
+    try:
+        from orangecontrib.AAIT.utils import MetManagement
+        return Path(MetManagement.get_local_store_path())
+    except Exception:
+        pass
+
+    env = os.environ.get("AAIT_STORE")
+    if env:
+        return Path(env)
+
+    return Path.home() / "aait_store"
+
+
+def parameters_dir(create=False):
+    """<aait_store>/Parameters. Créé si create=True."""
+    d = aait_store_dir() / "Parameters"
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def reference_path(create=False):
+    """Chemin fixe du fichier de référence."""
+    return parameters_dir(create=create) / REFERENCE_FILENAME
+
+
+def reference_exists():
+    try:
+        return reference_path().is_file()
+    except Exception:
+        return False
+
+
+def save_reference_default(ref):
+    """Enregistre la référence à l'emplacement fixe (crée l'arborescence)."""
+    return save_reference(reference_path(create=True), ref)
+
+
+def load_reference_default():
+    return load_reference(reference_path())
+
+
+def default_ref_name():
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"diagnostic_ref_{stamp}.json"
+
+
+def compare_file(qualified, src, reference):
+    """Compare le .py courant à la référence. Renvoie un libellé lisible."""
+    if src is None:
+        return "(fichier introuvable)"
+    files = (reference or {}).get("files", {})
+    entry = files.get(qualified)
+    cur = file_hash(src)
+    if entry is None:
+        return "nouveau (absent réf)"
+    ref_hash = entry.get("hash")
+    if cur is None:
+        return "(illisible)"
+    if ref_hash == cur:
+        return "non"
+    return "OUI (modifié)"
+
+
+def compare_package(pip_name_, reference):
+    """Compare la version installée d'un paquet à celle de la référence."""
+    if not pip_name_ or pip_name_.startswith("("):
+        return ""
+    ref_pkgs = (reference or {}).get("packages", {})
+    ref_ver = ref_pkgs.get(pip_name_)
+    cur = installed_version(pip_name_)
+    if ref_ver is None and cur is None:
+        return "?"
+    if ref_ver is None:
+        return f"nouvelle (actuelle {cur})"
+    if cur is None:
+        return f"absente (réf {ref_ver})"
+    if cur == ref_ver:
+        return f"= {cur}"
+    return f"{ref_ver} → {cur}"
+
+
+# ── Tutoriels : lancement de workflows + comparaison OK/NOK ──────────────────
+#
+# Mode SERVEUR (comme agentIA, chemin robuste qui évite la duplication) :
+#   _ensure_api_running(...)                              -> démarre l'API si besoin
+#   expected_input_for_workflow(key, out_tab_input=[])   -> dict d'entrée attendue
+#   convert.convert_json_to_orange_data_table(...)       -> Table d'entrée
+#   daemonizer_with_input_output(in_data, ip_port, key, temporisation, out=[]) -> out[0] = Table
+#   expected_output_for_workflow(key, out_tab_output=[]) -> out[0]["data"] = sortie attendue
+#   convert.convert_json_implicite_to_data_table(...)    -> Table attendue
+# La clé du workflow (key_name) == champ "name" du tutoriel (confirmé par le
+# __main__ de management_workflow_sans_api : key_name = "export_md").
+# La comparaison reprend la logique du widget CheckTable (schéma de colonnes).
+
+TUTORIAL_SUBDIR = "linkHTMLWorkflow"
+TUTORIAL_FILENAME = "tutorial.json"
+
+TUTORIAL_HEADERS = ["Tutoriel", "Description", "Fichier OWS", "Résultat", "Détail"]
+
+
+def tutorials_dir():
+    return aait_store_dir() / "Parameters" / TUTORIAL_SUBDIR
+
+
+def tutorial_json_path():
+    return tutorials_dir() / TUTORIAL_FILENAME
+
+
+def tutorial_exists():
+    try:
+        return tutorial_json_path().is_file()
+    except Exception:
+        return False
+
+
+def load_tutorials():
+    """Charge la liste des tutoriels depuis tutorial.json.
+    Tolère un objet unique ou une liste."""
+    p = tutorial_json_path()
+    with open(p, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        data = [data]
+    return [e for e in data if isinstance(e, dict)]
+
+
+def _hlit_modules():
+    """Importe tout ce qu'il faut pour le mode serveur (comme agentIA),
+    en gérant les deux dispositions de packages HLIT_dev."""
+    try:
+        from orangecontrib.HLIT_dev.remote_server_smb import (
+            convert, server_uvicorn, management_workflow_sans_api,
+        )
+        from orangecontrib.HLIT_dev.utils import hlit_python_api
+        from orangecontrib.HLIT_dev.utils.hlit_python_api import (
+            daemonizer_with_input_output,
+        )
+    except Exception:
+        from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import (
+            convert, server_uvicorn, management_workflow_sans_api,
+        )
+        from Orange.widgets.orangecontrib.HLIT_dev.utils import hlit_python_api
+        from Orange.widgets.orangecontrib.HLIT_dev.utils.hlit_python_api import (
+            daemonizer_with_input_output,
+        )
+    return (convert, server_uvicorn, management_workflow_sans_api,
+            hlit_python_api, daemonizer_with_input_output)
+
+
+def _ensure_api_running(hlit_api, server_uvicorn, ip="127.0.0.1", port=8000,
+                        wait_s=40):
+    """S'assure que le serveur API tourne : le démarre si besoin, puis attend
+    que le port réponde (jusqu'à wait_s secondes). Retourne True si prêt."""
+    import time
+    if server_uvicorn.is_port_in_use(ip, port, timeout=5):
+        return True
+    hlit_api.start_api_in_new_terminal()
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        if server_uvicorn.is_port_in_use(ip, port, timeout=2):
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def api_is_running(ip_port="127.0.0.1:8000"):
+    """True si le serveur API répond déjà sur ip:port."""
+    try:
+        _, server_uvicorn, _, _, _ = _hlit_modules()
+    except Exception:
+        return False
+    ip = ip_port.split(":")[0] if ":" in ip_port else "127.0.0.1"
+    port = int(ip_port.split(":")[1]) if ":" in ip_port else 8000
+    try:
+        return bool(server_uvicorn.is_port_in_use(ip, port, timeout=5))
+    except Exception:
+        return False
+
+
+def stop_api(ip_port="127.0.0.1:8000"):
+    """Arrête le serveur API (hlit_python_api.exit_server). Retourne le code."""
+    try:
+        _, _, _, hlit_api, _ = _hlit_modules()
+    except Exception:
+        return 1
+    try:
+        return hlit_api.exit_server(ip_port)
+    except Exception:
+        return 1
+
+
+def thread_management_module():
+    """Accès à AAIT thread_management (pour lancer run_tutorial dans un thread)."""
+    try:
+        from orangecontrib.AAIT.utils import thread_management
+    except Exception:
+        from Orange.widgets.orangecontrib.AAIT.utils import thread_management
+    return thread_management
+
+
+def _met_management():
+    """Importe MetManagement en gérant les deux dispositions de packages."""
+    try:
+        from orangecontrib.AAIT.utils import MetManagement
+    except Exception:
+        from Orange.widgets.orangecontrib.AAIT.utils import MetManagement
+    return MetManagement
+
+
+def _compare_cols(cols_ref, cols_data):
+    """Logique reprise telle quelle du widget CheckTable : compare deux listes
+    de colonnes (dicts {name, kind, var_type, ...}) comme des ensembles.
+    Retourne (only_ref, only_data) :
+      - only_ref  : colonnes attendues (référence) absentes des données
+      - only_data : colonnes présentes dans les données mais pas en référence."""
+    set_ref = {tuple(sorted(d.items())) for d in cols_ref}
+    set_data = {tuple(sorted(d.items())) for d in cols_data}
+    only_ref = [dict(t) for t in (set_ref - set_data)]
+    only_data = [dict(t) for t in (set_data - set_ref)]
+    return only_ref, only_data
+
+
+def compare_tables(out_data, expected,
+                   check_number_of_line=False, allow_extra_column=False):
+    """Compare la sortie d'un workflow à la sortie attendue, avec la MÊME
+    logique que le widget CheckTable : comparaison du schéma de colonnes via
+    MetManagement.describe_orange_table (référence = sortie attendue), plus
+    l'option facultative de vérification du nombre de lignes.
+    Renvoie (ok: bool, detail: str)."""
+    if out_data is None or expected is None:
+        return False, "table manquante (sortie ou attendu None)"
+
+    Met = _met_management()
+    ref = Met.describe_orange_table(expected)   # référence = sortie attendue
+    cur = Met.describe_orange_table(out_data)   # données à vérifier
+    if cur is None and ref is None:
+        return False, "describe_orange_table a échoué (sortie produite ET attendue illisibles)"
+    if cur is None:
+        return False, "describe_orange_table a échoué (sortie produite illisible)"
+    if ref is None:
+        return False, "describe_orange_table a échoué (sortie attendue illisible)"
+
+    ref_nb, ref_cols = ref[0], ref[1]
+    cur_nb, cur_cols = cur[0], cur[1]
+
+    if check_number_of_line and cur_nb != int(ref_nb):
+        return False, f"number of line invalid {cur_nb}!={ref_nb}"
+
+    only_ref, only_data = _compare_cols(ref_cols, cur_cols)
+    if only_ref:
+        if only_data:
+            return False, ("missing column" + str(only_ref)
+                           + " ++++ column not in reference -> " + str(only_data))
+        return False, "missing column" + str(only_ref)
+    if only_data and not allow_extra_column:
+        return False, "column not in reference -> " + str(only_data)
+
+    return True, "OK"
+
+
+def _purge_workflow_state(mws, key_name):
+    """Supprime le verrou admin résiduel <admin>/<key_name>.txt avant de lancer
+    (exactement agentIA.purge_locker)."""
+    try:
+        Met = _met_management()
+        adm = Met.get_api_local_folder_admin()
+        lock = adm + key_name + ".txt"
+        if os.path.exists(lock):
+            os.remove(lock)
+    except Exception:
+        pass
+
+
+def run_tutorial(entry, ip_port="127.0.0.1:8000", poll_sleep=0.3):
+    """Exécute UN tutoriel en mode serveur (comme agentIA : API + daemonizer),
+    puis compare la sortie à l'attendu. Renvoie toujours un dict, jamais
+    d'exception : {name, description, ows_file, status: OK|NOK|ERREUR, detail}."""
+    key_name = entry.get("key_name") or entry.get("name") or ""
+    result = {
+        "name": key_name,
+        "description": entry.get("description", ""),
+        "ows_file": entry.get("ows_file", ""),
+        "status": "ERREUR",
+        "detail": "",
+    }
+    if not key_name:
+        result["detail"] = "champ 'name'/'key_name' absent"
+        return result
+
+    try:
+        convert, server_uvicorn, mws, hlit_api, daemonizer = _hlit_modules()
+    except Exception as e:
+        result["detail"] = f"API HLIT_dev indisponible : {e}"
+        return result
+
+    # 0) Purge du verrou résiduel (agentIA.purge_locker)
+    _purge_workflow_state(mws, key_name)
+
+    # 1) S'assurer que le serveur API tourne
+    ip = ip_port.split(":")[0] if ":" in ip_port else "127.0.0.1"
+    port = int(ip_port.split(":")[1]) if ":" in ip_port else 8000
+    if not _ensure_api_running(hlit_api, server_uvicorn, ip=ip, port=port):
+        result["detail"] = "serveur API indisponible (démarrage/attente échoué)"
+        return result
+
+    # 2) Entrée attendue -> Table (comme agentIA.set_expected_input)
+    out_tab_input = []
+    try:
+        rc = mws.expected_input_for_workflow(key_name, out_tab_input=out_tab_input)
+    except Exception as e:
+        result["detail"] = f"lecture entrée attendue : {e}"
+        return result
+    if rc != 0 or not out_tab_input:
+        result["status"] = "NOK"
+        result["detail"] = f"lecture entrée attendue échouée (rc={rc})"
+        return result
+    try:
+        in_data = convert.convert_json_to_orange_data_table(out_tab_input[0]["data"][0])
+    except Exception as e:
+        result["detail"] = f"conversion entrée attendue : {e}"
+        return result
+
+    # 3) Exécution via le daemonizer (mode serveur, comme agentIA._run_daemonizer)
+    out_tab_output = []
+    try:
+        rc = daemonizer(in_data, ip_port, key_name,
+                        temporisation=poll_sleep, out_tab_output=out_tab_output)
+    except Exception as e:
+        result["detail"] = f"exécution (daemonizer) : {e}"
+        return result
+    if rc != 0 or not out_tab_output:
+        result["status"] = "NOK"
+        result["detail"] = f"exécution échouée (rc={rc})"
+        _purge_workflow_state(mws, key_name)
+        return result
+    out_data = out_tab_output[0]
+
+    # Normalisation : out_data devrait déjà être une Table ; sinon on convertit.
+    if out_data is None:
+        result["status"] = "NOK"
+        result["detail"] = "sortie produite vide (None)"
+        return result
+    try:
+        from Orange.data import Table as _OrangeTable
+    except Exception:
+        _OrangeTable = None
+    if _OrangeTable is not None and not isinstance(out_data, _OrangeTable):
+        try:
+            out_data = convert.convert_json_implicite_to_data_table(out_data)
+        except Exception as e:
+            result["detail"] = f"conversion sortie produite : {e}"
+            return result
+
+    # 4) Sortie attendue -> Table (comme agentIA / OutputInterface).
+    data_output = []
+    try:
+        rc = mws.expected_output_for_workflow(key_name, out_tab_output=data_output)
+        if rc != 0 or not data_output:
+            result["status"] = "NOK"
+            result["detail"] = f"lecture sortie attendue échouée (rc={rc})"
+            return result
+        expected = convert.convert_json_implicite_to_data_table(data_output[0]["data"])
+    except Exception as e:
+        result["detail"] = f"sortie attendue : {e}"
+        return result
+
+    # 5) Comparaison (logique CheckTable)
+    ok, detail = compare_tables(out_data, expected)
+    result["status"] = "OK" if ok else "NOK"
+    result["detail"] = detail
+    return result
+
+
+def run_all_tutorials(entries, progress_callback=None, should_cancel=None, on_result=None):
+    """Exécute une liste de tutoriels séquentiellement.
+    on_result(index, result) est appelé après chaque tuto (pour l'UI)."""
+    results = []
+    total = len(entries)
+    for i, entry in enumerate(entries):
+        if should_cancel and should_cancel():
+            break
+        if progress_callback:
+            progress_callback(i + 1, total, entry.get("name", ""))
+        res = run_tutorial(entry)
+        results.append(res)
+        if on_result:
+            on_result(i, res)
+    return results
+
+
+def tutorial_results_to_rows(results):
+    """(headers, rows) exportables (CSV/XLSX) à partir des résultats."""
+    rows = [[r.get("name", ""), r.get("description", ""), r.get("ows_file", ""),
+             r.get("status", ""), r.get("detail", "")] for r in results]
+    return list(TUTORIAL_HEADERS), rows
+
+
+def default_tutorial_output_name(ext=".xlsx"):
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"tutoriels_resultats_{stamp}{ext}"
 
 
 # ── Métadonnées du test ─────────────────────────────────────────────────────
@@ -533,7 +1057,8 @@ def default_output_name(include_packages=True, ext=".csv"):
 # ── Sortie Orange (optionnelle) ─────────────────────────────────────────────
 
 def rows_to_orange_table(headers, rows):
-    """Construit une Orange Table (metas = colonnes texte). Utile pour utilisation via widget python script"""
+    """Construit une Orange Table (metas = colonnes texte). Utile si on veut
+    réinjecter le résultat dans le Canvas."""
     import numpy as np
     from Orange.data import Table, Domain, StringVariable
 

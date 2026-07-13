@@ -1,4 +1,3 @@
-import ast
 import copy
 import os
 import re
@@ -597,9 +596,6 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
     # Copie des données d'entrée
     data = copy.deepcopy(table)
 
-    # Chargement modèle (llama_cpp)
-    model_name = os.path.basename(model_path)
-
     if handler_llama.find_mmproj_path(model_path) is not None:
         model = load_model_with_handler(model_path, n_ctx=n_ctx, use_gpu=use_gpu, verbose=True)
         with_handler = True
@@ -701,7 +697,6 @@ def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True)
         A configured Llama model instance with an attached multimodal chat handler,
         or None if required projector files are missing or the model is unsupported.
     """
-    model_name = os.path.basename(model_path)
     mmproj_path = handler_llama.find_mmproj_path(model_path)
 
     if mmproj_path is None or not os.path.exists(mmproj_path) :

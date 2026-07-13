@@ -680,7 +680,42 @@ def clear_ephemeral_messages(ephemeral_messages, conversation, tools=None):
         ephemeral_messages.remove(message)
 
 
-def generate_database_report(database_index, model, max_page_interval=20, max_pages_length=15000, output_dir=""):
+def generate_database_report(database_folder, model, max_page_interval=20, max_pages_length=15000, output_dir=""):
+    for dirpath, dirnames, filenames in os.walk(database_folder):
+        infos = {"errors": [], "warnings": []}
+        if not "database_index.json" in filenames:
+            # not processed !
+            pass
+        else:
+            with open(os.path.join(dirpath, "database_index.json"), "r", encoding="utf-8") as f:
+                database_index = json.load(f)
+
+        for entry in database_index:
+            infos["name"] = entry["name"]
+            # Verify that the file still exists
+            if not os.path.exists(entry["path"]):
+                infos["errors"].append("The document has been removed from the folder !")
+            # Check if the summary has been generated
+            if entry["summary"].startswith("An error occurred"):
+                infos["errors"].append(f"An error occurred while processing this document: {entry['page_index']}")
+            # If entry is a file, verify the page intervals / token length
+            if entry["type"] == "file":
+                page_index = ast.literal_eval(entry["page_index"])
+                if not isinstance(page_index, list):
+                    infos["errors"].append("Page index is not in a valid format !")
+                else:
+                    for topic in page_index:
+                        pages = topic["pages"]
+                        # TODO : try - except
+                        interval = pages.split("-")[0].strip() - pages.split("-")[1].strip()
+                        if interval > 15:
+                            infos["warnings"].append("Page interval > 15 for some topics. The LLM might struggle to explore the document entirely.")
+
+    # TODO !
+
+
+
+
     nb_documents = len(database_index)
 
     # Build summaries string

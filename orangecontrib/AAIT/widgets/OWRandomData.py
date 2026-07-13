@@ -7,6 +7,7 @@ from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
 from AnyQt import QtWidgets
 from Orange.widgets.settings import Setting
+from decimal import Decimal
 import random
 import math
 import re
@@ -166,9 +167,15 @@ class OWWidgetRandomData(widget.OWWidget):
             return float("nan")
         if math.isnan(max):
             return float("nan")
-        steps = int((max - min) / step)
-        decimal_places = len(str(step).split('.')[-1]) if '.' in str(step) else 0
-        return round(min + (random.randint(0, steps) * step), decimal_places)
+
+        dmin = Decimal(str(min))
+        dmax = Decimal(str(max))
+        dstep = Decimal(str(step))
+
+        steps = int((dmax - dmin) / dstep)
+        value = dmin + Decimal(random.randint(0, steps)) * dstep
+
+        return float(value)
 
     def generate_random_data_for_rules(self, tab_min, tab_max, tab_nb_iteration,tab_step):
         data = []
@@ -194,7 +201,7 @@ class OWWidgetRandomData(widget.OWWidget):
             for i in range(len(tab)):
                 value_min = min([tab[i]["min"].value, tab[i]["max"].value])
                 value_max = max([tab[i]["min"].value, tab[i]["max"].value])
-                if "step" in tab.domain and math.isnan(tab[i]["step"].value) == False:
+                if "step" in tab.domain and math.isnan(tab[i]["step"].value) == False and tab[i]["step"].value != 0:
                     value = self.random_float_with_step(value_min, value_max, tab[i]["step"].value)
                 else:
                     value = random.uniform(value_min, value_max)

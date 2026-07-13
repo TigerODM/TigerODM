@@ -7,12 +7,28 @@
     <x>0</x>
     <y>0</y>
     <width>468</width>
-    <height>294</height>
+    <height>380</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Form</string>
   </property>
+  <widget class="QLabel" name="label_examples_notice">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>2</y>
+     <width>450</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Les tableaux ci-dessous sont des EXEMPLES. Les valeurs réelles proviennent de l'entrée « Data ».</string>
+   </property>
+   <property name="styleSheet">
+    <string>color: #b30000; font-style: italic;</string>
+   </property>
+  </widget>
   <widget class="QRadioButton" name="radioButton">
    <property name="geometry">
     <rect>
@@ -37,6 +53,19 @@
    </property>
    <property name="text">
     <string>Replace {Key/Table}</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="radioButton_3">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>250</y>
+     <width>311</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Edit by locator</string>
    </property>
   </widget>
   <widget class="QTableWidget" name="tableWidget">
@@ -96,6 +125,41 @@
    <column>
     <property name="text">
      <string>Column2</string>
+    </property>
+   </column>
+  </widget>
+  <widget class="QTableWidget" name="tableWidget_3">
+   <property name="geometry">
+    <rect>
+     <x>40</x>
+     <y>276</y>
+     <width>401</width>
+     <height>71</height>
+    </rect>
+   </property>
+   <column>
+    <property name="text">
+     <string>path</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>path_out</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>locator</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>old_text</string>
+    </property>
+   </column>
+   <column>
+    <property name="text">
+     <string>new_text</string>
     </property>
    </column>
   </widget>

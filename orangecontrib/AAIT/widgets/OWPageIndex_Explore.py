@@ -107,22 +107,22 @@ class OWPageIndexExplore(widget.OWWidget):
             return
 
         if not "path" in self.path_table.domain:
-            self.warning(f'"path" variable required in your Path Table.')
+            self.warning('"path" variable required in your Path Table.')
             self.Outputs.data.send(None)
             return
 
         if not "request" in self.data.domain:
-            self.warning(f'"request" variable required in your Request Table.')
+            self.warning('"request" variable required in your Request Table.')
             self.Outputs.data.send(None)
             return
 
         if "Answer" in self.data.domain:
-            self.error(f'You must not have an "Answer" variable in your Data Table.')
+            self.error('You must not have an "Answer" variable in your Data Table.')
             self.Outputs.data.send(None)
             return
 
         if "Conversation" in self.data.domain:
-            self.error(f'You must not have an "Conversation" variable in your Data Table.')
+            self.error('You must not have an "Conversation" variable in your Data Table.')
             self.Outputs.data.send(None)
             return
 
@@ -219,7 +219,7 @@ class OWPageIndexExplore(widget.OWWidget):
 
     def explore_page_index(self, question, dirpath, database_index, LLM, progress_callback=None, argself=None):
         # Parameters
-        margin = 5000
+        # margin = 5000
         max_iter = 15
 
         # Default values

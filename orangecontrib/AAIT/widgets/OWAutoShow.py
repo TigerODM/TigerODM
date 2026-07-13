@@ -27,7 +27,7 @@ else:
 
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OWAutoShow(widget.OWWidget):
-    name = "Auto Show (UNSTABLE)"
+    name = "Auto Show"
     description = "This widget allows you to select which widget you want to automatically open when starting a workflow."
     category = "AAIT - TOOLBOX"
     icon = "icons/autoshow.svg"

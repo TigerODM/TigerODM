@@ -7,8 +7,10 @@ except:
 import psutil
 import ntpath
 import platform
-
-from gpt4all import GPT4All
+try:
+    from gpt4all import GPT4All
+except ImportError:
+    raise ImportError("GPT4All is not installed. Use: pip install gpt4all[all]")
 from Orange.data import Domain, StringVariable, Table
 
 

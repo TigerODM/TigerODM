@@ -41,6 +41,7 @@ class OWLoadDocuments(widget.OWWidget):
         details = Output("Details", Orange.data.Table)
 
     detailed_docx_loading = Setting(False)
+    per_page_loading = Setting(False)
     autorun = Setting(True)
 
     @Inputs.data
@@ -68,6 +69,8 @@ class OWLoadDocuments(widget.OWWidget):
         # Initialise the checkBoxes from the settings
         self.checkBox_send.setChecked(bool(self.autorun))
         self.checkBox_detailed.setChecked(bool(self.detailed_docx_loading))
+        self.checkBox_pages.setChecked(bool(self.per_page_loading))
+        
 
 
         self.post_initialized()
@@ -77,6 +80,9 @@ class OWLoadDocuments(widget.OWWidget):
 
         # Detailed docx loading checkbox
         self.checkBox_detailed.stateChanged.connect(self.on_detailed_checkbox_toggled)
+
+        # Per page loading
+        self.checkBox_pages.stateChanged.connect(self.on_pages_checkbox_toggled)
 
         # Run button
         self.pushButton_send.clicked.connect(self.run)
@@ -89,8 +95,27 @@ class OWLoadDocuments(widget.OWWidget):
         if self.autorun:
             self.run()
 
+    def on_pages_checkbox_toggled(self, state):
+        self.per_page_loading = bool(state)
+        if state and self.detailed_docx_loading:
+            # Décoche l'autre case sans déclencher son handler (pas de double run)
+            self.checkBox_detailed.blockSignals(True)
+            self.checkBox_detailed.setChecked(False)
+            self.checkBox_detailed.blockSignals(False)
+            self.detailed_docx_loading = False
+        if not state:
+            self.Outputs.details.send(None)
+        if self.autorun:
+            self.run()
+
     def on_detailed_checkbox_toggled(self, state):
         self.detailed_docx_loading = bool(state)
+        if state and self.per_page_loading:
+            # Décoche l'autre case sans déclencher son handler (pas de double run)
+            self.checkBox_pages.blockSignals(True)
+            self.checkBox_pages.setChecked(False)
+            self.checkBox_pages.blockSignals(False)
+            self.per_page_loading = False
         if not state:
             self.Outputs.details.send(None)
         if self.autorun:
@@ -133,12 +158,20 @@ class OWLoadDocuments(widget.OWWidget):
             self.Outputs.data.send(None)
             self.Outputs.details.send(None)
             return
-
+        
+        if self.per_page_loading and "page" in self.data.domain:
+            self.error("You must not have a 'page' column in your input data when using per-page loading.")
+            self.Outputs.data.send(None)
+            self.Outputs.details.send(None)
+            return
+        
         # Start progress bar
         self.progressBarInit()
 
         # Choose the loading function based on the checkbox
-        if self.detailed_docx_loading:
+        if self.per_page_loading:
+            loading_fn = process_documents.load_documents_per_page
+        elif self.detailed_docx_loading:
             loading_fn = process_documents.load_documents_in_table_detailed
         else:
             loading_fn = process_documents.load_documents_in_table
@@ -156,7 +189,7 @@ class OWLoadDocuments(widget.OWWidget):
     def handle_result(self, result):
         try:
             self.result = result
-            if self.detailed_docx_loading and isinstance(result, tuple):
+            if isinstance(result, tuple):
                 main_table, details_table = result
                 self.Outputs.data.send(main_table)
                 self.Outputs.details.send(details_table)

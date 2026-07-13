@@ -76,6 +76,19 @@
      <string>Detailed loading for docx (one row per object: heading, paragraph, table, header, footer)</string>
     </property>
    </widget>
+   <widget class="QCheckBox" name="checkBox_pages">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>130</y>
+      <width>411</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Per-page loading (one row per page for pdf, per slide for pptx)</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QPushButton" name="pushButton_send">
    <property name="enabled">

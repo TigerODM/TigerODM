@@ -2,6 +2,7 @@ import os
 import sys
 from typing import Optional,Dict,List,Tuple
 from AnyQt.QtWidgets import QTableWidgetItem
+import shutil
 
 from Orange.widgets.settings import Setting
 import Orange.data
@@ -19,10 +20,13 @@ if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils import help_management
     from Orange.widgets.orangecontrib.AAIT.utils.color_prefix_utils import  normalize_hex, parse_color_prefix
+    from Orange.widgets.orangecontrib.AAIT.llm import process_documents 
+
 else:
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils import help_management
     from orangecontrib.AAIT.utils.color_prefix_utils import  normalize_hex, parse_color_prefix
+    from orangecontrib.AAIT.llm import process_documents          
 
 class OWDocumentGenerator(widget.OWWidget):
     """
@@ -43,7 +47,7 @@ class OWDocumentGenerator(widget.OWWidget):
     priority = 1070
 
     key_remplace: str = Setting("True")# "True" => replace [col] with row0 value else   => insert full table at [TableKey]
-
+    mode: str = Setting("replace")   # "replace" | "table" | "locator"
 
     class Inputs:
         data = Orange.widgets.widget.Input("Data", Orange.data.Table)
@@ -59,7 +63,7 @@ class OWDocumentGenerator(widget.OWWidget):
     def __init__(self):
         super().__init__()
         self.setFixedWidth(470)
-        self.setFixedHeight(300)
+        self.setFixedHeight(380)
         uic.loadUi(self.gui, self)
 
         self.tableWidget.insertRow(self.tableWidget.rowCount())
@@ -77,21 +81,32 @@ class OWDocumentGenerator(widget.OWWidget):
         self.tableWidget_2.setItem(0, 2, QTableWidgetItem("%!red!%..."))
         self.tableWidget_2.setItem(0, 3, QTableWidgetItem("..."))
 
+        self.tableWidget_3.insertRow(self.tableWidget_3.rowCount())
 
+        self.tableWidget_3.setItem(0, 0, QTableWidgetItem("C:/in/doc.docx"))
+        self.tableWidget_3.setItem(0, 1, QTableWidgetItem("C:/out/doc.docx"))
+        self.tableWidget_3.setItem(0, 2, QTableWidgetItem("section:0:footer"))
+        self.tableWidget_3.setItem(0, 3, QTableWidgetItem("XXX"))
+        self.tableWidget_3.setItem(0, 4, QTableWidgetItem("YYY"))
 
 
         self.data: Optional[Table] = None
 
         # Word table style (optional)
         self.table_style_name = "Table Grid"
-        if self.key_remplace=="True":
-            self.radioButton.setChecked(True)
-        else:
-            self.radioButton_2.setChecked(True)
+        if self.mode != "locator":
+            self.mode = "replace" if self.key_remplace == "True" else "table"
 
+        if self.mode == "table":
+            self.radioButton_2.setChecked(True)
+        elif self.mode == "locator":
+            self.radioButton_3.setChecked(True)
+        else:  # "replace"
+            self.radioButton.setChecked(True)
 
         self.radioButton.toggled.connect(self.on_radio_changed)
         self.radioButton_2.toggled.connect(self.on_radio_changed)
+        self.radioButton_3.toggled.connect(self.on_radio_changed)
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
 
@@ -102,11 +117,15 @@ class OWDocumentGenerator(widget.OWWidget):
             return  # on ignore le "décoché"
 
         sender = self.sender()
-
         if sender == self.radioButton:
-            self.key_remplace="True"
+            self.key_remplace = "True"
+            self.mode = "replace"
         elif sender == self.radioButton_2:
-            self.key_remplace="False"
+            self.key_remplace = "False"
+            self.mode = "table"
+        elif sender == self.radioButton_3:
+            self.key_remplace = "False"
+            self.mode = "locator"
 
     # -----------------------------
     # Input
@@ -460,6 +479,95 @@ class OWDocumentGenerator(widget.OWWidget):
             section.bottom_margin = Inches(1)
 
     # -----------------------------
+    # MODE 3 : édition ciblée par locator
+    # -----------------------------
+    def _resolve_col(self, *candidates):
+        for c in candidates:
+            if c in self.data.domain:
+                return c
+        return None
+
+    def _get_col_value(self, i, name):
+        if name is None or name not in self.data.domain:
+            return ""
+        try:
+            return self._clean_orange_value(self.data[i][self.data.domain[name]])
+        except Exception:
+            return ""
+
+    def _process_locator_edits(self):
+        col_in  = self._resolve_col("input_path", "InputPath", "base_path", "DocxPath", "path")
+        col_out = self._resolve_col("path_out", "OutputPath", "OutDocxPath")
+        col_loc = self._resolve_col("locator", "Locator")
+        col_old = self._resolve_col("old_text", "OldText", "old", "search")
+        col_new = self._resolve_col("new_text", "NewText", "new", "replace")
+
+        missing = [n for n, c in (
+            ("source (path)", col_in),
+            ("sortie (path_out)", col_out),
+            ("locator", col_loc),
+            ("texte à changer (old_text)", col_old),
+            ("nouveau texte (new_text)", col_new),
+        ) if c is None]
+        if missing:
+            self.error("MODE 3 (locator) — colonnes manquantes : " + ", ".join(missing))
+            self.Outputs.data.send(None)
+            return
+
+        groups = {}
+        for i in range(len(self.data)):
+            in_path  = self._get_col_value(i, col_in)
+            out_path = self._get_col_value(i, col_out)
+            locator  = self._get_col_value(i, col_loc)
+            old_txt  = self._get_col_value(i, col_old)
+            new_txt  = self._get_col_value(i, col_new)
+
+            if not in_path or not out_path or not locator:
+                continue
+
+            in_path  = in_path.replace("\\", os.sep).replace("/", os.sep)
+            out_path = out_path.replace("\\", os.sep).replace("/", os.sep)
+
+            g = groups.setdefault(out_path, {"input": in_path, "edits": []})
+            g["edits"].append((locator, old_txt, new_txt))
+
+        if not groups:
+            self.error("MODE 3 (locator) — aucune ligne exploitable "
+                       "(source / sortie / locator requis).")
+            self.Outputs.data.send(None)
+            return
+
+        errors = []
+        total_replacements = 0
+        for out_path, g in groups.items():
+            in_path = g["input"]
+            if not os.path.exists(in_path):
+                errors.append(f"Source introuvable : {in_path}")
+                continue
+            try:
+                out_dir = os.path.dirname(out_path)
+                if out_dir:
+                    os.makedirs(out_dir, exist_ok=True)
+
+                if os.path.abspath(in_path) != os.path.abspath(out_path):
+                    shutil.copyfile(in_path, out_path)
+
+                for locator, old_txt, new_txt in g["edits"]:
+                    total_replacements += process_documents.apply_docx_edit(
+                        out_path, locator, old_txt, new_txt, out_path
+                    )
+            except Exception as e:
+                errors.append(f"{out_path} : {e}")
+
+        if errors:
+            self.error(" | ".join(errors))
+        else:
+            self.warning(f"{total_replacements} remplacement(s) appliqué(s) "
+                         f"sur {len(groups)} fichier(s).")
+
+        self.Outputs.data.send(self.data)
+
+    # -----------------------------
     # Main
     # -----------------------------
     def process(self):
@@ -473,6 +581,11 @@ class OWDocumentGenerator(widget.OWWidget):
         if len(self.data) == 0:
             self.error("La table d'entrée est vide (aucune ligne).")
             self.Outputs.data.send(None)
+            return
+
+        # ---- MODE 3 : édition par locator (sélectionné via radioButton_3) ----
+        if self.mode == "locator":
+            self._process_locator_edits()
             return
 
         try:
@@ -548,6 +661,8 @@ class OWDocumentGenerator(widget.OWWidget):
 
             doc.save(docx_path)
             self.Outputs.data.send(self.data)
+
+
 
         except Exception as e:
             self.error(f"Erreur : {e}")

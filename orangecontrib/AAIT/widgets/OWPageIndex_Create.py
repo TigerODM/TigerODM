@@ -6,7 +6,7 @@ import shutil
 
 import Orange.data
 from Orange.widgets import widget
-from Orange.data import Table, Domain, StringVariable, ContinuousVariable
+from Orange.data import StringVariable
 from AnyQt.QtWidgets import QApplication
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.signals import Input, Output
@@ -15,15 +15,15 @@ from AnyQt.QtCore import QTimer
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import PageIndex_functions
     from Orange.widgets.orangecontrib.AAIT.llm import prompt_management
-    from Orange.widgets.orangecontrib.AAIT.llm.answers_llama import load_model, load_model_with_handler, check_gpu, supported_VLM, run_query, split_think
-    from Orange.widgets.orangecontrib.AAIT.utils import thread_management, base_widget, help_management
+    from Orange.widgets.orangecontrib.AAIT.llm.answers_llama import load_model, load_model_with_handler, run_query, split_think
+    from Orange.widgets.orangecontrib.AAIT.utils import thread_management, help_management
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 else:
     from orangecontrib.AAIT.llm import PageIndex_functions
     from orangecontrib.AAIT.llm import prompt_management
-    from orangecontrib.AAIT.llm.answers_llama import load_model, load_model_with_handler, check_gpu, supported_VLM, run_query, split_think
-    from orangecontrib.AAIT.utils import thread_management, base_widget, help_management
+    from orangecontrib.AAIT.llm.answers_llama import load_model, load_model_with_handler, run_query, split_think
+    from orangecontrib.AAIT.utils import thread_management, help_management
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 
