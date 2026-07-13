@@ -1,7 +1,7 @@
 import os
 import sys
 import Orange.data
-from AnyQt.QtWidgets import QPushButton, QApplication, QRadioButton, QComboBox, QCheckBox, QSpinBox, QLabel
+from AnyQt.QtWidgets import QPushButton, QApplication, QRadioButton, QComboBox, QCheckBox, QSpinBox, QLabel, QFileDialog, QLineEdit
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
 from Orange.widgets.settings import Setting
@@ -16,12 +16,14 @@ if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).
     from Orange.widgets.orangecontrib.IO4IT.utils import mail
     from Orange.widgets.orangecontrib.IO4IT.utils import keys_manager
     from Orange.widgets.orangecontrib.AAIT.utils import MetManagement
+    from Orange.widgets.orangecontrib.IO4IT.utils.pst_extractor.export_pst import export_pst_folder
 else:
     from orangecontrib.AAIT.utils import thread_management
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.IO4IT.utils import mail
     from orangecontrib.IO4IT.utils import keys_manager
     from orangecontrib.AAIT.utils import MetManagement
+    from orangecontrib.IO4IT.utils.pst_extractor.export_pst import export_pst_folder
 
 class OWInboxMailMonitoring(widget.OWWidget):
     name = "InboxMailMonitoring"
@@ -41,6 +43,7 @@ class OWInboxMailMonitoring(widget.OWWidget):
     sort_order: str = Setting("Ascending")
     read_all: bool = Setting(True)
     email_count: int = Setting(10)
+    pst_folder: str = Setting("")
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -56,6 +59,9 @@ class OWInboxMailMonitoring(widget.OWWidget):
         if new_text == self.type_co:
             return
         self.update_setting_from_qt_view()
+        visible = (self.type_co == "ARCHIVE PST")
+        self.lineEdit_pst_folder.setVisible(visible)
+        self.pushButton_browse_pst.setVisible(visible)
 
     def on_text_changed2(self):
         self.your_email_conf = str(self.comboBox2.currentText())
@@ -69,6 +75,17 @@ class OWInboxMailMonitoring(widget.OWWidget):
 
     def on_email_count_changed(self, value: int):
         self.email_count = value
+
+    def select_pst_folder(self):
+        if self.type_co != "ARCHIVE PST":
+            return
+
+        folder = QFileDialog.getExistingDirectory(self, "Select PST folder")
+
+        if folder:
+            self.pst_folder = folder
+            self.lineEdit_pst_folder.setText(folder)
+
 
     # ------------------------------------------------------------------
     # Show / hide the "number of emails" widgets depending on read_all
@@ -97,12 +114,22 @@ class OWInboxMailMonitoring(widget.OWWidget):
         self.comboBox.setCurrentIndex(index if index != -1 else 0)
 
         # Configuration file combobox
-        if self.type_co != "":
+        if self.type_co not in ("", "ARCHIVE PST"):
             self.comboBox2.show()
-            offusc_conf_agents = mail.list_conf_files(self.type_co)
+            self.comboBox2.clear()
+
+            try:
+                offusc_conf_agents = mail.list_conf_files(self.type_co)
+            except FileNotFoundError:
+                offusc_conf_agents = []
+
             self.comboBox2.addItems(offusc_conf_agents)
+
             index1 = self.comboBox2.findText(str(self.your_email_conf))
             self.comboBox2.setCurrentIndex(index1 if index1 != -1 else 0)
+        else:
+            self.comboBox2.clear()
+            self.comboBox2.hide()
 
         # Sort order combobox
         idx_sort = self.comboBox_sort_order.findText(str(self.sort_order))
@@ -112,11 +139,12 @@ class OWInboxMailMonitoring(widget.OWWidget):
         self.checkBox_read_all.setChecked(self.read_all)
         self.spinBox_email_count.setValue(self.email_count)
         self._update_email_count_visibility()
+        self.lineEdit_pst_folder.setText(self.pst_folder)
 
     def update_setting_from_qt_view(self):
         self.type_co = str(self.comboBox.currentText())
 
-        if self.type_co == "":
+        if self.type_co in ("", "ARCHIVE PST"):
             self.comboBox2.hide()
         else:
             self.comboBox2.show()
@@ -128,6 +156,7 @@ class OWInboxMailMonitoring(widget.OWWidget):
         self.sort_order = str(self.comboBox_sort_order.currentText())
         self.read_all = self.checkBox_read_all.isChecked()
         self.email_count = self.spinBox_email_count.value()
+        self.pst_folder = self.lineEdit_pst_folder.text()
 
     # ------------------------------------------------------------------
     # Init
@@ -152,6 +181,9 @@ class OWInboxMailMonitoring(widget.OWWidget):
         self.checkBox_read_all = self.findChild(QCheckBox, 'checkBox_read_all')
         self.spinBox_email_count = self.findChild(QSpinBox, 'spinBox_email_count')
         self.label_email_count = self.findChild(QLabel, 'label_email_count')
+        self.pushButton_browse_pst = self.findChild(QPushButton, "pushButton_browse_pst")
+        self.lineEdit_pst_folder = self.findChild(QLineEdit, "lineEdit_pst_folder")
+        self.pushButton_browse_pst.clicked.connect(self.select_pst_folder)
 
         # Populate connection type combobox
         types_co = [
@@ -159,7 +191,8 @@ class OWInboxMailMonitoring(widget.OWWidget):
             "IMAP4_SSL",
             "MICROSOFT_EXCHANGE_OWA",
             "MICROSOFT_EXCHANGE_OAUTH2",
-            "MICROSOFT_EXCHANGE_OAUTH2_MICROSOFT_GRAPH"
+            "MICROSOFT_EXCHANGE_OAUTH2_MICROSOFT_GRAPH",
+            "ARCHIVE PST",
         ]
         self.comboBox.addItems(types_co)
 
@@ -203,6 +236,14 @@ class OWInboxMailMonitoring(widget.OWWidget):
 
     def _run_mail_daemonizer(self):
         self.data_to_send = self.data
+        
+        if self.type_co == "ARCHIVE PST":
+            output_dir = export_pst_folder(self.pst_folder)
+            output_dir_domain = StringVariable("output_dir")
+
+            domain = Domain([], metas=[output_dir_domain])
+            self.data_to_send = Table.from_list(domain, [[str(output_dir)]])
+            return
 
         if self.send_mail == True:
             mail.check_send_new_emails(self.your_email_conf, self.type_co)
@@ -261,9 +302,16 @@ class OWInboxMailMonitoring(widget.OWWidget):
         if self.thread is not None:
             self.thread.safe_quit()
 
-        if self.your_email_conf == "":
-            self.error("You need to select a configuration file")
-            return
+        if self.type_co == "ARCHIVE PST":
+            self.pst_folder = self.lineEdit_pst_folder.text()
+            if self.pst_folder == "":
+                print(f"PST folder : {self.pst_folder}")
+                self.error("You need to select a PST folder")
+                return
+        else:
+            if self.your_email_conf == "":
+                self.error("You need to select a configuration file")
+                return
 
         if self.type_co == "":
             self.error("You need to select a type of connection")

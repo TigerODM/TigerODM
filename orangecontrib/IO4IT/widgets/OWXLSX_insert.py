@@ -382,7 +382,7 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
                         logs.append("Fallback sur 'Sheet1'.")
                     else:
                         ws = wb.worksheets[0]
-                        logs.append(f"Fallback sur '{wb.worksheets[0].title}'.")
+                        logs.append(f"Fallback sur '{ws.title}'.")
 
                 wb.save(abs_path)
 

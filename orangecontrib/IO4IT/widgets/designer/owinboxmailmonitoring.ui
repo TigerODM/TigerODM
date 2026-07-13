@@ -13,6 +13,7 @@
   <property name="windowTitle">
    <string>Form</string>
   </property>
+
   <widget class="QPushButton" name="pushButton">
    <property name="geometry">
     <rect>
@@ -26,6 +27,7 @@
     <string>Run</string>
    </property>
   </widget>
+
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
     <rect>
@@ -38,6 +40,7 @@
    <property name="title">
     <string>Parameters</string>
    </property>
+
    <widget class="QRadioButton" name="radioButton">
     <property name="geometry">
      <rect>
@@ -51,19 +54,7 @@
      <string>Read mail</string>
     </property>
    </widget>
-   <widget class="QComboBox" name="comboBox">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>110</y>
-      <width>651</width>
-      <height>22</height>
-     </rect>
-    </property>
-    <property name="editable">
-     <bool>false</bool>
-    </property>
-   </widget>
+
    <widget class="QRadioButton" name="radioButton_2">
     <property name="geometry">
      <rect>
@@ -77,6 +68,36 @@
      <string>Send mail</string>
     </property>
    </widget>
+
+   <!-- NEW: PST MODE -->
+   <widget class="QRadioButton" name="radioButton_pst">
+    <property name="geometry">
+     <rect>
+      <x>300</x>
+      <y>40</y>
+      <width>200</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>ARCHIVE PST</string>
+    </property>
+   </widget>
+
+   <widget class="QComboBox" name="comboBox">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>110</y>
+      <width>651</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="editable">
+     <bool>false</bool>
+    </property>
+   </widget>
+
    <widget class="QComboBox" name="comboBox_2">
     <property name="geometry">
      <rect>
@@ -90,7 +111,8 @@
      <bool>false</bool>
     </property>
    </widget>
-   <!-- Sort order label + combobox -->
+
+   <!-- Sort order -->
    <widget class="QLabel" name="label_sort_order">
     <property name="geometry">
      <rect>
@@ -104,6 +126,7 @@
      <string>Loading order :</string>
     </property>
    </widget>
+
    <widget class="QComboBox" name="comboBox_sort_order">
     <property name="geometry">
      <rect>
@@ -117,7 +140,8 @@
      <bool>false</bool>
     </property>
    </widget>
-   <!-- Read all checkbox -->
+
+   <!-- Read all -->
    <widget class="QCheckBox" name="checkBox_read_all">
     <property name="geometry">
      <rect>
@@ -131,7 +155,7 @@
      <string>Read all</string>
     </property>
    </widget>
-   <!-- Email count label + spinbox (hidden when Read all is checked) -->
+
    <widget class="QLabel" name="label_email_count">
     <property name="geometry">
      <rect>
@@ -145,6 +169,7 @@
      <string>Number of emails :</string>
     </property>
    </widget>
+
    <widget class="QSpinBox" name="spinBox_email_count">
     <property name="geometry">
      <rect>
@@ -164,7 +189,49 @@
      <number>10</number>
     </property>
    </widget>
+
+   <!-- NEW: PST folder -->
+   <widget class="QLabel" name="label_pst_folder">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>280</y>
+      <width>120</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>PST folder :</string>
+    </property>
+   </widget>
+
+   <widget class="QLineEdit" name="lineEdit_pst_folder">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>280</y>
+      <width>480</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+
+   <widget class="QPushButton" name="pushButton_browse_pst">
+    <property name="geometry">
+     <rect>
+      <x>600</x>
+      <y>280</y>
+      <width>60</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+   </widget>
+
   </widget>
+
   <widget class="QCheckBox" name="checkBox_send">
    <property name="enabled">
     <bool>false</bool>
@@ -181,6 +248,7 @@
     <string>Auto send data</string>
    </property>
   </widget>
+
  </widget>
  <resources/>
  <connections/>
