@@ -1,4 +1,3 @@
-# widget_diagnostic.py
 # ---------------------------------------------------------------------------
 # Interface de diagnostic des widgets Orange, lançable depuis le Canvas.
 #
@@ -25,7 +24,6 @@
 
 import sys
 import traceback
-from pathlib import Path
 
 from AnyQt.QtCore import Qt
 from AnyQt.QtGui import QAction, QColor, QKeySequence

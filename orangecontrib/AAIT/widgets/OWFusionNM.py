@@ -4,7 +4,7 @@ from typing import Optional, Dict, List, Tuple
 from collections import defaultdict
 
 import numpy as np
-from Orange.data import Table, Domain, Variable, DiscreteVariable, StringVariable
+from Orange.data import Table, Domain, Variable, DiscreteVariable
 from Orange.widgets import widget
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.signals import Input, Output

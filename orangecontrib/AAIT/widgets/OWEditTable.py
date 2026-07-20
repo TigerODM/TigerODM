@@ -30,6 +30,7 @@ class OWEditTable(widget.OWWidget):
     priority = 1003
     str_WidgetPositionning: str=Setting("None")
     str_Auto_send: str=Setting("False")
+    str_Ignore_old_values: str=Setting("False")
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -68,6 +69,9 @@ class OWEditTable(widget.OWWidget):
         self.checkbox_auto = QCheckBox("Auto send")
         bottom_layout.addWidget(self.checkbox_auto)
 
+        self.checkbox_ignore_old_values = QCheckBox("Do not keep original values")
+        bottom_layout.addWidget(self.checkbox_ignore_old_values)
+
         # Add a "Save Changes" button to trigger output
         self.btn_confirm = QPushButton("Confirm")
         self.btn_confirm.clicked.connect(self.save_changes_to_data)
@@ -87,7 +91,12 @@ class OWEditTable(widget.OWWidget):
             self.checkbox_auto.setChecked(False)
         else:
             self.checkbox_auto.setChecked(True)
+        if self.str_Ignore_old_values != "True":
+            self.checkbox_ignore_old_values.setChecked(False)
+        else:
+            self.checkbox_ignore_old_values.setChecked(True)
         self.checkbox_auto.clicked.connect(self.update_autocheck)
+        self.checkbox_ignore_old_values.clicked.connect(self.update_ignore_old_values_check)
         widget_positioning.show_and_adjust_at_opening(self,str(self.str_WidgetPositionning))
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
@@ -96,6 +105,12 @@ class OWEditTable(widget.OWWidget):
             self.str_Auto_send = "True"
         else:
             self.str_Auto_send ="False"
+
+    def update_ignore_old_values_check(self):
+        if self.checkbox_ignore_old_values.isChecked():
+            self.str_Ignore_old_values = "True"
+        else:
+            self.str_Ignore_old_values = "False"
 
     def populate_table(self):
         """Fill QTableWidget with data from the Orange Table."""
@@ -272,10 +287,11 @@ class OWEditTable(widget.OWWidget):
                 original_col[int(row_idx)] = str(new_value)
 
         # Create a backup column and corresponding variable
-        backup_col_name = f"{col_name} (Original)"
-        backup_var = type(var)(backup_col_name, getattr(var, "values", None))
-        data = np.column_stack((data, data[:, col_idx]))  # Add original values as backup
-        domain_list.append(backup_var)  # Add backup variable to domain
+        if self.str_Ignore_old_values != "True":
+            backup_col_name = f"{col_name} (Original)"
+            backup_var = type(var)(backup_col_name, getattr(var, "values", None))
+            data = np.column_stack((data, data[:, col_idx]))  # Add original values as backup
+            domain_list.append(backup_var)  # Add backup variable to domain
 
         # Replace the original column with the modified one
         data[:, col_idx] = original_col

@@ -186,7 +186,6 @@ class OWPageIndexExplore(widget.OWWidget):
         # Génération sur la colonne "prompt"
         answers = []
         conversations = []
-        print(data)
         for i, row in enumerate(data):
             request = row["request"].value
             # try:

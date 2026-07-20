@@ -19,7 +19,7 @@
      <x>19</x>
      <y>39</y>
      <width>431</width>
-     <height>131</height>
+     <height>145</height>
     </rect>
    </property>
    <property name="title">
@@ -29,13 +29,26 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>100</y>
-      <width>221</width>
+      <y>80</y>
+      <width>331</width>
       <height>16</height>
      </rect>
     </property>
     <property name="text">
-     <string>Load content as StringVariable</string>
+     <string>Load content as StringVariable with standard reader</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_rename_cols">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>120</y>
+      <width>300</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Index and Rename columns (col 1, col 2...)</string>
     </property>
    </widget>
    <widget class="QLabel" name="Description">
@@ -60,6 +73,19 @@
      <bool>true</bool>
     </property>
    </widget>
+   <widget class="QCheckBox" name="checkBox_2">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>100</y>
+      <width>301</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Load content as StringVariable with panda reader</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QPushButton" name="pushButton_send">
    <property name="enabled">
@@ -79,7 +105,7 @@
   </widget>
   <widget class="QCheckBox" name="checkBox_send">
    <property name="enabled">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
    <property name="geometry">
     <rect>
@@ -92,12 +118,15 @@
    <property name="text">
     <string>Auto send data</string>
    </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
   </widget>
   <widget class="QGroupBox" name="groupBox_3">
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>180</y>
+     <y>190</y>
      <width>431</width>
      <height>141</height>
     </rect>
