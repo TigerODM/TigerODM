@@ -1,7 +1,7 @@
 import os
 import sys
 import Orange.data
-from AnyQt.QtWidgets import QPushButton, QApplication, QRadioButton, QComboBox, QCheckBox, QSpinBox, QLabel, QFileDialog, QLineEdit
+from AnyQt.QtWidgets import QPushButton, QApplication, QRadioButton, QComboBox, QCheckBox, QSpinBox, QLabel
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
 from Orange.widgets.settings import Setting
@@ -59,9 +59,6 @@ class OWInboxMailMonitoring(widget.OWWidget):
         if new_text == self.type_co:
             return
         self.update_setting_from_qt_view()
-        visible = (self.type_co == "ARCHIVE PST")
-        self.lineEdit_pst_folder.setVisible(visible)
-        self.pushButton_browse_pst.setVisible(visible)
 
     def on_text_changed2(self):
         self.your_email_conf = str(self.comboBox2.currentText())
@@ -76,15 +73,6 @@ class OWInboxMailMonitoring(widget.OWWidget):
     def on_email_count_changed(self, value: int):
         self.email_count = value
 
-    def select_pst_folder(self):
-        if self.type_co != "ARCHIVE PST":
-            return
-
-        folder = QFileDialog.getExistingDirectory(self, "Select PST folder")
-
-        if folder:
-            self.pst_folder = folder
-            self.lineEdit_pst_folder.setText(folder)
 
 
     # ------------------------------------------------------------------
@@ -139,7 +127,7 @@ class OWInboxMailMonitoring(widget.OWWidget):
         self.checkBox_read_all.setChecked(self.read_all)
         self.spinBox_email_count.setValue(self.email_count)
         self._update_email_count_visibility()
-        self.lineEdit_pst_folder.setText(self.pst_folder)
+
 
     def update_setting_from_qt_view(self):
         self.type_co = str(self.comboBox.currentText())
@@ -156,7 +144,6 @@ class OWInboxMailMonitoring(widget.OWWidget):
         self.sort_order = str(self.comboBox_sort_order.currentText())
         self.read_all = self.checkBox_read_all.isChecked()
         self.email_count = self.spinBox_email_count.value()
-        self.pst_folder = self.lineEdit_pst_folder.text()
 
     # ------------------------------------------------------------------
     # Init
@@ -181,9 +168,6 @@ class OWInboxMailMonitoring(widget.OWWidget):
         self.checkBox_read_all = self.findChild(QCheckBox, 'checkBox_read_all')
         self.spinBox_email_count = self.findChild(QSpinBox, 'spinBox_email_count')
         self.label_email_count = self.findChild(QLabel, 'label_email_count')
-        self.pushButton_browse_pst = self.findChild(QPushButton, "pushButton_browse_pst")
-        self.lineEdit_pst_folder = self.findChild(QLineEdit, "lineEdit_pst_folder")
-        self.pushButton_browse_pst.clicked.connect(self.select_pst_folder)
 
         # Populate connection type combobox
         types_co = [
@@ -303,10 +287,21 @@ class OWInboxMailMonitoring(widget.OWWidget):
             self.thread.safe_quit()
 
         if self.type_co == "ARCHIVE PST":
-            self.pst_folder = self.lineEdit_pst_folder.text()
-            if self.pst_folder == "":
-                print(f"PST folder : {self.pst_folder}")
-                self.error("You need to select a PST folder")
+            if self.data is None:
+                self.error("No input data detected")
+                return
+            meta_names = [m.name for m in self.data.domain.metas]
+
+            if "input_dir" not in meta_names:
+                self.error("Missing meta column 'input_dir'")
+                return
+
+            # Récupération de la première valeur
+            input_dir_idx = meta_names.index("input_dir")
+            self.pst_folder = str(self.data[0].metas[input_dir_idx])
+
+            if self.pst_folder == "" or self.pst_folder == "None":
+                self.error("The meta 'input_dir' is empty")
                 return
         else:
             if self.your_email_conf == "":

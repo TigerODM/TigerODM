@@ -105,6 +105,7 @@ class OWJsonToDataTable(base_widget.BaseListWidget):
                 self.Outputs.data.send(None)
                 self.data = None
                 self.path = None
+                return
 
 
 
@@ -112,13 +113,32 @@ class OWJsonToDataTable(base_widget.BaseListWidget):
 
         try :
             if self.data:
-                raw = self.data.get_column(self.selected_column_name)[0]
-                if isinstance(raw, str):
-                    obj = json.loads(raw)
-                    if isinstance(obj, str):
-                        obj = json.loads(obj)
-                else:
-                    obj = raw
+                obj = []
+                values = self.data.get_column(self.selected_column_name)
+
+                for row_index, raw in enumerate(values):
+                    try:
+                        if isinstance(raw, str):
+                            if raw.strip() == "":
+                                continue
+                            current_obj = json.loads(raw)
+                            if isinstance(current_obj, str):
+                                current_obj = json.loads(current_obj)
+                        else:
+                            current_obj = raw
+
+                        if isinstance(current_obj, list):
+                            obj.extend(current_obj)
+                        else:
+                            obj.append(current_obj)
+                    except Exception as e:
+                        self.error(f"Error: {e}")
+                        self.Outputs.data.send(None)
+                        self.data = None
+                        self.path = None
+                        return
+
+
             if self.path:
                 raw = self.path.get_column(self.selected_column_name)[0]
                 with open(raw, "r", encoding="utf-8") as f:
