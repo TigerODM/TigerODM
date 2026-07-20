@@ -53,7 +53,7 @@ from AnyQt import QtWidgets, QtGui, QtCore
 from scipy.ndimage import uniform_filter
 from scipy.ndimage import sobel as ndi_sobel  # Sobel (scipy)
 from pathlib import Path
-
+import fitz
 # --- CLAHE + Canny optionnels via scikit-image ---
 try:
     from skimage import exposure as sk_exposure
@@ -2085,6 +2085,7 @@ def batch_process_tiff_folder(
                 default_he_bins=default_he_bins,
                 default_clahe_clip=default_clahe_clip,
             )
+            print("info", info )
             info.update({"src": src, "dst": dst, "ok": True})
             results.append(info)
             processed += 1
@@ -2208,7 +2209,6 @@ def convert_file_to_image_best_effort(
 
     # ---------- PDF -> image ----------
     if ext_in == ".pdf":
-        import fitz  # PyMuPDF
         from PIL import Image
 
         doc = fitz.open(in_path)
@@ -2288,143 +2288,150 @@ def convert_file_to_image_best_effort(
             else:
                 arr = arr.astype(np.uint16, copy=False)
 
-        arr = np.ascontiguousarray(arr)
+            arr = np.ascontiguousarray(arr)
 
-        file_meta = FileMetaDataset()
-        file_meta.FileMetaInformationVersion = b"\x00\x01"
-        file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
-        file_meta.MediaStorageSOPInstanceUID = generate_uid()
-        file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-        file_meta.ImplementationClassUID = generate_uid()
+            file_meta = FileMetaDataset()
+            file_meta.FileMetaInformationVersion = b"\x00\x01"
+            file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+            file_meta.MediaStorageSOPInstanceUID = generate_uid()
+            file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+            file_meta.ImplementationClassUID = generate_uid()
 
-        ds = Dataset()
-        ds.file_meta = file_meta
-        ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
-        ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+            ds = Dataset()
+            ds.file_meta = file_meta
+            ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+            ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
 
-        ds.Rows, ds.Columns = int(arr.shape[0]), int(arr.shape[1])
-        ds.SamplesPerPixel = 1
+            ds.PatientName = "ANON"
+            ds.PatientID = "ANON"
+            ds.StudyInstanceUID = generate_uid()
+            ds.SeriesInstanceUID = generate_uid()
+            ds.Modality = "OT"
+            ds.InstanceNumber = 1
 
-        # MONOCHROME2 signifie : 0 = noir, Max = blanc.
-        # C'est le standard pour éviter l'effet "négatif".
-        ds.PhotometricInterpretation = "MONOCHROME2"
+            ds.Rows = int(arr.shape[0])
+            ds.Columns = int(arr.shape[1])
+            ds.SamplesPerPixel = 1
+            ds.PhotometricInterpretation = "MONOCHROME1"
+            ds.PixelRepresentation = 0
 
-        ds.BitsAllocated = 16
-        ds.BitsStored = 16
-        ds.HighBit = 15
-        ds.PixelRepresentation = 0  # unsigned integer
+            ds.BitsAllocated = 16
+            ds.BitsStored = 16
+            ds.HighBit = 15
+            ds.PlanarConfiguration = 0
 
-        ds.is_little_endian = True
-        ds.is_implicit_VR = False
-        ds.PixelData = arr.tobytes()
+            ds.is_little_endian = True
+            ds.is_implicit_VR = False
+            ds.PixelData = arr.tobytes()
 
-        ds.save_as(out_path, write_like_original=False)
-        return {"ok": True, "output_format": "dcm", "via": "tifffile->pydicom"}
-
-    # ---------- DICOM (.dcm) -> image ----------
-    if ext_in in (".dcm", ".dicom"):
-        import numpy as np
-
-        ds = pydicom.dcmread(in_path, force=True)
-
-        try:
-            arr = ds.pixel_array
-        except Exception as e_px:
-            raise RuntimeError(
-                f"Lecture DICOM OK, mais impossible de décoder PixelData (codec manquant?) : {e_px}"
-            ) from e_px
-
-        if arr.ndim == 3:
-            arr = arr[0]
-
-        # --- CORRECTIF : SUPPRESSION DE L'INVERSION ---
-        # On ne fait plus "info.max - arr". On garde les données brutes.
-        if arr.dtype == np.int16:
-            # Pour les CT scans, oiftin décale souvent pour éviter les valeurs négatives en TIFF
-            # mais on préserve la dynamique linéaire.
-            offset = abs(arr.min()) if arr.min() < 0 else 0
-            arr = (arr.astype(np.int32) + offset).astype(np.uint16)
-        elif arr.dtype != np.uint16:
-            arr = arr.astype(np.uint16)
-
-        if ext_out not in ("tif", "tiff"):
-            raise RuntimeError("Seule la sortie .tif est autorisée depuis un DICOM pour préserver la qualité.")
-
-        import tifffile as tiff
-        # On stocke l'offset dans la description pour pouvoir le retrouver si besoin
-        tiff.imwrite(out_path, arr, compression='zlib')
-
-        return {
-            "ok": True,
-            "input": in_path,
-            "output": out_path,
-            "input_type": "dicom",
-            "width": int(arr.shape[1]),
-            "height": int(arr.shape[0]),
-            "dtype": str(arr.dtype),
-            "via": "pydicom->tifffile",
-            "note": "TIFF 16 bits inversé (blanc <-> noir).",
-        }
-    
-    # ---------- RAW (RW2, CR2, NEF, ARW, ...) -> image ----------
-    RAW_EXTS = {".rw2", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".raf", ".dng", ".pef", ".raw"}
-    if ext_in in RAW_EXTS:
-        try:
-            import rawpy
-            from PIL import Image
-
-            with rawpy.imread(in_path) as raw:
-                rgb = raw.postprocess(
-                    use_camera_wb=True,
-                    half_size=False,
-                    no_auto_bright=False,
-                    output_bps=8,
-                )
-            # rgb est un ndarray uint8 (H, W, 3)
-            im = Image.fromarray(rgb, mode="RGB")
-
-            if ext_out in ("jpg", "jpeg"):
-                im.save(out_path, format="JPEG", quality=int(jpeg_quality), optimize=True)
-            elif ext_out in ("tif", "tiff"):
-                im.save(out_path)
-            else:
-                im.save(out_path)
+            ds.save_as(out_path, write_like_original=False)
 
             return {
                 "ok": True,
                 "input": in_path,
                 "output": out_path,
-                "input_type": "raw",
-                "input_ext": ext_in,
-                "output_format": ext_out,
-                "width": int(im.size[0]),
-                "height": int(im.size[1]),
-                "mode": im.mode,
-                "via": "rawpy->Pillow",
+                "input_type": "tiff",
+                "output_format": "dcm",
+                "width": int(arr.shape[1]),
+                "height": int(arr.shape[0]),
+                "dtype": str(arr.dtype),
+                "via": "tifffile->pydicom",
             }
-        except ImportError as e_raw:
-            raise RuntimeError(
-                f"Lecture RAW ({ext_in}) demandée, mais rawpy est indisponible: {e_raw}\n"
-                f"Installez-le avec: pip install rawpy"
-            ) from e_raw
-        
-        except rawpy.LibRawError as e_libraw:
-            raise RuntimeError(
-                f"Fichier RAW non reconnu ou corrompu ({os.path.basename(in_path)}): {e_libraw}\n"
-                f"Le fichier n'est peut-être pas un RAW photo valide (format .raw ambigu ?)."
-            ) from e_libraw
 
-        except rawpy.LibRawFatalError as e_fatal:
-            raise RuntimeError(
-                f"Erreur fatale libraw sur ({os.path.basename(in_path)}): {e_fatal}"
-            ) from e_fatal
+        # ---------- DICOM (.dcm) -> image ----------
+        if ext_in in (".dcm", ".dicom"):
+            import numpy as np
 
-        except Exception as e_raw_generic:
-            raise RuntimeError(
-                f"Erreur inattendue lors de la lecture RAW ({ext_in}) "
-                f"de ({os.path.basename(in_path)}): {e_raw_generic}"
-            ) from e_raw_generic
-        
+            ds = pydicom.dcmread(in_path, force=True)
+
+            try:
+                arr = ds.pixel_array
+            except Exception as e_px:
+                raise RuntimeError(
+                    f"Lecture DICOM OK, mais impossible de dÃ©coder PixelData (codec manquant?) : {e_px}"
+                ) from e_px
+
+            if arr.ndim == 3:
+                arr = arr[0]
+            elif arr.ndim != 2:
+                raise RuntimeError(f"DICOM: forme non supportÃ©e: {arr.shape}")
+
+            photo = str(getattr(ds, "PhotometricInterpretation", "")).upper()
+
+            if ext_out == "dcm":
+                ds2 = ds.copy()
+
+                if arr.dtype == np.int16:
+                    ds2.PixelRepresentation = 1
+                else:
+                    ds2.PixelRepresentation = 0
+                    if arr.dtype != np.uint16:
+                        arr = arr.astype(np.uint16)
+
+                ds2.BitsAllocated = 16
+                ds2.BitsStored = 16
+                ds2.HighBit = 15
+                ds2.SamplesPerPixel = 1
+                ds2.PhotometricInterpretation = "MONOCHROME2"
+
+                ds2.Rows, ds2.Columns = int(arr.shape[0]), int(arr.shape[1])
+                ds2.PixelData = arr.tobytes()
+
+                try:
+                    from pydicom.uid import ExplicitVRLittleEndian
+                    ds2.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                    ds2.is_implicit_VR = False
+                    ds2.is_little_endian = True
+                except Exception:
+                    pass
+
+                ds2.save_as(out_path, write_like_original=False)
+
+                return {
+                    "ok": True,
+                    "input": in_path,
+                    "output": out_path,
+                    "input_type": "dicom",
+                    "output_format": "dcm",
+                    "width": int(arr.shape[1]),
+                    "height": int(arr.shape[0]),
+                    "dtype": str(arr.dtype),
+                    "photometric_in": photo or None,
+                    "via": "pydicom",
+                }
+
+            if ext_out not in ("tif", "tiff"):
+                raise RuntimeError("ecriture autorisÃ©e depuis dcm : seulement le tif!!!")
+
+            import tifffile as tiff
+
+            if np.issubdtype(arr.dtype, np.integer):
+                info = np.iinfo(arr.dtype)
+                arr = info.max - arr
+            else:
+                arr = arr.max() - arr
+
+            if arr.dtype == np.int16:
+                pass
+            elif arr.dtype != np.uint16:
+                arr = arr.astype(np.uint16)
+
+            tiff.imwrite(out_path, arr)
+
+            return {
+                "ok": True,
+                "input": in_path,
+                "output": out_path,
+                "input_type": "dicom",
+                "output_format": ext_out,
+                "width": int(arr.shape[1]),
+                "height": int(arr.shape[0]),
+                "dtype": str(arr.dtype),
+                "photometric_in": photo or None,
+                "via": "pydicom->tifffile",
+                "note": "TIFF 16 bits inverse (blanc <-> noir).",
+            }
+
     # ---------- Image -> image ----------
     try:
         import pillow_heif  # noqa: F401
@@ -2778,6 +2785,50 @@ def crop_tiff_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str,
         "n_outputs": int(len(outputs)),
         "outputs": outputs,
     }
+
+def convert_pdfs_to_png_fitz(input_folder, output_folder, zoom=2):
+    """
+    Convertit tous les PDF d'un dossier en PNG en utilisant PyMuPDF (fitz).
+    zoom=2 permet d'avoir une bonne qualité (double la résolution standard).
+    """
+    for i in range(len(output_folder)):
+        if not os.path.exists(output_folder[i]):
+            os.makedirs(output_folder[i])
+
+    # Matrice de transformation pour la résolution
+    # zoom_x et zoom_y à 2.0 augmentent la qualité (DPI)
+    mat = fitz.Matrix(zoom, zoom)
+    output_pdfs = []
+    for i in range(len(input_folder)):
+        for filename in os.listdir(input_folder[i]):
+            if filename.lower().endswith(".pdf"):
+                pdf_path = os.path.join(input_folder[i], filename)
+                pdf_path = pdf_path.replace("\\", "/")
+                print(pdf_path)
+                base_name = os.path.splitext(filename)[0]
+
+                try:
+                    # Ouvrir le document
+                    doc = fitz.open(pdf_path)
+                    pdf_page = []
+                    for page_index in range(len(doc)):
+                        page = doc.load_page(page_index)
+
+                        # Générer le pixmap (l'image de la page)
+                        pix = page.get_pixmap(matrix=mat)
+
+                        # Nom du fichier de sortie
+                        output_filename = f"{base_name}_p{page_index + 1}.png"
+                        output_path = os.path.join(output_folder[i], output_filename)
+
+                        # Sauvegarder
+                        pix.save(output_path)
+                        pdf_page.append(output_path.replace("\\", "/"))
+                    doc.close()
+                    output_pdfs.append({"path": filename.replace("\\", "/"), "pages": pdf_page})
+                except Exception as e:
+                    print(f"Erreur sur {filename} : {e}")
+    return output_pdfs
 
 # ------------------
 # Exemples:

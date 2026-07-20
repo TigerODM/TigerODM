@@ -4,14 +4,15 @@ from AnyQt.QtWidgets import QApplication
 import os
 import Orange
 import sys
+from Orange.data import Domain, StringVariable, Table
 # importe ton viewer sans le modifier
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from Orange.widgets.orangecontrib.IMG4IT.utils.tiff16_viewer import batch_process_tiff_files
+    from Orange.widgets.orangecontrib.IMG4IT.utils.tiff16_viewer import batch_process_tiff_files, convert_pdfs_to_png_fitz
     from Orange.widgets.orangecontrib.AAIT.utils import thread_management
     from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import create_trigger_table
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
 else:
-    from orangecontrib.IMG4IT.utils.tiff16_viewer import batch_process_tiff_files
+    from orangecontrib.IMG4IT.utils.tiff16_viewer import batch_process_tiff_files, convert_pdfs_to_png_fitz
     from orangecontrib.AAIT.utils import thread_management
     from orangecontrib.AAIT.utils.MetManagement import create_trigger_table
     from orangecontrib.AAIT.utils.import_uic import uic
@@ -42,7 +43,7 @@ class OWImageApplyTransform(OWWidget):
         uic.loadUi(self.gui, self)
         # Qt Management
         self.setFixedWidth(478)
-        self.setFixedHeight(400)
+        self.setFixedHeight(600)
 
     @Inputs.data
     def set_data(self, in_data):
@@ -138,7 +139,10 @@ class OWImageApplyTransform(OWWidget):
     def run(self):
         self.error("")
         self.progressBarInit()
-        self.thread = thread_management.Thread(batch_process_tiff_files, self.list_image, self.path_out,self.transform_image)
+        if self.transform_image[0] == "list_pdf":
+            self.thread = thread_management.Thread(convert_pdfs_to_png_fitz, self.list_image, self.path_out)
+        else:
+            self.thread = thread_management.Thread(batch_process_tiff_files, self.list_image, self.path_out,self.transform_image)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
@@ -148,40 +152,55 @@ class OWImageApplyTransform(OWWidget):
         self.progressBarSet(value)
 
     def handle_result(self, result):
-        try:
-            ok_idx = [i for i, r in enumerate(result["results"]) if r.get("ok") is True]
-            not_ok_idx = [i for i, r in enumerate(result["results"]) if r.get("ok") is False]
-            if len(not_ok_idx) == 0:
-                self.Outputs.data.send(self.input_data)
-                self.Outputs.data_error.send(None)
-                return
-            if len(ok_idx) == 0:
-                try:
-                    errors = [r.get("error", "unknown error") for r in result["results"] if not r.get("ok")]
-                    msg = "\n".join(errors)
-                    self.error(msg)
-                except Exception:
-                    self.error("error occurs")
+        if self.transform_image[0] != "list_pdf":
+            try:
+                ok_idx = [i for i, r in enumerate(result["results"]) if r.get("ok") is True]
+                not_ok_idx = [i for i, r in enumerate(result["results"]) if r.get("ok") is False]
+                if len(not_ok_idx) == 0:
+                    self.Outputs.data.send(self.input_data)
+                    self.Outputs.data_error.send(None)
+                    return
+                if len(ok_idx) == 0:
+                    try:
+                        errors = [r.get("error", "unknown error") for r in result["results"] if not r.get("ok")]
+                        msg = "\n".join(errors)
+                        self.error(msg)
+                    except Exception:
+                        self.error("error occurs")
+                    self.Outputs.data.send(None)
+                    self.Outputs.data_error.send(self.input_data)
+                    return
+
+                subset = [self.input_data[i] for i in ok_idx]
+
+                # Crée une nouvelle table avec le même domaine
+                new_table = Orange.data.Table.from_list(self.input_data.domain, subset)
+                subset_error = [self.input_data[i] for i in not_ok_idx]
+
+                # Crée une nouvelle table avec le même domaine
+                new_table_error = Orange.data.Table.from_list(self.input_data.domain, subset_error)
+                self.error("error occurs")
+                self.Outputs.data.send(new_table)
+                self.Outputs.data_error.send(new_table_error)
+            except Exception as e:
+                print("An error occurred when sending out_data:", e)
                 self.Outputs.data.send(None)
-                self.Outputs.data_error.send(self.input_data)
                 return
-
-            subset = [self.input_data[i] for i in ok_idx]
-
-            # Crée une nouvelle table avec le même domaine
-            new_table = Orange.data.Table.from_list(self.input_data.domain, subset)
-
-            subset_error = [self.input_data[i] for i in not_ok_idx]
-
-            # Crée une nouvelle table avec le même domaine
-            new_table_error = Orange.data.Table.from_list(self.input_data.domain, subset_error)
-            self.error("error occurs")
-            self.Outputs.data.send(new_table)
-            self.Outputs.data_error.send(new_table_error)
-        except Exception as e:
-            print("An error occurred when sending out_data:", e)
-            self.Outputs.data.send(None)
-            return
+        else:
+            try:
+                domain = Domain([], metas=[
+                    StringVariable("path"),
+                    StringVariable("image paths")
+                ])
+                table_data = [
+                    [r["path"], "; ".join(r["pages"])]
+                    for r in result
+                ]
+                self.Outputs.data.send(Table.from_list(domain, table_data))
+            except Exception as e:
+                print("An error occurred when sending out_data:", e)
+                self.Outputs.data.send(None)
+                return
 
     def handle_finish(self):
         print("Transformation finished")

@@ -31,11 +31,27 @@
       <x>10</x>
       <y>30</y>
       <width>411</width>
-      <height>71</height>
+      <height>21</height>
      </rect>
     </property>
     <property name="text">
-     <string>Values parsed from the input 'transform' column. Supports Filters, Crop, and Rigid Registration.</string>
+     <string>Values parsed from the input 'transform' column. Supports Filters, Crop, and Rigid Registration. You </string>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QLabel" name="Description_info_2">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>60</y>
+      <width>411</width>
+      <height>51</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>You can also convert a PDF to an image. To do this, specify the folder(s) containing the PDF(s) to be converted. You must pass the following parameters: a “convert” column set to “list_pdf,” the ‘path’ to the PDF folder, and “path_out,” which is the folder where the images will be stored. </string>
     </property>
     <property name="wordWrap">
      <bool>true</bool>
