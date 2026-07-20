@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-print(BASE_DIR)
 
 if hasattr(os, "add_dll_directory"):
     os.add_dll_directory(str(BASE_DIR))

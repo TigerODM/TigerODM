@@ -89,7 +89,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>Ignore existing output file</string>
+     <string>Don't overwrite existing output file</string>
     </property>
     <property name="checked">
      <bool>true</bool>
