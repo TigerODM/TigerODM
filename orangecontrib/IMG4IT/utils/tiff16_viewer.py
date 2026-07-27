@@ -2172,22 +2172,10 @@ def convert_file_to_image_best_effort(
     pdf_zoom: float = 2.0,
     jpeg_quality: int = 95,
 ) -> dict:
-    """
-    Convertit au mieux un fichier d'entrée (image classique ou PDF 1 page) vers une image.
-
-    Support:
-      - Images: tif/tiff/png/jpg/jpeg/bmp/webp/heic/heif/... via Pillow si dispo
-               + fallback tifffile pour certains TIFF.
-               dcm (dicom) seulement en lecture
-      - PDF: rendu via PyMuPDF (fitz), refuse si plus d'1 page.
-
-    Note HEIF/HEIC:
-      - Pillow peut les ouvrir si le plugin pillow_heif est installé (tu l'as dans tes deps).
-      - Ici on enregistre un hook best-effort: si pillow_heif est présent, il s'active.
-    """
     import os
     import numpy as np
-    import tifffile as tiff  # AJOUT: évite UnboundLocalError (import local plus bas)
+    import tifffile as tiff
+
     src_path = src_path.replace("\\", "/")
     dst_path = dst_path.replace("\\", "/")
 
@@ -2210,7 +2198,6 @@ def convert_file_to_image_best_effort(
     # ---------- PDF -> image ----------
     if ext_in == ".pdf":
         from PIL import Image
-
         doc = fitz.open(in_path)
         try:
             page_count = doc.page_count
@@ -2219,7 +2206,6 @@ def convert_file_to_image_best_effort(
 
             page = doc.load_page(int(pdf_page_index))
             mat = fitz.Matrix(float(pdf_zoom), float(pdf_zoom))
-
             pix = page.get_pixmap(matrix=mat, alpha=True)
 
             w, h = pix.width, pix.height
@@ -2259,7 +2245,7 @@ def convert_file_to_image_best_effort(
         finally:
             doc.close()
 
-    # ---------- AJOUT: TIFF -> DICOM (.dcm) ----------
+    # ---------- TIFF -> DICOM (.dcm) ----------
     if ext_in in (".tif", ".tiff") and ext_out == "dcm":
         try:
             from pydicom.dataset import Dataset, FileMetaDataset
@@ -2269,10 +2255,7 @@ def convert_file_to_image_best_effort(
 
         arr = tiff.imread(in_path)
         if arr.ndim == 3:
-            if arr.shape[-1] == 1:
-                arr = arr[..., 0]
-            else:
-                arr = arr[..., 0]
+            arr = arr[..., 0]
         if arr.ndim != 2:
             raise RuntimeError(f"TIFF->DCM: forme non supportée (attendu 2D): {arr.shape}")
 
@@ -2288,153 +2271,149 @@ def convert_file_to_image_best_effort(
             else:
                 arr = arr.astype(np.uint16, copy=False)
 
-            arr = np.ascontiguousarray(arr)
+        arr = np.ascontiguousarray(arr)
 
-            file_meta = FileMetaDataset()
-            file_meta.FileMetaInformationVersion = b"\x00\x01"
-            file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
-            file_meta.MediaStorageSOPInstanceUID = generate_uid()
-            file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-            file_meta.ImplementationClassUID = generate_uid()
+        file_meta = FileMetaDataset()
+        file_meta.FileMetaInformationVersion = b"\x00\x01"
+        file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+        file_meta.MediaStorageSOPInstanceUID = generate_uid()
+        file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        file_meta.ImplementationClassUID = generate_uid()
 
-            ds = Dataset()
-            ds.file_meta = file_meta
-            ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
-            ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+        ds = Dataset()
+        ds.file_meta = file_meta
+        ds.SOPClassUID = file_meta.MediaStorageSOPClassUID
+        ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
 
-            ds.PatientName = "ANON"
-            ds.PatientID = "ANON"
-            ds.StudyInstanceUID = generate_uid()
-            ds.SeriesInstanceUID = generate_uid()
-            ds.Modality = "OT"
-            ds.InstanceNumber = 1
+        ds.PatientName = "ANON"
+        ds.PatientID = "ANON"
+        ds.StudyInstanceUID = generate_uid()
+        ds.SeriesInstanceUID = generate_uid()
+        ds.Modality = "OT"
+        ds.InstanceNumber = 1
 
-            ds.Rows = int(arr.shape[0])
-            ds.Columns = int(arr.shape[1])
-            ds.SamplesPerPixel = 1
-            ds.PhotometricInterpretation = "MONOCHROME1"
-            ds.PixelRepresentation = 0
+        ds.Rows = int(arr.shape[0])
+        ds.Columns = int(arr.shape[1])
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME1"
+        ds.PixelRepresentation = 0
 
-            ds.BitsAllocated = 16
-            ds.BitsStored = 16
-            ds.HighBit = 15
-            ds.PlanarConfiguration = 0
+        ds.BitsAllocated = 16
+        ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PlanarConfiguration = 0
 
-            ds.is_little_endian = True
-            ds.is_implicit_VR = False
-            ds.PixelData = arr.tobytes()
+        ds.is_little_endian = True
+        ds.is_implicit_VR = False
+        ds.PixelData = arr.tobytes()
 
-            ds.save_as(out_path, write_like_original=False)
+        ds.save_as(out_path, write_like_original=False)
 
-            return {
-                "ok": True,
-                "input": in_path,
-                "output": out_path,
-                "input_type": "tiff",
-                "output_format": "dcm",
-                "width": int(arr.shape[1]),
-                "height": int(arr.shape[0]),
-                "dtype": str(arr.dtype),
-                "via": "tifffile->pydicom",
-            }
+        return {
+            "ok": True,
+            "input": in_path,
+            "output": out_path,
+            "input_type": "tiff",
+            "output_format": "dcm",
+            "width": int(arr.shape[1]),
+            "height": int(arr.shape[0]),
+            "dtype": str(arr.dtype),
+            "via": "tifffile->pydicom",
+        }
 
-        # ---------- DICOM (.dcm) -> image ----------
-        if ext_in in (".dcm", ".dicom"):
-            import numpy as np
+    # ---------- DICOM (.dcm) -> image (CORRECTEMENT DÉSINDENTÉ) ----------
+    if ext_in in (".dcm", ".dicom"):
+        import pydicom
 
-            ds = pydicom.dcmread(in_path, force=True)
+        ds = pydicom.dcmread(in_path, force=True)
 
-            try:
-                arr = ds.pixel_array
-            except Exception as e_px:
-                raise RuntimeError(
-                    f"Lecture DICOM OK, mais impossible de dÃ©coder PixelData (codec manquant?) : {e_px}"
-                ) from e_px
+        try:
+            arr = ds.pixel_array
+        except Exception as e_px:
+            raise RuntimeError(
+                f"Lecture DICOM OK, mais impossible de décoder PixelData (codec manquant?) : {e_px}"
+            ) from e_px
 
-            if arr.ndim == 3:
-                arr = arr[0]
-            elif arr.ndim != 2:
-                raise RuntimeError(f"DICOM: forme non supportÃ©e: {arr.shape}")
+        if arr.ndim == 3:
+            arr = arr[0]
+        elif arr.ndim != 2:
+            raise RuntimeError(f"DICOM: forme non supportée: {arr.shape}")
 
-            photo = str(getattr(ds, "PhotometricInterpretation", "")).upper()
+        photo = str(getattr(ds, "PhotometricInterpretation", "")).upper()
 
-            if ext_out == "dcm":
-                ds2 = ds.copy()
-
-                if arr.dtype == np.int16:
-                    ds2.PixelRepresentation = 1
-                else:
-                    ds2.PixelRepresentation = 0
-                    if arr.dtype != np.uint16:
-                        arr = arr.astype(np.uint16)
-
-                ds2.BitsAllocated = 16
-                ds2.BitsStored = 16
-                ds2.HighBit = 15
-                ds2.SamplesPerPixel = 1
-                ds2.PhotometricInterpretation = "MONOCHROME2"
-
-                ds2.Rows, ds2.Columns = int(arr.shape[0]), int(arr.shape[1])
-                ds2.PixelData = arr.tobytes()
-
-                try:
-                    from pydicom.uid import ExplicitVRLittleEndian
-                    ds2.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-                    ds2.is_implicit_VR = False
-                    ds2.is_little_endian = True
-                except Exception:
-                    pass
-
-                ds2.save_as(out_path, write_like_original=False)
-
-                return {
-                    "ok": True,
-                    "input": in_path,
-                    "output": out_path,
-                    "input_type": "dicom",
-                    "output_format": "dcm",
-                    "width": int(arr.shape[1]),
-                    "height": int(arr.shape[0]),
-                    "dtype": str(arr.dtype),
-                    "photometric_in": photo or None,
-                    "via": "pydicom",
-                }
-
-            if ext_out not in ("tif", "tiff"):
-                raise RuntimeError("ecriture autorisÃ©e depuis dcm : seulement le tif!!!")
-
-            import tifffile as tiff
-
-            if np.issubdtype(arr.dtype, np.integer):
-                info = np.iinfo(arr.dtype)
-                arr = info.max - arr
-            else:
-                arr = arr.max() - arr
+        if ext_out == "dcm":
+            ds2 = ds.copy()
 
             if arr.dtype == np.int16:
-                pass
-            elif arr.dtype != np.uint16:
-                arr = arr.astype(np.uint16)
+                ds2.PixelRepresentation = 1
+            else:
+                ds2.PixelRepresentation = 0
+                if arr.dtype != np.uint16:
+                    arr = arr.astype(np.uint16)
 
-            tiff.imwrite(out_path, arr)
+            ds2.BitsAllocated = 16
+            ds2.BitsStored = 16
+            ds2.HighBit = 15
+            ds2.SamplesPerPixel = 1
+            ds2.PhotometricInterpretation = "MONOCHROME2"
+
+            ds2.Rows, ds2.Columns = int(arr.shape[0]), int(arr.shape[1])
+            ds2.PixelData = arr.tobytes()
+
+            try:
+                from pydicom.uid import ExplicitVRLittleEndian
+                ds2.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                ds2.is_implicit_VR = False
+                ds2.is_little_endian = True
+            except Exception:
+                pass
+
+            ds2.save_as(out_path, write_like_original=False)
 
             return {
                 "ok": True,
                 "input": in_path,
                 "output": out_path,
                 "input_type": "dicom",
-                "output_format": ext_out,
+                "output_format": "dcm",
                 "width": int(arr.shape[1]),
                 "height": int(arr.shape[0]),
                 "dtype": str(arr.dtype),
                 "photometric_in": photo or None,
-                "via": "pydicom->tifffile",
-                "note": "TIFF 16 bits inverse (blanc <-> noir).",
+                "via": "pydicom",
             }
 
-    # ---------- Image -> image ----------
+        if ext_out not in ("tif", "tiff"):
+            raise RuntimeError("Écriture autorisée depuis dcm : seulement le tif!")
+
+        if np.issubdtype(arr.dtype, np.integer):
+            info = np.iinfo(arr.dtype)
+            arr = info.max - arr
+        else:
+            arr = arr.max() - arr
+
+        if arr.dtype != np.uint16 and arr.dtype != np.int16:
+            arr = arr.astype(np.uint16)
+
+        tiff.imwrite(out_path, arr)
+
+        return {
+            "ok": True,
+            "input": in_path,
+            "output": out_path,
+            "input_type": "dicom",
+            "output_format": ext_out,
+            "width": int(arr.shape[1]),
+            "height": int(arr.shape[0]),
+            "dtype": str(arr.dtype),
+            "photometric_in": photo or None,
+            "via": "pydicom->tifffile",
+            "note": "TIFF 16 bits inverse (blanc <-> noir).",
+        }
+
+    # ---------- Autres images -> image (Pillow) ----------
     try:
-        import pillow_heif  # noqa: F401
+        import pillow_heif
         try:
             pillow_heif.register_heif_opener()
         except Exception:
@@ -2476,7 +2455,6 @@ def convert_file_to_image_best_effort(
         if ext_in not in (".tif", ".tiff"):
             raise RuntimeError(f"Impossible d'ouvrir l'image via Pillow: {e_pil}") from e_pil
 
-        import tifffile as tiff
         arr = tiff.imread(in_path)
 
         if arr.ndim >= 3 and arr.shape[0] in (3, 4) and arr.dtype == np.uint8:

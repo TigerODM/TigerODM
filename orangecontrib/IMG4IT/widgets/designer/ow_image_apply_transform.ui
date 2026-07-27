@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>478</width>
-    <height>385</height>
+    <height>525</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,7 +19,7 @@
      <x>20</x>
      <y>30</y>
      <width>431</width>
-     <height>131</height>
+     <height>161</height>
     </rect>
    </property>
    <property name="title">
@@ -31,7 +31,7 @@
       <x>10</x>
       <y>30</y>
       <width>411</width>
-      <height>21</height>
+      <height>41</height>
      </rect>
     </property>
     <property name="text">
@@ -45,13 +45,13 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>60</y>
+      <y>70</y>
       <width>411</width>
-      <height>51</height>
+      <height>81</height>
      </rect>
     </property>
     <property name="text">
-     <string>You can also convert a PDF to an image. To do this, specify the folder(s) containing the PDF(s) to be converted. You must pass the following parameters: a “convert” column set to “list_pdf,” the ‘path’ to the PDF folder, and “path_out,” which is the folder where the images will be stored. </string>
+     <string>You can also convert a PDF to an image. To do this, specify the folder(s) containing the PDF(s) to be converted. You must pass the following parameters: a &quot;transform&quot; column set to “list_pdf,” the ‘path’ to the PDF folder, and “path_out,” which is the folder where the images will be stored. </string>
     </property>
     <property name="wordWrap">
      <bool>true</bool>
@@ -62,9 +62,9 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>170</y>
+     <y>230</y>
      <width>431</width>
-     <height>191</height>
+     <height>241</height>
     </rect>
    </property>
    <property name="title">
@@ -73,14 +73,15 @@
    <widget class="QPlainTextEdit" name="plainTextEdit">
     <property name="geometry">
      <rect>
-      <x>0</x>
-      <y>20</y>
+      <x>10</x>
+      <y>30</y>
       <width>401</width>
-      <height>151</height>
+      <height>181</height>
      </rect>
     </property>
     <property name="plainText">
      <string>convert
+list_pdf
 transform ou Crop | (xf xray viewer)
 Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = cross
 Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = invcross
