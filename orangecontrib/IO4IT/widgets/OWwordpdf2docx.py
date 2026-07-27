@@ -1,9 +1,11 @@
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import Orange.data
-from AnyQt.QtWidgets import QApplication, QCheckBox
+from AnyQt.QtWidgets import QApplication, QCheckBox, QLabel
 
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
@@ -28,9 +30,35 @@ def _import_convert_to_pdf():
     return convert_to_pdf
 
 
+def convert_single_pdf_to_docx(src: Path, dst: Path, force_basic_convertion: bool) -> None:
+    """Convertit UN pdf vers UN docx dont le nom/chemin est imposé.
+
+    `word_converter.convert_pdf_structure` ne sait travailler que sur des
+    répertoires : on passe donc par un répertoire temporaire, puis on déplace
+    le fichier produit vers `dst`.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_in = Path(tmp) / "in"
+        tmp_out = Path(tmp) / "out"
+        tmp_in.mkdir()
+        tmp_out.mkdir()
+        shutil.copy2(str(src), str(tmp_in / src.name))
+        word_converter.convert_pdf_structure(
+            [str(tmp_in)],
+            [str(tmp_out)],
+            ignore_exsting_out_put=False,
+            forceBasicConvertion=force_basic_convertion,
+        )
+        produced = sorted(tmp_out.rglob("*.docx"))
+        if not produced:
+            raise RuntimeError("aucun docx produit par la conversion")
+        os.replace(str(produced[0]), str(dst))
+
+
 class OWwordpdf2docx(widget.OWWidget):
     name = "WordPdf2Docx"
-    description = "Convert PDF to DOCX and/or DOCX to PDF for every file in a directory"
+    description = "Convert PDF to DOCX and/or DOCX to PDF"
     icon = "icons/wordpdf2docx.png"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
         icon = "icons_dev/wordpdf2docx.png"
@@ -38,6 +66,8 @@ class OWwordpdf2docx(widget.OWWidget):
     want_control_area = False
     priority = 3000
     category = "AAIT - TOOLBOX"
+    strDirectoryMode: str = Setting('True')
+    strFileMode: str = Setting('False')
     strConvertPdfToDocx : str =Setting('True')
     strConvertDocxToPdf : str =Setting('False')
     strIgnoreExistingOuput :str =Setting('True')
@@ -54,12 +84,44 @@ class OWwordpdf2docx(widget.OWWidget):
         self.data = in_data
         if self.autorun:
             self.run()
+
+    # ------------------------------------------------------------------ modes
+    def on_mode_dir_toggled(self):
+        if self._mode_updating:
+            return
+        self._mode_updating = True
+        try:
+            if not self.check_box_mode_dir.isChecked() and not self.check_box_mode_file.isChecked():
+                self.check_box_mode_dir.setChecked(True)
+            self.check_box_mode_file.setChecked(not self.check_box_mode_dir.isChecked())
+        finally:
+            self._mode_updating = False
+        self._store_mode()
+
+    def on_mode_file_toggled(self):
+        if self._mode_updating:
+            return
+        self._mode_updating = True
+        try:
+            if not self.check_box_mode_dir.isChecked() and not self.check_box_mode_file.isChecked():
+                self.check_box_mode_file.setChecked(True)
+            self.check_box_mode_dir.setChecked(not self.check_box_mode_file.isChecked())
+        finally:
+            self._mode_updating = False
+        self._store_mode()
+
+    def _store_mode(self):
+        self.strDirectoryMode = 'True' if self.check_box_mode_dir.isChecked() else 'False'
+        self.strFileMode = 'True' if self.check_box_mode_file.isChecked() else 'False'
+        self._update_options_enabled()
+
+    # ------------------------------------------------------------- checkboxes
     def on_checkbox_toggled(self):
         if self.check_box.isChecked():
             self.strConvertPdfToDocx = 'True'
         else:
             self.strConvertPdfToDocx = 'False'
-        self._update_basic_option_enabled()
+        self._update_options_enabled()
 
     def on_checkbox_toggled2(self):
         if self.check_box2.isChecked():
@@ -79,36 +141,59 @@ class OWwordpdf2docx(widget.OWWidget):
         else:
             self.strForceBasicConvertion ='False'
 
-    def _update_basic_option_enabled(self):
-        self.check_box4.setEnabled(self.check_box.isChecked())
+    def _update_options_enabled(self):
+        file_mode = self.check_box_mode_file.isChecked()
+        # en mode fichier, le sens de conversion est déduit du couple path / path_out
+        self.check_box.setEnabled(not file_mode)
+        self.check_box2.setEnabled(not file_mode)
+        self.check_box4.setEnabled(file_mode or self.check_box.isChecked())
+        if self.label_description is not None:
+            if file_mode:
+                self.label_description.setText(
+                    "Convert each file from the \"path\" column to the \"path_out\" column "
+                    "(.pdf -> .docx or .docx -> .pdf)")
+            else:
+                self.label_description.setText(
+                    "Convert PDF <-> DOCX for every file, from input_dir to output_dir")
 
     def __init__(self):
         super().__init__()
         
         # Qt Management
         self.setFixedWidth(470)
-        self.setFixedHeight(300)
+        self.setFixedHeight(380)
         uic.loadUi(self.gui, self)
 
+        self._mode_updating = True
 
+        self.check_box_mode_dir = self.findChild(QCheckBox, 'checkBox_mode_dir')
+        self.check_box_mode_file = self.findChild(QCheckBox, 'checkBox_mode_file')
         self.check_box = self.findChild(QCheckBox, 'checkBox')
         self.check_box2 = self.findChild(QCheckBox, 'checkBox_2')
         self.check_box3 = self.findChild(QCheckBox, 'checkBox_3')
         self.check_box4 = self.findChild(QCheckBox, 'checkBox_4')
+        self.label_description = self.findChild(QLabel, 'Description')
 
+        # sécurité : si les deux settings sont incohérents, on retombe sur le
+        # mode historique (dossier)
+        file_mode = (self.strFileMode == 'True' and self.strDirectoryMode != 'True')
+        self.check_box_mode_dir.setChecked(not file_mode)
+        self.check_box_mode_file.setChecked(file_mode)
 
         self.check_box.setChecked(self.strConvertPdfToDocx == 'True')
         self.check_box2.setChecked(self.strConvertDocxToPdf == 'True')
         self.check_box3.setChecked(self.strIgnoreExistingOuput == 'True')
         self.check_box4.setChecked(self.strForceBasicConvertion == 'True')
 
-
+        self.check_box_mode_dir.stateChanged.connect(self.on_mode_dir_toggled)
+        self.check_box_mode_file.stateChanged.connect(self.on_mode_file_toggled)
         self.check_box.stateChanged.connect(self.on_checkbox_toggled)
         self.check_box2.stateChanged.connect(self.on_checkbox_toggled2)
         self.check_box3.stateChanged.connect(self.on_checkbox_toggled3)
         self.check_box4.stateChanged.connect(self.on_checkbox_toggled4)
 
-        self._update_basic_option_enabled()
+        self._mode_updating = False
+        self._store_mode()
 
         # Data Management
         self.data = None
@@ -117,10 +202,22 @@ class OWwordpdf2docx(widget.OWWidget):
         self.result = None
         self.post_initialized()
 
+    # -------------------------------------------------------------- utilities
+    def _check_string_column(self, column_name):
+        """Retourne True si la colonne existe et est de type Text."""
+        try:
+            self.data.domain[column_name]
+        except KeyError:
+            self.error('You need a "%s" column in input data' % column_name)
+            return False
+        if type(self.data.domain[column_name]).__name__ != 'StringVariable':
+            self.error('"%s" column needs to be a Text' % column_name)
+            return False
+        return True
+
+    # -------------------------------------------------------------------- run
     def run(self):
         self.error("")
-        convert_pdf = (self.strConvertPdfToDocx == 'True')
-        convert_docx = (self.strConvertDocxToPdf == 'True')
 
         # if thread is running quit
         if self.thread is not None:
@@ -129,40 +226,41 @@ class OWwordpdf2docx(widget.OWWidget):
         if self.data is None:
             return
 
+        ignore_existing_docx = (self.strIgnoreExistingOuput == 'True')
+        force_basic_convertion = (self.strForceBasicConvertion == 'True')
+
+        if self.strFileMode == 'True':
+            worker_process = self._build_file_worker(ignore_existing_docx, force_basic_convertion)
+        else:
+            worker_process = self._build_directory_worker(ignore_existing_docx, force_basic_convertion)
+
+        if worker_process is None:
+            return
+
+        # Start progress bar
+        self.progressBarInit()
+
+        # Connexion et démarrage du thread avec la fonction interne unifiée
+        self.thread = thread_management.Thread(worker_process)
+        self.thread.progress.connect(self.handle_progress)
+        self.thread.result.connect(self.handle_result)
+        self.thread.finish.connect(self.handle_finish)
+        self.thread.start()
+
+    # --------------------------------------------------------- mode répertoire
+    def _build_directory_worker(self, ignore_existing_docx, force_basic_convertion):
+        convert_pdf = (self.strConvertPdfToDocx == 'True')
+        convert_docx = (self.strConvertDocxToPdf == 'True')
+
         # Verification of in_data
-        self.error("")
-        try:
-            self.data.domain["input_dir"]
-        except KeyError:
-            self.error('You need a "input_dir" column in input data')
-            return
-
-        if type(self.data.domain["input_dir"]).__name__ != 'StringVariable':
-            self.error('"input_dir" column needs to be a Text')
-            return
-        try:
-            self.data.domain["output_dir"]
-        except KeyError:
-            self.error('You need a "output_dir" column in input data')
-            return
-
-        if type(self.data.domain["output_dir"]).__name__ != 'StringVariable':
-            self.error('"output_dir" column needs to be a Text')
-            return
+        if not self._check_string_column("input_dir"):
+            return None
+        if not self._check_string_column("output_dir"):
+            return None
 
         input_dir = self.data.get_column("input_dir")
         output_dir = self.data.get_column("output_dir")
 
-        # Start progress bar
-        self.progressBarInit()
-        ignore_existing_docx=False
-        if self.strIgnoreExistingOuput=="True":
-            ignore_existing_docx=True
-        forceBasicConvertion=True
-        if self.strForceBasicConvertion=='False':
-            forceBasicConvertion=False
-
-        # Définition du traitement complet directement dans le corps de run
         def worker_process():
             errors = []
             pdf_tasks = []
@@ -205,7 +303,7 @@ class OWwordpdf2docx(widget.OWWidget):
                         [str(src.parent)], 
                         [str(dst.parent)], 
                         ignore_exsting_out_put=ignore_existing_docx, 
-                        forceBasicConvertion=forceBasicConvertion
+                        forceBasicConvertion=force_basic_convertion
                     )
                 except Exception as e:
                     errors.append(f"Erreur PDF->DOCX ({src.name}): {e}")
@@ -236,12 +334,88 @@ class OWwordpdf2docx(widget.OWWidget):
                 return "\n".join(errors)
             return "Success"
 
-        # Connexion et démarrage du thread avec la fonction interne unifiée
-        self.thread = thread_management.Thread(worker_process)
-        self.thread.progress.connect(self.handle_progress)
-        self.thread.result.connect(self.handle_result)
-        self.thread.finish.connect(self.handle_finish)
-        self.thread.start()
+        return worker_process
+
+    # ------------------------------------------------------------ mode fichier
+    def _build_file_worker(self, ignore_existing_docx, force_basic_convertion):
+        # Verification of in_data
+        if not self._check_string_column("path"):
+            return None
+        if not self._check_string_column("path_out"):
+            return None
+
+        path_in = self.data.get_column("path")
+        path_out = self.data.get_column("path_out")
+
+        def worker_process():
+            errors = []
+            tasks = []
+
+            # 1. Construction et validation des couples path / path_out
+            for index, (p_in, p_out) in enumerate(zip(path_in, path_out), start=1):
+                if not p_in or not p_out:
+                    continue
+                src = Path(str(p_in))
+                dst = Path(str(p_out))
+                src_ext = src.suffix.lower()
+                dst_ext = dst.suffix.lower()
+
+                if src_ext == ".pdf" and dst_ext == ".docx":
+                    direction = "pdf2docx"
+                elif src_ext in (".docx", ".doc") and dst_ext == ".pdf":
+                    direction = "docx2pdf"
+                else:
+                    errors.append(
+                        f"Ligne {index} : couple invalide ({src.name} -> {dst.name}), "
+                        f"attendu .pdf -> .docx ou .docx -> .pdf")
+                    continue
+
+                if not src.exists():
+                    errors.append(f"Ligne {index} : fichier introuvable ({src})")
+                    continue
+
+                if ignore_existing_docx and dst.exists():
+                    continue
+
+                tasks.append((direction, src, dst))
+
+            total_files = len(tasks)
+            if total_files == 0:
+                if errors:
+                    return "\n".join(errors)
+                return "Success"
+
+            convert_to_pdf = None
+            if any(direction == "docx2pdf" for direction, _, _ in tasks):
+                convert_to_pdf = _import_convert_to_pdf()
+
+            processed_count = 0
+
+            # 2. Exécution séquentielle, fichier par fichier
+            for direction, src, dst in tasks:
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if direction == "pdf2docx":
+                        convert_single_pdf_to_docx(src, dst, force_basic_convertion)
+                    else:
+                        convert_to_pdf(Path(src), Path(dst))
+                except Exception as e:
+                    if direction == "pdf2docx":
+                        errors.append(f"Erreur PDF->DOCX ({src.name}): {e}")
+                    else:
+                        errors.append(f"Erreur DOCX->PDF ({src.name}): {e}")
+
+                processed_count += 1
+                try:
+                    self.thread.progress.emit((processed_count / total_files) * 100)
+                except Exception:
+                    pass
+
+            if errors:
+                return "\n".join(errors)
+            return "Success"
+
+        return worker_process
 
     def handle_progress(self, value: float) -> None:
         self.progressBarSet(value)
