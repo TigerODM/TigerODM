@@ -40,6 +40,8 @@ class OWSelectRowsDynamic(widget.OWWidget):
     @Inputs.data
     def set_data(self, data_in):
         if data_in is None:
+            self.Outputs.data_matching.send(None)
+            self.Outputs.data_unmatching.send(None)
             return
         self.in_data = data_in
         if self.data_filter_in is None:
@@ -49,6 +51,8 @@ class OWSelectRowsDynamic(widget.OWWidget):
     @Inputs.data_for_filter
     def set_path_table(self, in_data_filter):
         if in_data_filter is None:
+            self.Outputs.data_matching.send(None)
+            self.Outputs.data_unmatching.send(None)
             return
 
         total_columns = len(in_data_filter.domain.attributes) + len(in_data_filter.domain.class_vars) + len(

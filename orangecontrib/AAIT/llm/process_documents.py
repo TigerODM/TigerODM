@@ -15,6 +15,17 @@ import pptx
 from docx.oxml.ns import qn
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
+from copy import deepcopy
+from docx.oxml import OxmlElement
+
+try:
+    from Orange.widgets.orangecontrib.AAIT.utils.color_prefix_utils import (
+        resolve_font_color,
+    )
+except Exception:
+    from orangecontrib.AAIT.utils.color_prefix_utils import (
+        resolve_font_color,
+    )
 
 
 def process_documents(dirpath):
@@ -409,20 +420,256 @@ def _find_spans(full, old):
         spans.append((start, end))
     return spans
 
+_INLINE_TAG_RE = re.compile(r"%!(/?)([A-Za-z]+)(?:=([^!]*))?!%")
+ 
+ 
+def _parse_inline_style(text: str):
+    if not text:
+        return [("", {})]
+ 
+    segments = []
+    style_stack = []          # pile de deltas : chaque delta = {"_tag": nom, <clés style>}
+    buf = []
+ 
+    def _current_style():
+        eff = {}
+        for d in style_stack:
+            for k, v in d.items():
+                if k == "_tag" or v is None:
+                    continue
+                eff[k] = v
+        return eff
+ 
+    def _flush():
+        if buf:
+            segments.append(("".join(buf), _current_style()))
+            buf.clear()
+ 
+    pos = 0
+    for m in _INLINE_TAG_RE.finditer(text):
+        if m.start() > pos:
+            buf.append(text[pos:m.start()])
+ 
+        closing, name, val = m.group(1), m.group(2).lower(), m.group(3)
+        _flush()  # une balise ferme le segment courant
 
-def _apply_spans(nodes, full, spans, new):
-    """Réécrit les noeuds de texte en remplaçant les intervalles `spans` par `new`."""
+        # balise CHAMP : %!PAGE!%, %!NUMPAGES!%, %!field=SECTIONPAGES!% ...
+        if not closing and (name in _FIELD_INSTR or name == "field"):
+            instr = _FIELD_INSTR.get(name) or f" {(val or 'PAGE').upper()} "
+            fstyle = _current_style()      # hérite du style courant (size/color en cours)
+            fstyle["field"] = instr
+            segments.append(("1", fstyle))
+            pos = m.end()
+            continue
+ 
+        if closing:
+            # retire le dernier delta portant ce nom (imbrication correcte)
+            for i in range(len(style_stack) - 1, -1, -1):
+                if style_stack[i].get("_tag") == name:
+                    style_stack.pop(i)
+                    break
+        else:
+            delta = {"_tag": name}
+            if name == "size" and val:
+                try:
+                    delta["size_pt"] = float(str(val).replace(",", "."))
+                except ValueError:
+                    pass
+            elif name == "color" and val:
+                delta["color"] = resolve_font_color(val)
+            elif name in ("b", "bold"):
+                delta["bold"] = True
+            elif name in ("i", "italic"):
+                delta["italic"] = True
+            elif name in ("u", "underline"):
+                delta["underline"] = True
+            style_stack.append(delta)
+ 
+        pos = m.end()
+ 
+    if pos < len(text):
+        buf.append(text[pos:])
+    _flush()
+ 
+    return segments if segments else [("", {})]
+ 
+ 
+# -----------------------------------------------------------------------------
+# Application d'un style sur le <w:rPr> d'un run <w:r>
+# -----------------------------------------------------------------------------
+
+_FIELD_INSTR = {
+    "page": " PAGE ",
+    "numpages": " NUMPAGES ",
+    "sectionpages": " SECTIONPAGES ",
+    "date": " DATE ",
+    "time": " TIME ",
+}
+
+
+def _make_field_runs(instr, rpr_copy, style=None, cache="1"):
+    """Runs d'un champ complexe : begin / instrText / separate / <cache> / end."""
+    def _r():
+        r = OxmlElement("w:r")
+        if rpr_copy is not None:
+            r.append(deepcopy(rpr_copy))
+        if style:
+            _apply_style_to_run(r, style)   # ignore la clé "field", applique size/color/…
+        return r
+
+    runs = []
+    r = _r(); fc = OxmlElement("w:fldChar"); fc.set(qn("w:fldCharType"), "begin"); r.append(fc); runs.append(r)
+    r = _r(); it = OxmlElement("w:instrText"); it.set(qn("xml:space"), "preserve"); it.text = instr; r.append(it); runs.append(r)
+    r = _r(); fs = OxmlElement("w:fldChar"); fs.set(qn("w:fldCharType"), "separate"); r.append(fs); runs.append(r)
+    r = _r(); t = OxmlElement("w:t"); t.set(qn("xml:space"), "preserve"); t.text = cache; r.append(t); runs.append(r)
+    r = _r(); fe = OxmlElement("w:fldChar"); fe.set(qn("w:fldCharType"), "end"); r.append(fe); runs.append(r)
+    return runs
+
+def _rpr_child(rpr, tag):
+    el = rpr.find(qn(tag))
+    if el is None:
+        el = OxmlElement(tag)
+        rpr.append(el)
+    return el
+ 
+ 
+def _apply_style_to_run(run, style: dict):
+    if not style:
+        return
+    rpr = run.find(qn("w:rPr"))
+    if rpr is None:
+        rpr = OxmlElement("w:rPr")
+        run.insert(0, rpr)
+ 
+    if style.get("size_pt") is not None:
+        half = str(int(round(float(style["size_pt"]) * 2)))   # points -> demi-points
+        _rpr_child(rpr, "w:sz").set(qn("w:val"), half)
+        _rpr_child(rpr, "w:szCs").set(qn("w:val"), half)
+ 
+    if style.get("color"):
+        _rpr_child(rpr, "w:color").set(qn("w:val"), style["color"])
+ 
+    if style.get("bold"):
+        _rpr_child(rpr, "w:b")            # présence = vrai
+    if style.get("italic"):
+        _rpr_child(rpr, "w:i")
+    if style.get("underline"):
+        _rpr_child(rpr, "w:u").set(qn("w:val"), "single")
+ 
+ 
+def _run_with_rpr(rpr_copy, text, style=None):
+    """Nouveau <w:r> reprenant rpr_copy (rPr d'origine), contenant `text`, style optionnel."""
+    r = OxmlElement("w:r")
+    if rpr_copy is not None:
+        r.append(deepcopy(rpr_copy))
+    if style:
+        _apply_style_to_run(r, style)
+    t = OxmlElement("w:t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = text
+    r.append(t)
+    return r
+
+def _field_run_range(cache_run):
+    """Depuis le <w:r> contenant le cache d'un champ, renvoie la liste des <w:r>
+    du champ complet (fldChar begin .. end englobant), ou None si hors champ."""
+    parent = cache_run.getparent()
+    if parent is None:
+        return None
+    runs = list(parent.iterchildren(qn("w:r")))
+    try:
+        idx = runs.index(cache_run)
+    except ValueError:
+        return None
+
+    depth, begin = 0, None                    # remonter vers le begin englobant
+    for i in range(idx, -1, -1):
+        fc = runs[i].find(qn("w:fldChar"))
+        if fc is not None:
+            t = fc.get(qn("w:fldCharType"))
+            if t == "end":
+                depth += 1
+            elif t == "begin":
+                if depth == 0:
+                    begin = i; break
+                depth -= 1
+    if begin is None:
+        return None
+
+    depth, end = 0, None                       # redescendre vers le end correspondant
+    for j in range(begin, len(runs)):
+        fc = runs[j].find(qn("w:fldChar"))
+        if fc is not None:
+            t = fc.get(qn("w:fldCharType"))
+            if t == "begin":
+                depth += 1
+            elif t == "end":
+                depth -= 1
+                if depth == 0:
+                    end = j; break
+    return runs[begin:end + 1] if end is not None else None 
+ 
+def _materialize_pieces(elem, pieces):
+    run = elem.getparent()
+    orig_rpr = run.find(qn("w:rPr"))
+    rpr_copy = deepcopy(orig_rpr) if orig_rpr is not None else None
+
+    flat = []   # (kind, payload, style) ; kind ∈ {"text","field"}
+    for kind_p, payload in pieces:
+        if kind_p == "lit":
+            if payload:
+                flat.append(("text", payload, None))
+        else:  # "new"
+            for txt, st in payload:
+                if st and st.get("field"):
+                    flat.append(("field", st["field"], st))
+                elif txt:
+                    flat.append(("text", txt, st or None))
+
+    if not flat:
+        elem.text = ""
+        return
+
+    kind0, payload0, style0 = flat[0]
+    if kind0 == "text":                    # on réutilise le run d'origine
+        elem.text = payload0
+        elem.set(qn("xml:space"), "preserve")
+        if style0:
+            _apply_style_to_run(run, style0)
+        rest = flat[1:]
+    else:                                  # 1er = champ : run d'origine vidé (ancre)
+        elem.text = ""
+        rest = flat
+
+    anchor = run
+    for kind_i, payload_i, style_i in rest:
+        if kind_i == "field":
+            for r in _make_field_runs(payload_i, rpr_copy, style_i):
+                anchor.addnext(r); anchor = r
+        else:
+            r = _run_with_rpr(rpr_copy, payload_i, style_i)
+            anchor.addnext(r); anchor = r
+ 
+ 
+def _flat_text(pieces):
+    out = []
+    for kind_p, payload in pieces:
+        if kind_p == "lit":
+            out.append(payload)
+        else:
+            out.append("".join(t for t, _ in payload))
+    return "".join(out)
+
+def _apply_spans(nodes, full, spans, new_segments):
     if not spans:
         return 0
     spans = sorted(spans)
-
-    # Offsets absolus de chaque noeud
+ 
     offsets, pos = [], 0
     for elem, kind, text in nodes:
         offsets.append((elem, kind, pos, pos + len(text)))
         pos += len(text)
-
-    # Noeud "t" qui recevra le texte de remplacement pour chaque span
+ 
     holders = {}
     for s, e in spans:
         holder = None
@@ -433,40 +680,65 @@ def _apply_spans(nodes, full, spans, new):
                 holder = elem
                 break
         holders[(s, e)] = holder
-
+ 
+    styled = any(st for _, st in new_segments)   # au moins un segment porte un style ?
+ 
     to_remove = []
+    fields_to_remove = []
     for elem, kind, ns, ne in offsets:
         if kind == "sym":
-            # tabulation / saut de ligne : supprimé s'il tombe dans un span
             if any(s <= ns and ne <= e for s, e in spans):
                 to_remove.append(elem)
             continue
-
-        buf, cur = [], ns
+ 
+        # séquence ordonnée de morceaux pour ce noeud
+        pieces, cur = [], ns
         for s, e in spans:
             if e <= ns or s >= ne:
                 continue
             if s > cur:
-                buf.append(full[cur:min(s, ne)])
+                pieces.append(("lit", full[cur:min(s, ne)]))
             if holders[(s, e)] is elem:
-                buf.append(new)
+                pieces.append(("new", new_segments))
             cur = max(cur, min(e, ne))
         if cur < ne:
-            buf.append(full[cur:ne])
+            pieces.append(("lit", full[cur:ne]))
 
-        elem.text = "".join(buf)
-        elem.set(qn("xml:space"), "preserve")
+        # noeud texte entièrement remplacé ET situé dans un champ -> supprimer le champ entier
+        if kind == "t" and not pieces:
+            fr = _field_run_range(elem.getparent())
+            if fr:
+                for r in fr:
+                    if r not in fields_to_remove:
+                        fields_to_remove.append(r)
+                continue
 
+        node_has_new = any(kp == "new" for kp, _ in pieces)
+ 
+        # texte plat (comportement d'origine) si pas de style OU noeud sans insertion
+        if not styled or not node_has_new:
+            elem.text = _flat_text(pieces)
+            elem.set(qn("xml:space"), "preserve")
+            continue
+ 
+        # sinon : on matérialise en runs (seul le noeud "holder" est fragmenté)
+        _materialize_pieces(elem, pieces)
+ 
     for elem in to_remove:
         parent = elem.getparent()
         if parent is not None:
             parent.remove(elem)
 
+    for r in fields_to_remove:
+        parent = r.getparent()
+        if parent is not None:
+            parent.remove(r)
+ 
     return len(spans)
 
 
 def _replace_in_wp(p_element, old, new):
-    """Run-aware replace inside a single <w:p>. Returns the number of occurrences replaced."""
+    """Run-aware replace dans un <w:p>. `new` peut contenir des balises %!...!%."""
     nodes = _iter_text_nodes(p_element)
     if not nodes:
         return 0
@@ -474,7 +746,8 @@ def _replace_in_wp(p_element, old, new):
     spans = _find_spans(full, old)
     if not spans:
         return 0
-    return _apply_spans(nodes, full, spans, new)
+    new_segments = _parse_inline_style(new)
+    return _apply_spans(nodes, full, spans, new_segments)
 
 
 def _resolve_locator_to_paragraphs(doc, locator):
@@ -516,6 +789,13 @@ def _resolve_locator_to_paragraphs(doc, locator):
 
     return []
 
+def _ensure_update_fields(doc):
+    """Force Word à recalculer tous les champs à l'ouverture (PAGE, NUMPAGES, TOC…)."""
+    settings = doc.settings.element                 # <w:settings>
+    if settings.find(qn("w:updateFields")) is None:
+        uf = OxmlElement("w:updateFields")
+        uf.set(qn("w:val"), "true")
+        settings.insert(0, uf)
 
 def apply_docx_edit(docx_path, locator, old_text, new_text, output_path=None):
     """
@@ -527,6 +807,7 @@ def apply_docx_edit(docx_path, locator, old_text, new_text, output_path=None):
     for p in _resolve_locator_to_paragraphs(doc, locator):
         total += _replace_in_wp(p, old_text, new_text)
     if total > 0:
+        _ensure_update_fields(doc)
         doc.save(output_path or docx_path)
     return total
 
@@ -1056,7 +1337,6 @@ def extract_pdf_pages(pdf_path):
     Extrait le texte d'un PDF page par page.
     :return: liste de tuples (numéro_de_page, texte).
     """
-    images_count = {}
     pages = []
     try:
         doc = fitz.open(pdf_path)

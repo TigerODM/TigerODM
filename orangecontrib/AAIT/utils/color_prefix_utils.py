@@ -24,6 +24,31 @@ COLOR_MAP = {
     "rose": "FCE4EC", "pink": "FCE4EC",
 }
 
+# -----------------------------
+# Font colors: teintes vives (à distinguer de COLOR_MAP, pensé pour les fonds)
+# -----------------------------
+FONT_COLOR_MAP = {
+    "noir": "000000", "black": "000000",
+    "blanc": "FFFFFF", "white": "FFFFFF",
+    "gris": "808080", "gray": "808080", "grey": "808080",
+    "rouge": "FF0000", "red": "FF0000",
+    "vert": "008000", "green": "008000",
+    "bleu": "0000FF", "blue": "0000FF",
+    "orange": "FF8C00",
+    "violet": "800080", "purple": "800080",
+    "jaune": "FFC000", "yellow": "FFC000",
+    "rose": "E91E63", "pink": "E91E63",
+    "cyan": "00B0C0", "turquoise": "00B0C0",
+}
+
+def resolve_font_color(token: str) -> str:
+    """Nom -> hex vif ; sinon #hex direct ; sinon noir (défaut visible)."""
+    t = str(token or "").strip().lower()
+    if t.startswith("#"):
+        t = t[1:]
+    if re.fullmatch(r"[0-9a-f]{6}", t):
+        return t.upper()
+    return FONT_COLOR_MAP.get(t, "000000")
 
 def normalize_hex(color: str) -> str:
     if not color:

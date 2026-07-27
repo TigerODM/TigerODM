@@ -144,13 +144,8 @@ class OWFileWithPath(base_widget.BaseListWidget):
             # cas des TimeVariable avec timestamp invalide
             return "" if missing_as_empty else "?"
 
-    def load_table_as_strings(self,filepath: str) -> Orange.data.Table:
-        """
-        Charge un fichier Orange et renvoie un Table où toutes les colonnes
-        (features, class, metas) sont converties en StringVariable et placées en metas.
-        """
+    def table_as_strings(self, t: Orange.data.Table) -> Orange.data.Table:
         missing_as_empty=True # si on passe a True on met "" à la place de ?
-        t = Orange.data.Table.from_file(filepath)
         dom = t.domain
 
         # 2) Toutes les variables d'origine
@@ -177,6 +172,14 @@ class OWFileWithPath(base_widget.BaseListWidget):
         t_str.attributes = dict(getattr(t, "attributes", {}))
 
         return t_str
+
+    def load_table_as_strings(self,filepath: str) -> Orange.data.Table:
+        """
+        Charge un fichier Orange et renvoie un Table où toutes les colonnes
+        (features, class, metas) sont converties en StringVariable et placées en metas.
+        """
+        t = Orange.data.Table.from_file(filepath)
+        return self.table_as_strings(t)
 
     def load_table_with_pandas_as_strings(
             self,
@@ -255,6 +258,8 @@ class OWFileWithPath(base_widget.BaseListWidget):
 
             elif extension in {".pkl", ".pickle"}:
                 df = pd.read_pickle(filepath)
+                if isinstance(df, Orange.data.Table):
+                    return self.table_as_strings(df)
 
             elif extension in {".html", ".htm"}:
                 tables = pd.read_html(filepath)
@@ -274,7 +279,7 @@ class OWFileWithPath(base_widget.BaseListWidget):
                 self.error(f"Unsupported pandas file format: {extension or '(no extension)'}")
                 return None
         except Exception as e:
-            self.error(f"Failed to load file with panda:", e)
+            self.error("Failed to load file with panda: ", e)
             return None
         # Certains lecteurs pandas ne prennent pas en charge dtype=str ou
         # keep_default_na=False. On harmonise donc toutes les données ici.

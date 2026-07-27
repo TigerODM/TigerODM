@@ -4,9 +4,11 @@ from typing import Optional,Dict,List,Tuple
 from AnyQt.QtWidgets import QTableWidgetItem
 import shutil
 
+import numpy as np
+
 from Orange.widgets.settings import Setting
 import Orange.data
-from Orange.data import Table
+from Orange.data import Table, Domain, StringVariable
 from AnyQt.QtWidgets import QApplication
 from Orange.widgets import widget
 from docx.shared import Inches
@@ -54,6 +56,7 @@ class OWDocumentGenerator(widget.OWWidget):
 
     class Outputs:
         data = Orange.widgets.widget.Output("Data", Orange.data.Table)
+        status = Orange.widgets.widget.Output("Status", Orange.data.Table)
 
     # -----------------------------
     # Colors: %!color!% prefix (headers + cells)
@@ -135,6 +138,40 @@ class OWDocumentGenerator(widget.OWWidget):
         self.data = data
         self.process()
 
+    # -----------------------------
+    # Status output
+    # -----------------------------
+    def _build_status_table(self, records: List[Tuple[str, str, str, str]]) -> Table:
+        """
+        Construit une Table Orange de statut à partir d'une liste de tuples :
+        (cible, operation, statut, message)
+        Toutes les colonnes sont des metas de type texte.
+        """
+        metas_vars = [
+            StringVariable("cible"),
+            StringVariable("operation"),
+            StringVariable("statut"),      # "OK", "ECHEC" ou "IGNORE"
+            StringVariable("message"),
+        ]
+        domain = Domain([], metas=metas_vars)
+
+        n = len(records)
+        X = np.empty((n, 0))
+        if n:
+            metas = np.array(
+                [[("" if v is None else str(v)) for v in rec] for rec in records],
+                dtype=object,
+            )
+        else:
+            metas = np.empty((0, len(metas_vars)), dtype=object)
+
+        return Table.from_numpy(domain, X, metas=metas)
+
+    def _send_outputs(self, data_out: Optional[Table],
+                      status_records: List[Tuple[str, str, str, str]]):
+        """Envoie simultanément la sortie principale et la sortie Status."""
+        self.Outputs.data.send(data_out)
+        self.Outputs.status.send(self._build_status_table(status_records))
     # -----------------------------
     # Helpers
     # -----------------------------
@@ -502,6 +539,8 @@ class OWDocumentGenerator(widget.OWWidget):
         col_old = self._resolve_col("old_text", "OldText", "old", "search")
         col_new = self._resolve_col("new_text", "NewText", "new", "replace")
 
+        n_rows = len(self.data)
+
         missing = [n for n, c in (
             ("source (path)", col_in),
             ("sortie (path_out)", col_out),
@@ -510,12 +549,17 @@ class OWDocumentGenerator(widget.OWWidget):
             ("nouveau texte (new_text)", col_new),
         ) if c is None]
         if missing:
-            self.error("MODE 3 (locator) — colonnes manquantes : " + ", ".join(missing))
-            self.Outputs.data.send(None)
+            msg = "MODE 3 (locator) — colonnes manquantes : " + ", ".join(missing)
+            self.error(msg)
+            self._send_outputs(None, [("—", "locator", "ECHEC", msg)
+                                      for _ in range(n_rows)])
             return
 
-        groups = {}
-        for i in range(len(self.data)):
+        # 1) Lecture de CHAQUE ligne d'entrée, dans l'ordre.
+        #    Une entrée par ligne : soit un motif de skip, soit les infos d'édition.
+        parsed: List[dict] = []
+        groups: Dict[str, dict] = {}
+        for i in range(n_rows):
             in_path  = self._get_col_value(i, col_in)
             out_path = self._get_col_value(i, col_out)
             locator  = self._get_col_value(i, col_loc)
@@ -523,41 +567,65 @@ class OWDocumentGenerator(widget.OWWidget):
             new_txt  = self._get_col_value(i, col_new)
 
             if not in_path or not out_path or not locator:
+                parsed.append({"skip": "Ligne ignorée (source / sortie / locator requis)."})
                 continue
 
             in_path  = in_path.replace("\\", os.sep).replace("/", os.sep)
             out_path = out_path.replace("\\", os.sep).replace("/", os.sep)
+            parsed.append({"in": in_path, "out": out_path,
+                           "locator": locator, "old": old_txt, "new": new_txt})
+            # Un seul groupe par fichier de sortie (copie source -> sortie faite 1x).
+            groups.setdefault(out_path, {"input": in_path, "error": None})
 
-            g = groups.setdefault(out_path, {"input": in_path, "edits": []})
-            g["edits"].append((locator, old_txt, new_txt))
-
-        if not groups:
-            self.error("MODE 3 (locator) — aucune ligne exploitable "
-                       "(source / sortie / locator requis).")
-            self.Outputs.data.send(None)
-            return
-
-        errors = []
-        total_replacements = 0
+        # 2) Préparation des fichiers de sortie (copie source -> sortie), une fois par sortie.
         for out_path, g in groups.items():
             in_path = g["input"]
-            if not os.path.exists(in_path):
-                errors.append(f"Source introuvable : {in_path}")
-                continue
             try:
+                if not os.path.exists(in_path):
+                    g["error"] = f"Source introuvable : {in_path}"
+                    continue
                 out_dir = os.path.dirname(out_path)
                 if out_dir:
                     os.makedirs(out_dir, exist_ok=True)
-
                 if os.path.abspath(in_path) != os.path.abspath(out_path):
                     shutil.copyfile(in_path, out_path)
+            except Exception as e:
+                g["error"] = str(e)
 
-                for locator, old_txt, new_txt in g["edits"]:
-                    total_replacements += process_documents.apply_docx_edit(
-                        out_path, locator, old_txt, new_txt, out_path
-                    )
+        # 3) Une tentative d'insertion PAR LIGNE d'entrée -> une ligne de statut par ligne.
+        status_rows: List[Tuple[str, str, str, str]] = []
+        errors = []
+        total_replacements = 0
+        for rec in parsed:
+            if "skip" in rec:
+                status_rows.append(("—", "locator", "IGNORE", rec["skip"]))
+                continue
+
+            out_path = rec["out"]
+            base = os.path.basename(out_path)
+            cible = f"{base} @ {rec['locator']}"
+            g = groups.get(out_path, {})
+
+            # Échec de préparation (source absente / copie impossible) : commun au fichier.
+            if g.get("error"):
+                errors.append(f"{out_path} : {g['error']}")
+                status_rows.append((cible, "locator", "ECHEC", g["error"]))
+                continue
+
+            try:
+                n = process_documents.apply_docx_edit(
+                    out_path, rec["locator"], rec["old"], rec["new"], out_path
+                )
+                total_replacements += n
+                if n > 0:
+                    status_rows.append((cible, "locator", "OK",
+                                        f"{n} remplacement(s)"))
+                else:
+                    status_rows.append((cible, "locator", "ECHEC",
+                                        "Aucun remplacement (texte/locator non trouvé)"))
             except Exception as e:
                 errors.append(f"{out_path} : {e}")
+                status_rows.append((cible, "locator", "ECHEC", str(e)))
 
         if errors:
             self.error(" | ".join(errors))
@@ -565,7 +633,7 @@ class OWDocumentGenerator(widget.OWWidget):
             self.warning(f"{total_replacements} remplacement(s) appliqué(s) "
                          f"sur {len(groups)} fichier(s).")
 
-        self.Outputs.data.send(self.data)
+        self._send_outputs(self.data, status_rows)
 
     # -----------------------------
     # Main
@@ -575,12 +643,13 @@ class OWDocumentGenerator(widget.OWWidget):
         self.warning("")
 
         if self.data is None:
-            self.Outputs.data.send(None)
+            self._send_outputs(None, [])
             return
 
         if len(self.data) == 0:
             self.error("La table d'entrée est vide (aucune ligne).")
-            self.Outputs.data.send(None)
+            self._send_outputs(None, [("—", self.mode, "ECHEC",
+                                       "Table d'entrée vide (aucune ligne)")])
             return
 
         # ---- MODE 3 : édition par locator (sélectionné via radioButton_3) ----
@@ -592,81 +661,103 @@ class OWDocumentGenerator(widget.OWWidget):
             mapping = self._get_first_row_mapping(self.data)
 
             if "DocxPath" not in mapping:
-                self.error("Colonne 'DocxPath' introuvable (attributes/targets/metas).")
-                self.Outputs.data.send(None)
+                msg = "Colonne 'DocxPath' introuvable (attributes/targets/metas)."
+                self.error(msg)
+                self._send_outputs(None, [("DocxPath", self.mode, "ECHEC", msg)])
                 return
 
             docx_path = self._clean_orange_value(mapping.get("DocxPath", "")).strip()
             if not docx_path:
-                self.error("La valeur de 'DocxPath' est vide sur la première ligne.")
-                self.Outputs.data.send(None)
+                msg = "La valeur de 'DocxPath' est vide sur la première ligne."
+                self.error(msg)
+                self._send_outputs(None, [("DocxPath", self.mode, "ECHEC", msg)])
                 return
 
             docx_path = docx_path.replace("\\", os.sep).replace("/", os.sep)
             if not os.path.exists(docx_path):
-                self.error(f"Fichier DOCX introuvable : {docx_path}")
-                self.Outputs.data.send(None)
+                msg = f"Fichier DOCX introuvable : {docx_path}"
+                self.error(msg)
+                self._send_outputs(None, [(docx_path, self.mode, "ECHEC",
+                                           "Fichier DOCX introuvable")])
                 return
 
             doc = Document(docx_path)
+            base = os.path.basename(docx_path)
 
             # MODE 1: key/value replacements in [tags] from row0
             if str(self.key_remplace) == "True":
+                status_rows: List[Tuple[str, str, str, str]] = []
                 replacements = {k: v for k, v in mapping.items() if k != "DocxPath"}
                 for key, val in replacements.items():
                     tag = self._bracketed_only(key)  # only [key]
                     if not tag:
                         continue
                     rep = self._clean_orange_value(val)
-                    self._replace_everywhere(doc, tag, rep)
+                    n = self._replace_everywhere(doc, tag, rep)
+                    if n > 0:
+                        status_rows.append((tag, "replace", "OK",
+                                            f"{n} remplacement(s)"))
+                    else:
+                        status_rows.append((tag, "replace", "ECHEC",
+                                            "Balise non trouvée dans le document"))
 
                 doc.save(docx_path)
-                self.Outputs.data.send(self.data)
+                self._send_outputs(self.data, status_rows)
                 return
 
 
 
             # MODE 2: insert full table at [TableKey]
             if "TableKey" not in mapping:
-                self.error("Mode table: colonne 'TableKey' introuvable sur la première ligne.")
-                self.Outputs.data.send(None)
+                msg = "Mode table: colonne 'TableKey' introuvable sur la première ligne."
+                self.error(msg)
+                self._send_outputs(None, [("TableKey", "table", "ECHEC", msg)])
                 return
 
             table_key = self._clean_orange_value(mapping.get("TableKey", "")).strip()
             table_key, _ = self.parse_color_prefix(table_key)  # enlève %!couleur!%
             table_key = (table_key or "").strip()
             if not table_key:
-                self.error("Mode table: la valeur de 'TableKey' est vide sur la première ligne.")
-                self.Outputs.data.send(None)
+                msg = "Mode table: la valeur de 'TableKey' est vide sur la première ligne."
+                self.error(msg)
+                self._send_outputs(None, [("TableKey", "table", "ECHEC", msg)])
                 return
 
             insert_tag = self._bracketed_only(table_key)  # => [Tableau1]
             if not insert_tag:
-                self.error("Mode table: TableKey invalide.")
-                self.Outputs.data.send(None)
+                msg = "Mode table: TableKey invalide."
+                self.error(msg)
+                self._send_outputs(None, [("TableKey", "table", "ECHEC", msg)])
                 return
             exclude = {"DocxPath", "TableKey"}
             headers, rows = self._extract_full_table_matrix(self.data, exclude_names=exclude)
 
             if not headers:
-                self.error("Mode table: aucune colonne à insérer (tout est exclu).")
-                self.Outputs.data.send(None)
+                msg = "Mode table: aucune colonne à insérer (tout est exclu)."
+                self.error(msg)
+                self._send_outputs(None, [(insert_tag, "table", "ECHEC", msg)])
                 return
 
             inserted = self._insert_table_at_tag(doc, insert_tag, headers, rows)
             if not inserted:
-                self.error(f"Balise d'insertion non trouvée dans le DOCX : {insert_tag}")
-                self.Outputs.data.send(None)
+                msg = f"Balise d'insertion non trouvée dans le DOCX : {insert_tag}"
+                self.error(msg)
+                self._send_outputs(None, [(insert_tag, "table", "ECHEC",
+                                           "Balise d'insertion non trouvée")])
                 return
 
             doc.save(docx_path)
-            self.Outputs.data.send(self.data)
+            self._send_outputs(
+                self.data,
+                [(f"{base} @ {insert_tag}", "table", "OK",
+                  f"Table insérée ({len(rows)} ligne(s), {len(headers)} colonne(s))")],
+            )
 
 
 
         except Exception as e:
             self.error(f"Erreur : {e}")
-            self.Outputs.data.send(None)
+            self._send_outputs(None, [("—", self.mode, "ECHEC", str(e))])
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

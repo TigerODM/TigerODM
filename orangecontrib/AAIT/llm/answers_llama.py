@@ -436,11 +436,21 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
 
 
 def split_think(answer: str):
+    # Any supported end delimiter
+    end_delimiters = [
+        r"</think>",
+        r"<channel\|>",
+    ]
+
+    pattern = rf"(.*?)({'|'.join(end_delimiters)})"
+
     # Extract think content (if any)
-    think_match = re.search(r"(.*?)</think>", answer, flags=re.DOTALL)
+    think_match = re.search(pattern, answer, flags=re.DOTALL)
     think_text = think_match.group(1).strip() if think_match else ""
+
     # Remove think block from the final answer
-    final_answer = re.sub(r".*?</think>", "", answer, flags=re.DOTALL).strip()
+    final_answer = re.sub(pattern, "", answer, count=1, flags=re.DOTALL).strip()
+
     return think_text, final_answer
 
 
@@ -858,6 +868,9 @@ def table_to_messages(data):
         role = row["role"].value
         typ = row["type"].value
         content = row["content"].value
+
+        if role not in ["system", "user", "assistant"]:
+            continue
 
         # SYSTEM → always standalone
         if role == "system":

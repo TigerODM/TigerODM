@@ -640,7 +640,6 @@ def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
         or "qwen35" in model_name
         or "qwen-3.5" in model_name
     ):
-
         try:
             from llama_cpp.llama_chat_format import Qwen35ChatHandler
 
@@ -652,6 +651,24 @@ def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
 
         except Exception as e:
             print("Unable to load Qwen35ChatHandler:", e)
+            return None
+
+
+    elif (
+            "gemma4" in model_name
+            or "gemma-4" in model_name
+    ):
+        try:
+            from llama_cpp.llama_chat_format import Gemma4ChatHandler
+
+            return Gemma4ChatHandler(
+                clip_model_path=mmproj_path,
+                verbose=verbose,
+                use_gpu=use_gpu
+            )
+
+        except Exception as e:
+            print("Unable to load Gemma4ChatHandler:", e)
             return None
 
     return None
