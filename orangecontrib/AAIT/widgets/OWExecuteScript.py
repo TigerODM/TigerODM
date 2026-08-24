@@ -13,6 +13,7 @@ from AnyQt.QtWidgets import QApplication, QCheckBox, QPushButton
 from AnyQt import QtWidgets, QtGui
 from Orange.widgets.settings import Setting
 from AnyQt.QtCore import QTimer
+from Orange.widgets.utils.signals import Input
 
 
 
@@ -39,20 +40,27 @@ class OWExecuteScript(base_widget.BaseListWidget):
     # Settings
     interactive = Setting(False)
 
-    # class Inputs:
-    #     data = Input("Data", Orange.data.Table)
-    #
+    class Inputs:
+        data = Input("Data", Table)
+        functions = Input("Predefined functions", str)
+
+
     # class Outputs:
     #     data = Output("Data", Orange.data.Table)
-    #
-    # @Inputs.data
-    # def set_data(self, in_data):
-    #     self.data = in_data
-    #     if self.data:
-    #         self.var_selector.add_variables(self.data.domain)
-    #         self.var_selector.select_variable_by_name(self.selected_column_name)
-    #     if self.autorun:
-    #         self.run()
+
+    @Inputs.data
+    def set_data(self, in_data):
+        self.data = in_data
+        if self.data:
+            self.var_selector.add_variables(self.data.domain)
+            self.var_selector.select_variable_by_name(self.selected_column_name)
+
+    @Inputs.functions
+    def set_functions(self, in_functions):
+        self.functions = in_functions
+
+    def handleNewSignals(self):
+        self.run()
 
     def __init__(self):
         super().__init__()
@@ -80,6 +88,8 @@ class OWExecuteScript(base_widget.BaseListWidget):
         self.autorun = True
         self.thread = None
         self.result = None
+        self.functions = ""
+        self.already_injected = False
         self.post_initialized()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
@@ -94,6 +104,7 @@ class OWExecuteScript(base_widget.BaseListWidget):
 
     def reset_state(self):
         self.console = SmartConsole()
+        self.already_injected = False
         self.script_text = ""
 
     def show_script(self):
@@ -128,11 +139,19 @@ class OWExecuteScript(base_widget.BaseListWidget):
             self.error('You must select a text variable.')
             return
 
+        if self.functions is None:
+            self.functions = ""
+
         # Start progress bar
         self.progressBarInit()
 
         # Thread management
         if self.interactive:
+            if self.console is None:
+                self.console = SmartConsole()
+            if not self.already_injected:
+                self.execute_script(self.functions)
+                self.already_injected = True
             # Interactive mode: Run in main thread for GUI compatibility
             self.result = self.execute_scripts_in_table(self.data, self.selected_column_name)
             self.handle_result(self.result)
@@ -181,7 +200,8 @@ class OWExecuteScript(base_widget.BaseListWidget):
             targets = [row[y] for y in class_dom]
             metas = list(data.metas[i])
             # Execute the script for the given row
-            output, error = self.execute_script(row[selected_var].value)
+            script = self.functions + "\n\n" + row[selected_var].value
+            output, error = self.execute_script(script)
             # Store the output / error
             new_row = features + targets + metas + [output, error]
             rows.append(new_row)
@@ -202,12 +222,8 @@ class OWExecuteScript(base_widget.BaseListWidget):
 
     def execute_script(self, script: str):
         if self.interactive:
-            if self.console is None:
-                self.console = SmartConsole()
-
             executable_code = f"exec({script!r})"
             self.script_text += f"\n\n{script}" if self.script_text else script
-
 
             stdout, stderr = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):

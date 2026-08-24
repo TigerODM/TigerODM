@@ -11,10 +11,14 @@ from Orange.widgets.utils.signals import Input, Output
 from AnyQt.QtCore import QTimer
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
+    from Orange.widgets.orangecontrib.AAIT.utils.SimpleDialogQt import BoxYesNo
+    from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import create_trigger_table
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
     from Orange.widgets.orangecontrib.AAIT.utils import thread_management, help_management
 else:
+    from orangecontrib.AAIT.utils.SimpleDialogQt import BoxYesNo
+    from orangecontrib.AAIT.utils.MetManagement import create_trigger_table
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
     from orangecontrib.AAIT.utils import thread_management, help_management
@@ -39,6 +43,7 @@ class OWFileSyncChecker(widget.OWWidget):
     class Outputs:
         data = Output("Files only in Data", Orange.data.Table)
         processed = Output("Files in Data & Reference", Orange.data.Table)
+        error = Output("Errors", Orange.data.Table)
 
     @Inputs.data
     def set_data(self, in_data):
@@ -96,20 +101,44 @@ class OWFileSyncChecker(widget.OWWidget):
 
         if "root_dir" not in self.data.domain or "root_dir" not in self.reference.domain:
             self.error('You need a "root_dir" column in both Data and Reference tables.')
-            self.Outputs.data.send(None)
-            self.Outputs.processed.send(None)
+            ignore_error = BoxYesNo("Your embeddings file seems obsolete. Do you want to re-process this database ?")
+            if ignore_error:
+                self.error("")
+                self.Outputs.data.send(self.data)
+                self.Outputs.processed.send(None)
+            else:
+                error_table = create_trigger_table("Error", "Your embeddings file seems obsolete.")
+                self.Outputs.error.send(error_table)
+                self.Outputs.data.send(None)
+                self.Outputs.processed.send(None)
             return
 
         if "relative_path" not in self.data.domain or "relative_path" not in self.reference.domain:
             self.error('You need a "relative_path" column in both Data and Reference tables.')
-            self.Outputs.data.send(None)
-            self.Outputs.processed.send(None)
+            ignore_error = BoxYesNo("Your embeddings file seems obsolete. Do you want to re-process this database ?")
+            if ignore_error:
+                self.error("")
+                self.Outputs.data.send(self.data)
+                self.Outputs.processed.send(None)
+            else:
+                error_table = create_trigger_table("Error", "Your embeddings file seems obsolete.")
+                self.Outputs.error.send(error_table)
+                self.Outputs.data.send(None)
+                self.Outputs.processed.send(None)
             return
 
         if "path" not in self.data.domain or "path" not in self.reference.domain:
             self.error('You need a "path" column in both Data and Reference tables.')
-            self.Outputs.data.send(None)
-            self.Outputs.processed.send(None)
+            ignore_error = BoxYesNo("Your embeddings file seems obsolete. Do you want to re-process this database ?")
+            if ignore_error:
+                self.error("")
+                self.Outputs.data.send(self.data)
+                self.Outputs.processed.send(None)
+            else:
+                error_table = create_trigger_table("Error", "Your embeddings file seems obsolete.")
+                self.Outputs.error.send(error_table)
+                self.Outputs.data.send(None)
+                self.Outputs.processed.send(None)
             return
 
         if "file size" not in self.data.domain:

@@ -4,7 +4,7 @@ import sys
 from json_repair import repair_json
 
 
-from Orange.data import Table, Domain, StringVariable
+from Orange.data import Table, Domain, StringVariable, DiscreteVariable
 from AnyQt.QtWidgets import QApplication
 from Orange.widgets.settings import Setting
 from AnyQt.QtCore import QTimer
@@ -22,12 +22,12 @@ else:
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OWSkillsIdentifier(base_widget.BaseListWidget):
     name = "Agentic - Skills Identifier"
-    description = "Identify the skills used by a language model (tool usage, code, data extraction...)."
+    description = "Identify the skills used by a language model (service, code, data extraction...)."
     category = "AAIT - AGENTIC"
-    icon = "icons/owexecutescript.svg"
+    icon = "icons/owskillsidentifier.svg"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-        icon = "icons_dev/owexecutescript.svg"
-    gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owexecutescript_TEST.ui")
+        icon = "icons_dev/owskillsidentifier.svg"
+    gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owskillsidentifier.ui")
     want_control_area = False
     priority = 1060
 
@@ -38,8 +38,8 @@ class OWSkillsIdentifier(base_widget.BaseListWidget):
     def __init__(self):
         super().__init__()
         # Qt Management
-        self.setFixedWidth(470)
-        self.setFixedHeight(500)
+        self.setFixedWidth(432)
+        self.setFixedHeight(570)
         # uic.loadUi(self.gui, self)
 
         # Data Management
@@ -78,14 +78,14 @@ class OWSkillsIdentifier(base_widget.BaseListWidget):
 
         # Detect skills
         entries.extend(parse_python(answer))
-        entries.extend(parse_json_tool(answer))
+        entries.extend(parse_json_service(answer))
         entries.extend(parse_json_data(answer))
         entries.extend(parse_question(answer))
 
         # Fallback: no skill detected
         if not entries:
             entries.append({
-                "skill": "None",
+                "skill": "none",
                 "content": answer,
             })
 
@@ -108,7 +108,7 @@ def parse_python(text):
     return results
 
 
-def parse_json_tool(text):
+def parse_json_service(text):
     results = []
 
     for raw in extract_json_strings(text):
@@ -118,18 +118,19 @@ def parse_json_tool(text):
         if not isinstance(obj, dict):
             continue
 
-        if "tool" not in obj or "arguments" not in obj:
+        if "service" not in obj or "parameters" not in obj:
             continue
 
         result = {
-            "skill": obj["tool"],   # <-- tool name becomes the skill
+            "skill": "service",
+            "service": obj["service"],
             "content": raw,
         }
 
-        arguments = obj.get("arguments", {})
+        parameters = obj.get("parameters", {})
 
-        if isinstance(arguments, dict):
-            result.update(arguments)
+        if isinstance(parameters, dict):
+            result.update(parameters)
 
         results.append(result)
 
@@ -146,7 +147,7 @@ def parse_json_data(text):
         if not isinstance(obj, dict):
             continue
 
-        if "tool" in obj and "arguments" in obj:
+        if "service" in obj and "parameters" in obj:
             continue
 
         result = {
@@ -176,47 +177,62 @@ def parse_question(text):
 
 
 PYTHON_RE = re.compile(r"```python\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+JSON_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 def extract_json_strings(text):
     """
-    Yield every balanced {...} block found in the text.
+    Yield every balanced JSON object found inside ```json ... ``` fences.
 
-    The block is not required to be valid JSON.
+    A fenced block may contain multiple JSON objects:
+
+    ```json
+    {"a": 1}
+
+    {"b": 2}
+
+    {"c": {"d": 3}}
+    ```
     """
-    depth = 0
-    inside_string = False
-    escape = False
-    start = None
 
-    for i, c in enumerate(text):
+    for match in JSON_RE.finditer(text):
+        block = match.group(1)
 
-        if escape:
-            escape = False
-            continue
+        depth = 0
+        inside_string = False
+        escape = False
+        start = None
 
-        if c == "\\":
-            escape = True
-            continue
+        for i, c in enumerate(block):
 
-        if c == '"':
-            inside_string = not inside_string
-            continue
+            if escape:
+                escape = False
+                continue
 
-        if inside_string:
-            continue
+            if c == "\\":
+                escape = True
+                continue
 
-        if c == "{":
-            if depth == 0:
-                start = i
-            depth += 1
+            if c == '"':
+                inside_string = not inside_string
+                continue
 
-        elif c == "}":
-            if depth:
+            if inside_string:
+                continue
+
+            if c == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+
+            elif c == "}":
+                if depth == 0:
+                    continue
+
                 depth -= 1
 
                 if depth == 0 and start is not None:
-                    yield text[start:i + 1]
+                    yield block[start:i + 1]
                     start = None
 
 
@@ -225,6 +241,9 @@ def repair_and_load(raw):
     """
     Try to repair malformed JSON and return the parsed object.
     """
+    # Replace Pythonic strings
+    raw = re.sub(r':\s*r"', ': "', raw)
+    raw = re.sub(r":\s*r'", ": '", raw)
     try:
         repaired = repair_json(raw)
         return repaired, repair_json(raw, return_objects=True)
@@ -245,7 +264,10 @@ def build_output_table(entries):
     extra_keys = sorted(extra_keys)
 
     metas = [
-        StringVariable("skill"),
+        DiscreteVariable(
+            "skill",
+            values=["python", "data", "service", "question", "none"],
+        ),
         StringVariable("content"),
     ] + [
         StringVariable(key)
@@ -259,7 +281,7 @@ def build_output_table(entries):
     for entry in entries:
 
         row = [
-            entry.get("skill", ""),
+            entry.get("skill", "none"),
             entry.get("content", ""),
         ]
 

@@ -57,7 +57,7 @@ class OWWidgetRandomData(widget.OWWidget):
     nombre_generation :str =Setting(get_default_nb_pop_value())
     strauto :str =Setting('False')
     strWaitTwoinput :str =Setting('False')
-
+    strReproducible :str =Setting('True')
 
     @Inputs.data
     def set_data(self, data):
@@ -94,7 +94,6 @@ class OWWidgetRandomData(widget.OWWidget):
         self.spinbox.valueChanged.connect(self.spinbox_value_changed)
         self.data_rules = None
         self.in_data = None
-        self.seed = True
         self.checkbox_interface = self.findChild(QCheckBox, 'checkBox')
         if self.strauto == 'Middle':
             self.strauto = 'False'
@@ -113,6 +112,13 @@ class OWWidgetRandomData(widget.OWWidget):
             self.checkbox_wait_two_inpuit.setChecked(True)
         self.checkbox_wait_two_inpuit.stateChanged.connect(self.on_checkbox2_toggled)
 
+        self.checkbox_Reproducible = self.findChild(QCheckBox, 'checkBox_3')
+        if self.strReproducible!='False':
+            self.checkbox_Reproducible.setChecked(True)
+        else:
+            self.checkbox_Reproducible.setChecked(False)
+
+        self.checkbox_Reproducible.stateChanged.connect(self.on_checkbox3_toggled)
         self.post_initialized()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
@@ -137,6 +143,16 @@ class OWWidgetRandomData(widget.OWWidget):
             self.strWaitTwoinput = 'False'
         elif state == 1:
             self.strWaitTwoinput = 'Middle'
+
+
+
+    def on_checkbox3_toggled(self):
+        if self.checkbox_Reproducible.isChecked():
+            self.strReproducible="True"
+        else:
+            self.strReproducible="False"
+
+
 
     def set_defaut_value_for_new_widget(self):
         selected_value = SimpleDialogQt.get_number_from_dialog("select a number between 1 et 100 000 :", 1, 100000)
@@ -179,7 +195,7 @@ class OWWidgetRandomData(widget.OWWidget):
 
     def generate_random_data_for_rules(self, tab_min, tab_max, tab_nb_iteration,tab_step):
         data = []
-        if self.seed:
+        if self.strReproducible=="True":
             random.seed(0)
         for _ in range(tab_nb_iteration):
             d = []
@@ -194,7 +210,7 @@ class OWWidgetRandomData(widget.OWWidget):
 
     def generate_random_data(self, nb_iterations, tab):
         data = []
-        if self.seed:
+        if self.strReproducible=="True":
             random.seed(0)
         for _ in range(nb_iterations):
             d = []

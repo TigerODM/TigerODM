@@ -1415,10 +1415,10 @@ def describe_orange_table(data_table):
         return None
 
 
-def create_trigger_table():
-    var = StringVariable("Trigger")
+def create_trigger_table(var_name="Trigger", message="Trigger"):
+    var = StringVariable(var_name)
     dom = Domain([], metas=[var])
-    table = Table.from_list(domain=dom, rows=[["Trigger"]])
+    table = Table.from_list(domain=dom, rows=[[message]])
     return table
 
 def IsStoreCompressed(aait_store_path):

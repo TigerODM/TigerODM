@@ -67,6 +67,11 @@
       <string>markdown</string>
      </property>
     </item>
+    <item>
+     <property name="text">
+      <string>late</string>
+     </property>
+    </item>
    </widget>
    <widget class="QLineEdit" name="chunkSize">
     <property name="geometry">

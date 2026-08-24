@@ -9,7 +9,8 @@ from AnyQt.QtWidgets import QComboBox
 from AnyQt.QtCore import QTimer
 
 from transformers import AutoTokenizer
-#from sentence_transformers import SentenceTransformer
+from chonkie.embeddings.sentence_transformer import SentenceTransformerEmbeddings
+from sentence_transformers import SentenceTransformer
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import chunking
@@ -130,20 +131,52 @@ class OWChunker(base_widget.BaseListWidget):
             return
 
         # Tokenizer management
-        if self.tokenizer_path:
-            if self.tokenizer_path.endswith(".gguf"):
-                self.error("Invalid model for chunking. Try with Tokenizer - Qwen3 8B.")
-                self.tokenizer = None
+        self.tokenizer = None
+
+        if self.mode in ["tokens", "sentence", "markdown"]:
+            if self.tokenizer_path is None:
+                self.error("You need a tokenizer model for this chunking method. Try with Tokenizer - Qwen3 8B.")
+                self.Outputs.data.send(None)
+                return
+            elif self.tokenizer_path.endswith(".gguf"):
+                self.error("Invalid model for this chunking method. Try with Tokenizer - Qwen3 8B.")
                 self.Outputs.data.send(None)
                 return
             else:
                 try:
                     self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
                 except Exception as e:
-                    self.tokenizer = None
-                    self.error(f"Invalid model for chunking. Try with Tokenizer - Qwen3 8B. ({e})")
+                    self.error(f"Invalid model for this chunking method. Try with Tokenizer - Qwen3 8B. ({e})")
                     self.Outputs.data.send(None)
                     return
+
+        elif self.mode == "words":
+            self.warning('"words" chunking method is deprecated and will soon be removed (using MPNET). Please use "tokens" instead.')
+            try:
+                mpnet_path = get_path_or_retrieve("MPNET BASE V2")
+                self.tokenizer = SentenceTransformer(mpnet_path, device="cpu")
+            except Exception as e:
+                self.error(f"An error happened ({e})")
+                self.Outputs.data.send(None)
+                return
+
+        elif self.mode == "late":
+            if self.tokenizer_path is None:
+                self.error("You need an embeddings model for 'late' chunking. Try with Model - Embeddings - MPNET.")
+                self.Outputs.data.send(None)
+                return
+            elif self.tokenizer_path.endswith(".gguf"):
+                self.error("Invalid model for 'late' chunking. Try with Model - Embeddings - MPNET.")
+                self.Outputs.data.send(None)
+                return
+            else:
+                try:
+                    self.tokenizer = SentenceTransformerEmbeddings(self.tokenizer_path, device="cpu")
+                except Exception as e:
+                    self.error(f"Invalid model for 'late' chunking. Try with Model - Embeddings - MPNET. ({e})")
+                    self.Outputs.data.send(None)
+                    return
+
         else:
             self.warning('Using default chunking method "character". You should try using a tokenizer like "Tokenizer - Qwen3 8B".')
             self.tokenizer = "character"
@@ -156,13 +189,6 @@ class OWChunker(base_widget.BaseListWidget):
         if not isinstance(self.data.domain[self.selected_column_name], StringVariable):
             self.error('You must select a text variable.')
             return
-
-        if self.mode == "words":
-            self.warning('"words" chunking method is deprecated and will soon be removed. Please use "tokens" instead.')
-            try:
-                _ = get_path_or_retrieve("MPNET BASE V2")
-            except Exception as e:
-                raise ValueError(str(e))
 
 
         # Start progress bar

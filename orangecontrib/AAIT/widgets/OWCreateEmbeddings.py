@@ -37,7 +37,7 @@ class OWCreateEmbeddings(base_widget.BaseListWidget):
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
-        model = Input("Model", SentenceTransformer, auto_summary=False)
+        model_path = Input("Model", str, auto_summary=False)
 
     class Outputs:
         data = Output("Data", Orange.data.Table)
@@ -51,9 +51,9 @@ class OWCreateEmbeddings(base_widget.BaseListWidget):
         if self.autorun:
             self.run()
 
-    @Inputs.model
-    def set_model(self, in_model):
-        self.model = in_model
+    @Inputs.model_path
+    def set_model(self, in_model_path):
+        self.model_path = in_model_path
         if self.autorun:
             self.run()
 
@@ -66,6 +66,7 @@ class OWCreateEmbeddings(base_widget.BaseListWidget):
 
         # Data Management
         self.data = None
+        self.model_path = None
         self.model = None
         self.thread = None
         self.autorun = True
@@ -85,7 +86,7 @@ class OWCreateEmbeddings(base_widget.BaseListWidget):
             self.Outputs.data.send(None)
             return
 
-        if self.model is None:
+        if self.model_path is None:
             self.Outputs.data.send(None)
             return
 
@@ -97,6 +98,13 @@ class OWCreateEmbeddings(base_widget.BaseListWidget):
         if not isinstance(self.data.domain[self.selected_column_name], StringVariable):
             self.error('You must select a text variable.')
             return
+
+        try:
+            self.model = SentenceTransformer(self.model_path, device="cpu",
+                                             trust_remote_code=True)
+        except Exception as e:
+            self.error(f"An error occurred when trying to load the embeddings model: {e}")
+            self.Outputs.data.send(None)
 
         # Start progress bar
         self.progressBarInit()

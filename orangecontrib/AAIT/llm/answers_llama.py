@@ -414,7 +414,7 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
 
             answer += token
             write_tokens_to_file(token, workflow_id)
-            print(token, end="")
+            # print(token, end="")
 
             if progress_callback is not None:
                 progress_callback(("assistant", token))

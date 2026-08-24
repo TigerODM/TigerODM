@@ -737,6 +737,79 @@ def _apply_spans(nodes, full, spans, new_segments):
     return len(spans)
 
 
+def _enclosing_fldsimple(text_elem):
+    """Renvoie l'ancêtre <w:fldSimple> de ce <w:t>, ou None."""
+    el = text_elem.getparent()
+    while el is not None:
+        if el.tag == qn("w:fldSimple"):
+            return el
+        el = el.getparent()
+    return None
+
+
+def _flatten_fldsimple(fld):
+    """Déballe un <w:fldSimple> : ses runs remontent au parent, le champ disparaît.
+    Le texte affiché (résultat en cache) est conservé, mais il devient statique."""
+    parent = fld.getparent()
+    if parent is None:
+        return
+    idx = list(parent).index(fld)
+    for child in list(fld):
+        parent.insert(idx, child)
+        idx += 1
+    parent.remove(fld)
+
+
+def _flatten_complex_field(field_runs):
+    """Transforme un champ complexe (liste de <w:r> begin..end) en texte statique :
+    retire les runs de structure (fldChar, instrText), conserve les runs de résultat.
+    Le contenu affiché ne change pas ; il n'est simplement plus recalculable."""
+    for r in field_runs:
+        if r.find(qn("w:fldChar")) is not None or r.find(qn("w:instrText")) is not None:
+            parent = r.getparent()
+            if parent is not None:
+                parent.remove(r)
+
+
+def _flatten_touched_fields(nodes, spans):
+    """Aplati (rend statiques) tous les champs dont le RÉSULTAT est chevauché par un
+    span de remplacement. Ainsi le texte qu'on va écrire par-dessus ne pourra plus
+    être « ré-actualisé » par Word (donc plus de retour arrière ni d'invite).
+
+    Ne touche AUCUN texte : fldChar/instrText ne produisent pas de caractères, donc
+    `full` et `spans` restent valides après appel (il suffit de re-parcourir nodes)."""
+    offsets, pos = [], 0
+    for elem, kind, text in nodes:
+        offsets.append((elem, kind, pos, pos + len(text)))
+        pos += len(text)
+
+    def _overlaps(ns, ne):
+        return any(s < ne and ns < e for s, e in spans)
+
+    seen = []  # champs déjà aplatis (évite les doublons)
+    for elem, kind, ns, ne in offsets:
+        if kind != "t" or not _overlaps(ns, ne):
+            continue
+
+        # 1) champ simple <w:fldSimple>
+        fs = _enclosing_fldsimple(elem)
+        if fs is not None:
+            if fs not in seen:
+                seen.append(fs)
+                _flatten_fldsimple(fs)
+            continue
+
+        # 2) champ complexe (fldChar begin..end)
+        run = elem.getparent()
+        if run is not None and run.tag == qn("w:r"):
+            fr = _field_run_range(run)
+            if fr:
+                begin = fr[0]
+                if begin not in seen:
+                    seen.append(begin)
+                    _flatten_complex_field(fr)
+
+
 def _replace_in_wp(p_element, old, new):
     """Run-aware replace dans un <w:p>. `new` peut contenir des balises %!...!%."""
     nodes = _iter_text_nodes(p_element)
@@ -746,6 +819,14 @@ def _replace_in_wp(p_element, old, new):
     spans = _find_spans(full, old)
     if not spans:
         return 0
+    # Avant d'écrire par-dessus : si un span tombe sur le résultat d'un champ
+    # (REF, renvoi, PAGEREF, STYLEREF...), on fige ce champ en texte statique.
+    # Sinon Word proposerait de le mettre à jour et écraserait notre remplacement.
+    _flatten_touched_fields(nodes, spans)
+    # La structure des runs a changé, mais pas le texte -> full et spans restent
+    # valides ; il suffit de re-parcourir les noeuds.
+    nodes = _iter_text_nodes(p_element)
+
     new_segments = _parse_inline_style(new)
     return _apply_spans(nodes, full, spans, new_segments)
 
@@ -790,26 +871,621 @@ def _resolve_locator_to_paragraphs(doc, locator):
     return []
 
 def _ensure_update_fields(doc):
-    """Force Word à recalculer tous les champs à l'ouverture (PAGE, NUMPAGES, TOC…)."""
+    """Force Word à recalculer tous les champs à l'ouverture (PAGE, NUMPAGES, TOC…).
+
+    ATTENTION : provoque à l'ouverture l'invite « Ce document contient des champs
+    qui peuvent faire référence à d'autres fichiers. Voulez-vous les mettre à
+    jour ? ». À n'activer que si l'on veut vraiment rafraîchir une table des
+    matières / des renvois non touchés par l'édition."""
     settings = doc.settings.element                 # <w:settings>
     if settings.find(qn("w:updateFields")) is None:
         uf = OxmlElement("w:updateFields")
         uf.set(qn("w:val"), "true")
         settings.insert(0, uf)
 
-def apply_docx_edit(docx_path, locator, old_text, new_text, output_path=None):
+
+def _remove_update_fields(doc):
+    """Retire tout <w:updateFields/> pour que Word n'affiche PAS l'invite de mise à
+    jour des champs à l'ouverture."""
+    settings = doc.settings.element
+    for uf in settings.findall(qn("w:updateFields")):
+        settings.remove(uf)
+
+
+# ---------------------------------------------------------------------------
+# Détection : l'édition rend-elle une TABLE DES MATIÈRES ou des RENVOIS obsolètes ?
+# Si oui, on garde <w:updateFields/> (donc l'invite Word) pour ces champs-là ;
+# sinon on la retire. Les champs directement écrasés, eux, sont déjà figés en
+# texte statique par _flatten_touched_fields, donc ils n'ont pas besoin de MAJ.
+# ---------------------------------------------------------------------------
+
+_HEADING_NAME_RE = re.compile(
+    r"(?:heading|titre|title|berschrift|encabezado|rubrik|nadpis|kop|"
+    r"\u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a)\s*(\d+)", re.IGNORECASE)
+
+
+def _iter_field_instrs(root):
+    """Instruction complète de chaque champ sous `root` (champs complexes à pile +
+    w:fldSimple). Les instrText d'un même champ sont concaténés."""
+    stack = []
+    for el in root.iter():
+        tag = el.tag
+        if tag == qn("w:fldChar"):
+            t = el.get(qn("w:fldCharType"))
+            if t == "begin":
+                stack.append([])
+            elif t == "end" and stack:
+                yield "".join(stack.pop())
+        elif tag == qn("w:instrText"):
+            if stack and el.text:
+                stack[-1].append(el.text)
+    for fs in root.iter(qn("w:fldSimple")):
+        instr = fs.get(qn("w:instr"))
+        if instr:
+            yield instr
+
+
+def _parse_toc_instr(instr):
+    """Renvoie (niveaux:set[int], styles:set[str]) alimentant une TOC."""
+    levels, styles = set(), set()
+    m = re.search(r'\\o\s+"?(\d+)\s*-\s*(\d+)"?', instr)
+    if m:
+        levels |= set(range(int(m.group(1)), int(m.group(2)) + 1))
+    elif "\\o" in instr:
+        levels |= set(range(1, 10))
+    for tm in re.finditer(r'\\t\s+"([^"]*)"', instr):
+        parts = [x.strip() for x in tm.group(1).split(",")]
+        for i in range(0, len(parts) - 1, 2):
+            if parts[i]:
+                styles.add(parts[i])
+            try:
+                levels.add(int(parts[i + 1]))
+            except ValueError:
+                pass
+    if not levels and not styles:      # TOC nue -> styles de plan 1..9 par défaut
+        levels |= set(range(1, 10))
+    return levels, styles
+
+
+def _collect_toc_specs(doc):
+    """Agrège les niveaux/styles de toutes les TOC du corps, ou None s'il n'y en a pas."""
+    levels, styles, found = set(), set(), False
+    for instr in _iter_field_instrs(doc.element.body):
+        toks = instr.strip().split()
+        if toks and toks[0].upper() == "TOC":
+            found = True
+            l, s = _parse_toc_instr(instr)
+            levels |= l
+            styles |= s
+    return {"levels": levels, "styles": styles} if found else None
+
+
+def _collect_ref_targets(doc):
+    """Noms de signets ciblés par des champs REF / PAGEREF / NOTEREF du corps."""
+    targets = set()
+    for instr in _iter_field_instrs(doc.element.body):
+        toks = instr.strip().split()
+        if toks and toks[0].upper() in ("REF", "PAGEREF", "NOTEREF"):
+            bm = _field_bookmark(instr)
+            if bm:
+                targets.add(bm)
+    return targets
+
+
+def _style_maps(doc):
+    """(outline: styleId -> niveau de plan 0-based, names: styleId -> nom affiché)."""
+    outline, names = {}, {}
+    try:
+        styles_el = doc.styles.element
+    except Exception:
+        return outline, names
+    for st in styles_el.findall(qn("w:style")):
+        sid = st.get(qn("w:styleId"))
+        if not sid:
+            continue
+        nm = st.find(qn("w:name"))
+        if nm is not None and nm.get(qn("w:val")):
+            names[sid] = nm.get(qn("w:val"))
+        ppr = st.find(qn("w:pPr"))
+        if ppr is not None:
+            olv = ppr.find(qn("w:outlineLvl"))
+            if olv is not None and olv.get(qn("w:val")) is not None:
+                try:
+                    outline[sid] = int(olv.get(qn("w:val")))
+                except ValueError:
+                    pass
+    return outline, names
+
+
+def _p_style_id(p):
+    ppr = p.find(qn("w:pPr"))
+    if ppr is None:
+        return "Normal"
+    ps = ppr.find(qn("w:pStyle"))
+    return (ps.get(qn("w:val")) if ps is not None else None) or "Normal"
+
+
+def _p_outline_level(p, outline, names):
+    """Niveau de plan 1-based du paragraphe (None si aucun) : override direct,
+    puis niveau du style, puis heuristique sur le nom du style."""
+    ppr = p.find(qn("w:pPr"))
+    if ppr is not None:
+        olv = ppr.find(qn("w:outlineLvl"))
+        if olv is not None and olv.get(qn("w:val")) is not None:
+            try:
+                return int(olv.get(qn("w:val"))) + 1
+            except ValueError:
+                pass
+    sid = _p_style_id(p)
+    if sid in outline:
+        return outline[sid] + 1
+    m = _HEADING_NAME_RE.search(names.get(sid, sid) or "")
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+    return None
+
+
+def _p_feeds_toc(p, toc, outline, names):
+    lvl = _p_outline_level(p, outline, names)
+    if lvl is not None and lvl in toc["levels"]:
+        return True
+    sid = _p_style_id(p)
+    return sid in toc["styles"] or names.get(sid, sid) in toc["styles"]
+
+
+_EDIT_MARK = "aaitEdited"
+
+
+def _edit_needs_field_update(doc, edited_paras):
+    """True si au moins un paragraphe édité alimente une TOC, ou se trouve dans un
+    signet ciblé par un renvoi (REF/PAGEREF/NOTEREF)."""
+    if not edited_paras:
+        return False
+    toc = _collect_toc_specs(doc)
+    refs = _collect_ref_targets(doc)
+    if not toc and not refs:
+        return False
+
+    if toc:
+        outline, names = _style_maps(doc)
+        for p in edited_paras:
+            if _p_feeds_toc(p, toc, outline, names):
+                return True
+
+    if refs:
+        for p in edited_paras:
+            p.set(_EDIT_MARK, "1")
+        try:
+            open_ids = {}
+            for el in doc.element.body.iter():
+                tag = el.tag
+                if tag == qn("w:bookmarkStart"):
+                    if el.get(qn("w:name")) in refs:
+                        open_ids[el.get(qn("w:id"))] = True
+                        anc = el.getparent()
+                        while anc is not None and anc.tag != qn("w:p"):
+                            anc = anc.getparent()
+                        if anc is not None and anc.get(_EDIT_MARK):
+                            return True
+                elif tag == qn("w:bookmarkEnd"):
+                    open_ids.pop(el.get(qn("w:id")), None)
+                elif tag == qn("w:p"):
+                    if open_ids and el.get(_EDIT_MARK):
+                        return True
+        finally:
+            for p in edited_paras:
+                if _EDIT_MARK in p.attrib:
+                    del p.attrib[_EDIT_MARK]
+    return False
+
+
+def _find_consecutive_block(paragraphs, old_lines):
+    """Indice k tel que old_lines[j] apparaisse dans paragraphs[k+j] pour tout j
+    (paragraphes consécutifs). Une ligne vide de old exige un paragraphe vide.
+    Renvoie k, ou None si aucun bloc consécutif ne correspond."""
+    n = len(old_lines)
+    if n == 0 or len(paragraphs) < n:
+        return None
+    for k in range(0, len(paragraphs) - n + 1):
+        ok = True
+        for j in range(n):
+            full = _element_text(paragraphs[k + j])
+            if old_lines[j] == "":
+                if full.strip() != "":
+                    ok = False
+                    break
+            elif not _find_spans(full, old_lines[j]):
+                ok = False
+                break
+        if ok:
+            return k
+    return None
+
+
+def _rebalance_new_lines(new_text):
+    """Découpe new_text en lignes, mais en rééquilibrant les balises inline %!...!%
+    qui TRAVERSENT un saut de ligne : toute balise encore ouverte en fin de ligne
+    est refermée, puis rouverte au début de la ligne suivante. Chaque ligne devient
+    ainsi autonome (elle peut être parsée seule par _parse_inline_style) tout en
+    conservant le style continu voulu — indispensable car le remplacement multi-
+    lignes s'applique ligne par ligne, chaque ligne dans son propre paragraphe.
+
+    Exemple : "%!size=6!%L3\\nL4%!/size!%"
+      -> ["%!size=6!%L3%!/size!%", "%!size=6!%L4%!/size!%"]  (L3 ET L4 en size 6)
     """
-    Replace old_text by new_text inside the object designated by `locator`.
-    Saves in place (or to output_path). Returns the number of replacements made.
+    lines = new_text.split("\n")
+    if len(lines) == 1:
+        return lines
+
+    open_stack = []   # balises de style ouvertes : liste de (nom, balise_brute)
+    out = []
+    for li, line in enumerate(lines):
+        prefix = "".join(raw for _, raw in open_stack)  # rouvrir l'existant
+        for m in _INLINE_TAG_RE.finditer(line):
+            closing, name = m.group(1), m.group(2).lower()
+            if name in _FIELD_INSTR or name == "field":
+                continue  # balise CHAMP : pas de portée à propager
+            if closing:
+                for k in range(len(open_stack) - 1, -1, -1):
+                    if open_stack[k][0] == name:
+                        open_stack.pop(k)
+                        break
+            else:
+                open_stack.append((name, m.group(0)))
+        # fermer ce qui reste ouvert (sauf sur la toute dernière ligne)
+        if li < len(lines) - 1:
+            suffix = "".join(f"%!/{name}!%" for name, _ in reversed(open_stack))
+        else:
+            suffix = ""
+        out.append(prefix + line + suffix)
+    return out
+
+
+def _set_paragraph_text(p_element, text):
+    """Vide le contenu d'un <w:p> (runs, champs, signets...) en conservant SON style
+    (w:pPr) et la police du 1er run, puis y réinjecte `text` en HONORANT les balises
+    inline %!...!% (taille, gras, couleur, champs...). Utilisé pour les paragraphes
+    clonés lors d'une expansion."""
+    first_r = p_element.find(qn("w:r"))
+    rpr = None
+    if first_r is not None:
+        rpr_el = first_r.find(qn("w:rPr"))
+        if rpr_el is not None:
+            rpr = deepcopy(rpr_el)
+    # Tout retirer sauf le pPr (style de paragraphe).
+    for child in list(p_element):
+        if child.tag != qn("w:pPr"):
+            p_element.remove(child)
+    # Reconstruire les runs à partir des segments stylés.
+    for seg_text, style in _parse_inline_style(text):
+        if style and style.get("field"):
+            for r in _make_field_runs(style["field"], rpr, style):
+                p_element.append(r)
+        elif seg_text:
+            p_element.append(_run_with_rpr(rpr, seg_text, style or None))
+
+
+def _apply_block_expand(paragraphs, old_lines, new_lines):
+    """Cas EXPANSION : len(new_lines) > len(old_lines) >= 2.
+    Les N premières lignes remplacent en place les N paragraphes consécutifs du
+    bloc (formatage préservé) ; les (M-N) lignes supplémentaires sont insérées
+    comme nouveaux paragraphes clonés du DERNIER paragraphe du bloc (même style).
+    Renvoie (nb, liste_paragraphes_modifiés_ou_créés)."""
+    n = len(old_lines)
+    k = _find_consecutive_block(paragraphs, old_lines)
+    if k is None:
+        return 0, []
+
+    total = 0
+    edited = []
+
+    # 1) Remplacement en place des N premières lignes.
+    for j in range(n):
+        if old_lines[j] == "":
+            continue
+        c = _replace_in_wp(paragraphs[k + j], old_lines[j], new_lines[j])
+        if c:
+            total += c
+            edited.append(paragraphs[k + j])
+
+    # 2) Insertion des lignes supplémentaires, clones du dernier paragraphe du bloc.
+    last_p = paragraphs[k + n - 1]
+    anchor = last_p
+    for extra in new_lines[n:]:
+        new_p = deepcopy(last_p)
+        _set_paragraph_text(new_p, extra)
+        anchor.addnext(new_p)
+        anchor = new_p
+        edited.append(new_p)
+        total += 1
+
+    return total, edited
+
+
+def _apply_block_reduce(paragraphs, old_lines, new_lines):
+    """Cas RÉDUCTION : len(new_lines) < len(old_lines) (>=2). Autorisé UNIQUEMENT si
+    les M paragraphes du bloc partagent le MÊME style (sinon on refuserait de perdre
+    silencieusement des paragraphes de styles différents). Les N premières lignes
+    remplacent en place ; les (M-N) paragraphes en trop sont supprimés.
+    Renvoie (nb, edited) ; (0, []) si bloc introuvable OU styles hétérogènes."""
+    m, n = len(old_lines), len(new_lines)
+    k = _find_consecutive_block(paragraphs, old_lines)
+    if k is None:
+        return 0, []
+    block = [paragraphs[k + j] for j in range(m)]
+
+    # Condition : style de paragraphe identique sur tout le bloc.
+    if len({_p_style_id(p) for p in block}) > 1:
+        return 0, []
+
+    total = 0
+    edited = []
+
+    # 1) Remplacement en place des N premières lignes.
+    for j in range(n):
+        c = 0
+        if old_lines[j] != "":
+            c = _replace_in_wp(block[j], old_lines[j], new_lines[j])
+        if c:
+            total += c
+        else:
+            _set_paragraph_text(block[j], new_lines[j])
+            total += 1
+        edited.append(block[j])
+
+    # 2) Suppression des paragraphes en trop.
+    for j in range(n, m):
+        parent = block[j].getparent()
+        if parent is not None:
+            parent.remove(block[j])
+
+    return total, edited
+
+
+def _apply_one_edit(paragraphs, old_text, new_text):
+    """Applique un remplacement (mono- ou multi-ligne) sur une liste de <w:p>.
+    Renvoie (nb_remplacements, liste_des_paragraphes_modifiés). Réutilisé par
+    apply_docx_edit et par apply_docx_edits_batch pour un comportement identique.
+
+    Multi-ligne :
+      - autant de lignes des deux côtés  -> appariement ligne à ligne (en place) ;
+      - PLUS de lignes en sortie qu'en entrée (>=2 en entrée) -> expansion : les
+        paragraphes en trop sont ajoutés, clonés du dernier paragraphe du bloc ;
+      - MOINS de lignes en sortie -> non pris en charge (fusion/suppression de
+        paragraphes), comportement inchangé (aucun remplacement).
+    """
+    old_text = (old_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    new_text = (new_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    old_lines = old_text.split("\n")
+    new_lines = new_text.split("\n")
+
+    total = 0
+    edited = []
+
+    def _do(p, o, n):
+        nonlocal total
+        c = _replace_in_wp(p, o, n)
+        if c:
+            total += c
+            edited.append(p)
+
+    if len(old_lines) <= 1:
+        for p in paragraphs:
+            _do(p, old_text, new_text)
+    elif len(old_lines) == len(new_lines):
+        # Rééquilibrage des balises inline traversant les sauts de ligne, car
+        # chaque ligne est appliquée séparément (dans son propre paragraphe).
+        bal_lines = _rebalance_new_lines(new_text)
+        for o_line, n_line in zip(old_lines, bal_lines):
+            if o_line == "":
+                continue
+            for p in paragraphs:
+                _do(p, o_line, n_line)
+    elif len(new_lines) > len(old_lines) and len(old_lines) >= 2:
+        bal_lines = _rebalance_new_lines(new_text)
+        c, ed = _apply_block_expand(paragraphs, old_lines, bal_lines)
+        total += c
+        edited.extend(ed)
+    elif len(new_lines) < len(old_lines) and len(old_lines) >= 2:
+        # Réduction : autorisée seulement si le bloc a un style homogène.
+        bal_lines = _rebalance_new_lines(new_text)
+        c, ed = _apply_block_reduce(paragraphs, old_lines, bal_lines)
+        total += c
+        edited.extend(ed)
+    else:
+        # Cas résiduel : comportement inchangé.
+        for p in paragraphs:
+            _do(p, old_text, new_text)
+    return total, edited
+
+
+def _finalize_update_fields(doc, update_fields, edited_paras, output_path, docx_path):
+    """Décide de <w:updateFields/> puis sauvegarde (logique commune)."""
+    if update_fields is True:
+        _ensure_update_fields(doc)
+    elif update_fields is False:
+        _remove_update_fields(doc)
+    else:  # "auto" : invite seulement si TOC/renvois deviennent obsolètes
+        if _edit_needs_field_update(doc, edited_paras):
+            _ensure_update_fields(doc)
+        else:
+            _remove_update_fields(doc)
+    doc.save(output_path or docx_path)
+
+
+def apply_docx_edit(docx_path, locator, old_text, new_text, output_path=None,
+                    update_fields="auto"):
+    """
+    Remplace old_text par new_text dans l'objet désigné par `locator`.
+    Gère le mono-ligne (comportement d'origine) ET le multi-paragraphes
+    (appariement ligne à ligne). Enregistre sur place ou vers output_path.
+    Renvoie le nombre de remplacements effectués.
+
+    update_fields :
+      "auto" (défaut) -> insère <w:updateFields/> UNIQUEMENT si l'édition rend une
+                         table des matières ou des renvois obsolètes (donc l'invite
+                         Word n'apparaît que dans ce cas). Sinon aucune invite.
+      True            -> force <w:updateFields/> (invite systématique).
+      False           -> ne l'insère jamais et retire un éventuel drapeau existant.
+    Dans tous les cas, un champ directement écrasé par le remplacement est figé en
+    texte statique, donc le texte remplacé reste remplacé.
     """
     doc = docx.Document(docx_path)
-    total = 0
-    for p in _resolve_locator_to_paragraphs(doc, locator):
-        total += _replace_in_wp(p, old_text, new_text)
+    paragraphs = _resolve_locator_to_paragraphs(doc, locator)
+    total, edited_paras = _apply_one_edit(paragraphs, old_text, new_text)
     if total > 0:
-        _ensure_update_fields(doc)
-        doc.save(output_path or docx_path)
+        _finalize_update_fields(doc, update_fields, edited_paras, output_path, docx_path)
     return total
+
+
+def _edit_anchor(edit):
+    """Première ligne (non vide de préférence) de old_text, servant d'ancre pour
+    l'analyse de chevauchement et l'ordonnancement."""
+    old = (edit.get("old") or "").replace("\r\n", "\n").replace("\r", "\n")
+    for line in old.split("\n"):
+        if line != "":
+            return line
+    return old
+
+
+def apply_docx_edits_batch(docx_path, edits, output_path=None, update_fields="auto"):
+    """
+    Applique PLUSIEURS éditions sur un même document, ouvert et sauvegardé une seule
+    fois, en résolvant autant que possible les conflits de chevauchement.
+
+    edits : liste de dicts {"locator", "old", "new"} (clés supplémentaires ignorées).
+
+    Stratégie, par locator :
+      - Les éditions sont appliquées de la plus INTERNE (ancre la plus courte) à la
+        plus EXTERNE. Cela compose correctement les éditions imbriquées : par ex.
+        « ajouter du texte dans lorem ipsum » puis « réécrire toute la phrase »
+        aboutissent toutes deux, quel que soit l'ordre d'envoi initial.
+      - Les doublons (même old + même new) ne sont appliqués qu'une fois.
+      - Une édition dont l'ancre existait au départ mais a été recouverte par une
+        autre édition (chevauchement partiel, cœur réécrit, même cible réécrite
+        différemment) est signalée « CONFLIT » — non résoluble automatiquement.
+      - Une édition dont l'ancre n'existait pas au départ est « ECHEC ».
+
+    Renvoie (results, total) où results est aligné sur `edits` :
+      {"index", "locator", "old", "new", "count", "status", "message"},
+      status ∈ {"OK", "CONFLIT", "ECHEC"}.
+    """
+    doc = docx.Document(docx_path)
+
+    results = [{"index": i, "locator": e.get("locator"),
+                "old": e.get("old"), "new": e.get("new"),
+                "count": 0, "status": "ECHEC",
+                "message": "Aucun remplacement (texte/locator non trouvé)"}
+               for i, e in enumerate(edits)]
+
+    # Regroupement par locator, en conservant l'ordre des lignes.
+    by_loc = {}
+    for i, e in enumerate(edits):
+        by_loc.setdefault(e.get("locator"), []).append(i)
+
+    all_edited = []
+
+    for locator, idxs in by_loc.items():
+        paragraphs = _resolve_locator_to_paragraphs(doc, locator)
+        if not paragraphs:
+            for i in idxs:
+                results[i]["status"] = "ECHEC"
+                results[i]["message"] = "Locator introuvable dans le document"
+            continue
+
+        # Texte d'ORIGINE de chaque paragraphe (figé AVANT toute édition du locator).
+        original_fulls = [_element_text(p) for p in paragraphs]
+
+        # Ancre présente au départ ? + longueur d'ancre (pour l'ordre) + doublons.
+        seen_pairs = {}
+        info = {}
+        for i in idxs:
+            e = edits[i]
+            anchor = _edit_anchor(e)
+            found = any(_find_spans(full, anchor) for full in original_fulls)
+            key = (e.get("old"), e.get("new"))
+            info[i] = {"found_orig": found,
+                       "anchor_len": len(anchor),
+                       "dup_of": seen_pairs.get(key)}
+            if key not in seen_pairs:
+                seen_pairs[key] = i
+                
+        # Spans "ancre" sur le texte d'ORIGINE, par paragraphe : sert à distinguer
+        # un VRAI conflit (deux éditions qui se recouvrent) d'un échec propre à une
+        # seule édition (bloc multi-paragraphes non remplaçable tel quel).
+        anchor_spans = {}
+        for i in idxs:
+            anchor = _edit_anchor(edits[i])
+            sp = []
+            for pj, full in enumerate(original_fulls):
+                for (s, e) in _find_spans(full, anchor):
+                    sp.append((pj, s, e))
+            anchor_spans[i] = sp
+
+        def _overlaps_other(i):
+            for (pj, s, e) in anchor_spans[i]:
+                for k in idxs:
+                    if k == i or info[k]["dup_of"] is not None:
+                        continue
+                    for (pj2, s2, e2) in anchor_spans[k]:
+                        if pj2 == pj and s < e2 and s2 < e:
+                            return True
+            return False
+
+        # Ordre d'application : ancre la plus courte (plus interne) d'abord, puis
+        # ordre d'apparition des lignes. Les doublons ne sont pas ré-appliqués.
+        to_apply = [i for i in idxs if info[i]["dup_of"] is None]
+        to_apply.sort(key=lambda i: (info[i]["anchor_len"], idxs.index(i)))
+
+        for i in to_apply:
+            e = edits[i]
+            cnt, edited = _apply_one_edit(paragraphs, e.get("old"), e.get("new"))
+            all_edited.extend(edited)
+            results[i]["count"] = cnt
+            if cnt > 0:
+                results[i]["status"] = "OK"
+                results[i]["message"] = f"{cnt} remplacement(s)"
+            elif not info[i]["found_orig"]:
+                results[i]["status"] = "ECHEC"
+                results[i]["message"] = "Aucun remplacement (texte/locator non trouvé)"
+            elif _overlaps_other(i):
+                results[i]["status"] = "CONFLIT"
+                results[i]["message"] = (
+                    "Ancre recouverte par une autre édition du même locator "
+                    "(chevauchement non résoluble automatiquement)")
+            else:
+                old = (e.get("old") or "").replace("\r\n", "\n").replace("\r", "\n")
+                new = (e.get("new") or "").replace("\r\n", "\n").replace("\r", "\n")
+                ol, nl = old.split("\n"), new.split("\n")
+                results[i]["status"] = "ECHEC"
+                if len(ol) >= 2 and len(nl) < len(ol):
+                    results[i]["message"] = (
+                        f"Réduction {len(ol)} -> {len(nl)} paragraphes non appliquée : "
+                        "bloc introuvable, ou les paragraphes d'origine n'ont pas tous "
+                        "le même style (réduction autorisée uniquement à style homogène).")
+                elif len(nl) > len(ol) >= 2:
+                    results[i]["message"] = (
+                        f"Expansion {len(ol)} -> {len(nl)} paragraphes : bloc de "
+                        "paragraphes consécutifs correspondant au 'old' introuvable.")
+                else:
+                    results[i]["message"] = ("Ancre présente mais non remplaçable "
+                                             "(structure du paragraphe / champ)")
+
+        # Report du statut sur les doublons.
+        for i in idxs:
+            d = info[i]["dup_of"]
+            if d is not None:
+                results[i]["status"] = results[d]["status"]
+                results[i]["count"] = 0
+                results[i]["message"] = "Doublon d'une édition identique (déjà appliquée)"
+
+    total = sum(r["count"] for r in results)
+    if total > 0:
+        _finalize_update_fields(doc, update_fields, all_edited, output_path, docx_path)
+    return results, total
 
 def extract_docx_objects(docx_path):
     """

@@ -11,7 +11,6 @@ import subprocess
 import shutil
 from json_repair import repair_json
 from pathlib import Path
-import hashlib
 
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
@@ -707,9 +706,12 @@ def generate_database_report(database_folder, model, max_page_interval=20, max_p
                     for topic in page_index:
                         pages = topic["pages"]
                         # TODO : try - except
-                        interval = pages.split("-")[0].strip() - pages.split("-")[1].strip()
-                        if interval > 15:
-                            infos["warnings"].append("Page interval > 15 for some topics. The LLM might struggle to explore the document entirely.")
+                        try:
+                            interval = pages.split("-")[0].strip() - pages.split("-")[1].strip()
+                            if interval > 15:
+                                infos["warnings"].append("Page interval > 15 for some topics. The LLM might struggle to explore the document entirely.")
+                        except Exception as e:
+                            infos["errors"].append(f"Page interval is in wrong format, errors might happen ! {e}")
 
     # TODO !
 

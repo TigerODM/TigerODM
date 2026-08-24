@@ -150,7 +150,7 @@ class OWDocumentGenerator(widget.OWWidget):
         metas_vars = [
             StringVariable("cible"),
             StringVariable("operation"),
-            StringVariable("statut"),      # "OK", "ECHEC" ou "IGNORE"
+            StringVariable("statut"),      # "OK", "CONFLIT", "ECHEC" ou "IGNORE"
             StringVariable("message"),
         ]
         domain = Domain([], metas=metas_vars)
@@ -592,11 +592,41 @@ class OWDocumentGenerator(widget.OWWidget):
             except Exception as e:
                 g["error"] = str(e)
 
-        # 3) Une tentative d'insertion PAR LIGNE d'entrée -> une ligne de statut par ligne.
+        # 3) Application par LOT (un ouvrage/sauvegarde par fichier de sortie), avec
+        #    résolution des conflits de chevauchement. Une ligne de statut par ligne
+        #    d'entrée, dans l'ordre d'origine.
         status_rows: List[Tuple[str, str, str, str]] = []
         errors = []
         total_replacements = 0
-        for rec in parsed:
+
+        # a) Rassembler les éditions valides par fichier de sortie (hors skip / erreur prépa).
+        edits_by_out: Dict[str, List[Tuple[int, dict]]] = {}
+        for pos, rec in enumerate(parsed):
+            if "skip" in rec:
+                continue
+            if groups.get(rec["out"], {}).get("error"):
+                continue
+            edits_by_out.setdefault(rec["out"], []).append((pos, rec))
+
+        # b) Un batch par fichier ; on mémorise le résultat par position de ligne.
+        result_by_pos: Dict[int, dict] = {}
+        for out_path, items in edits_by_out.items():
+            batch_edits = [{"locator": rec["locator"], "old": rec["old"], "new": rec["new"]}
+                           for _, rec in items]
+            try:
+                res, tot = process_documents.apply_docx_edits_batch(
+                    out_path, batch_edits, out_path
+                )
+                total_replacements += tot
+                for (pos, _), r in zip(items, res):
+                    result_by_pos[pos] = r
+            except Exception as e:
+                errors.append(f"{out_path} : {e}")
+                for pos, _ in items:
+                    result_by_pos[pos] = {"status": "ECHEC", "message": str(e), "count": 0}
+
+        # c) Émission du statut dans l'ordre des lignes d'entrée.
+        for pos, rec in enumerate(parsed):
             if "skip" in rec:
                 status_rows.append(("—", "locator", "IGNORE", rec["skip"]))
                 continue
@@ -604,28 +634,16 @@ class OWDocumentGenerator(widget.OWWidget):
             out_path = rec["out"]
             base = os.path.basename(out_path)
             cible = f"{base} @ {rec['locator']}"
-            g = groups.get(out_path, {})
 
-            # Échec de préparation (source absente / copie impossible) : commun au fichier.
+            g = groups.get(out_path, {})
             if g.get("error"):
                 errors.append(f"{out_path} : {g['error']}")
                 status_rows.append((cible, "locator", "ECHEC", g["error"]))
                 continue
 
-            try:
-                n = process_documents.apply_docx_edit(
-                    out_path, rec["locator"], rec["old"], rec["new"], out_path
-                )
-                total_replacements += n
-                if n > 0:
-                    status_rows.append((cible, "locator", "OK",
-                                        f"{n} remplacement(s)"))
-                else:
-                    status_rows.append((cible, "locator", "ECHEC",
-                                        "Aucun remplacement (texte/locator non trouvé)"))
-            except Exception as e:
-                errors.append(f"{out_path} : {e}")
-                status_rows.append((cible, "locator", "ECHEC", str(e)))
+            r = result_by_pos.get(pos, {"status": "ECHEC",
+                                        "message": "Résultat de traitement manquant"})
+            status_rows.append((cible, "locator", r["status"], r["message"]))
 
         if errors:
             self.error(" | ".join(errors))

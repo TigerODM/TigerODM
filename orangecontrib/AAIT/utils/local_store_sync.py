@@ -38,6 +38,7 @@ else:
 #ca renvoie le dernier chemin mais on sait que l on a besoin d une liste de fichier pour une fonction de generation de json
 file_mapping = {
     "Qwen Model Coder": os.path.join("Models", "NLP", "Qwen2.5.1-Coder-7B-Instruct-Q6_K.gguf"),
+    "Jina v5 nano": os.path.join("Models", "NLP", "jina-embeddings-v5-text-nano"),
     "MPNET BASE V2": os.path.join("Models", "NLP", "all-mpnet-base-v2"),
     "Cross encoder MiniLM L6": os.path.join("Models", "NLP", "cross-encoder_MiniLM-L6"),
     "Falcon 7B Model": os.path.join("Models", "NLP", "falcon3-7b-instruct-q6_k.gguf"),
@@ -56,7 +57,7 @@ file_mapping = {
     "Tokenizer - Qwen3 8B": os.path.join("Models", "NLP", "Tokenizer_Qwen3-8B"),
     "DinoV2":os.path.join("Models", "ComputerVision", "dinov2-base"),
     "ResNet50":os.path.join("Models","ComputerVision","resnet50","resnet50-0676ba61.pth"),
-    "Paddle OCR": ([os.path.join("Models", "ComputerVision", "PaddleOCR", "PP-OCRv5_server_det"), os.path.join("Models", "ComputerVision", "PaddleOCR", "latin_PP-OCRv5_mobile_rec")], os.path.join("Models", "ComputerVision", "PaddleOCR", "PP-OCRv5_server_det", "inference.yml")),
+    "Paddle OCR": ([ os.path.join("Models", "ComputerVision", "PaddleOCR", "latin_PP-OCRv5_mobile_rec"),os.path.join("Models", "ComputerVision", "PaddleOCR", "PP-OCRv5_server_det")], os.path.join("Models", "ComputerVision", "PaddleOCR", "PP-OCRv5_server_det", "inference.yml")),
     "Qwen3.5 9B Q6": ([os.path.join("Models","NLP","Qwen3.5-9B-GGUF","Qwen3.5-9B-Q6_K.gguf"),os.path.join("Models","NLP","Qwen3.5-9B-GGUF","mmproj-F16.gguf")],os.path.join("Models","NLP","Qwen3.5-9B-GGUF","Qwen3.5-9B-Q6_K.gguf")),
     # a verifier
     "Qwen3.5 4B Q4": ([os.path.join("Models","NLP","Qwen3.5-4B-GGUF","Qwen3.5-4B-Q4_K_M.gguf"),os.path.join("Models","NLP","Qwen3.5-4B-GGUF","mmproj-F16.gguf")],os.path.join("Models","NLP","Qwen3.5-4B-GGUF","Qwen3.5-4B-Q4_K_M.gguf")),

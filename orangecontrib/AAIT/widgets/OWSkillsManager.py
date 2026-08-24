@@ -10,7 +10,9 @@ from AnyQt.QtWidgets import (
     QPushButton,
     QDialog,
     QLabel,
+    QTextBrowser
 )
+from markdown import markdown
 
 import Orange.data
 from Orange.widgets import widget
@@ -35,36 +37,34 @@ class PromptSettingsDialog(QDialog):
     # Edit these to change what gets written into the description when a
     # template button is pressed.
     TEMPLATES = {
-        "Tool calling": """You have access to the following tools:
+        "Service calling": """# Services
+You have access to the following services.
 
-tool_1
+## Service_1
+### Description
+Describe what the service does and when to use it.
 
-Description:
-Describe what this tool does.
+### Parameters
+- param1: description.
+- param2: description.
 
-Arguments:
-- arg1 (type): description.
-- arg2 (type): description.
+## Service_2
+### Description
+Describe what the service does and when to use it.
 
+### Parameters
+- param1: description.
+- param2: description.
 
-tool_2
-
-Description:
-Describe what this tool does.
-
-Arguments:
-- arg1 (type): description.
-- arg2 (type): description.
-- arg3 (type, optional): description.
-
-When you decide to use a tool, use the following format:
+## How to use a service
+When you decide to use a service, use the following format:
 
 ```json
 {
-    "tool": "<tool_name>",
-    "arguments": {
-        "<arg1>": "...",
-        "<arg2>": "...",
+    "service": "<service_name>",
+    "parameters": {
+        "<param1>": "...",
+        "<param2>": "...",
         ...
     }
 }
@@ -87,16 +87,92 @@ When you decide to use a tool, use the following format:
 }
 ```
 """,
+
+        "Agent (VLM)": """# Context
+You are an AI assistant capable of solving tasks by performing actions.
+You have two independant ways to perform actions:
+
+1. Generate Python code
+2. Invoke a service
+
+After every action, you will receive the result before continuing.
+Never assume or predict the result of an action. Wait for the observation before deciding the next step.
+
+---
+
+# Python
+Generate Python code using the following format:
+
+```python
+<your_code>
+```
+
+The code is executed in a persistent Python environment: variables, imports, functions and files created during previous executions remain available.
+After execution, you will receive stdout and stderr.
+
+Use Python for tasks such as:
+
+- Manipulating files
+- Manipulating data
+- Performing calculations
+    
+---
+
+# Services
+When you decide to invoke a service, use the following format:
+
+```json
+{
+    "service": "<service_name>",
+    "parameters": {
+        "<param1>": "...",
+        "<param2>": "...",
+        ...
+    }
+}
+```
+
+You have access to the following services. Do not invent or invoke any other service. If another capability is needed, use Python instead.
+
+## VisionModel
+
+### Description
+VisionModel loads an image, analyses its visual content and answers your prompt.
+Invoke this service whenever information must be extracted from an image:
+
+- OCR
+- Extracting a date, an amount...
+- Identifying its type
+- Generating a description
+
+### Parameters
+- image_path: absolute path of an image file
+- prompt: instruction sent to the vision model
+
+---
+
+# Working method
+Solve the task step by step. At each step:
+
+1. Decide the next action.
+2. Perform exactly one action.
+3. Wait for the result.
+4. Continue.
+
+Once you have finished, briefly summarize what you did, then end your response with [DONE].
+Do not generate any additional Python code or invoke any service after completing the task.
+"""
     }
 
 
     TOOLTIPS = {
-        "Tool calling": "Guide the model to use one or more tools to complete the user's request.\nReplace the example tool names, arguments, and descriptions with your own.\n\nLeave the text inside curly braces ({ }) unchanged, as it defines the required JSON output format.",
+        "Service calling": "Guide the model to use one or more services to complete the user's request.\nReplace the example service names, parameters and descriptions with your own.\n\nLeave the text inside curly braces { } unchanged, as it defines the required JSON output format.",
         "Code generator": "Your model will generate Python code that can be executed to perform actions.\nYou can execute the generated code using the 'Execute Script' widget.",
-        "Formated answer": "This skill is ideal for extracting structured data from a document.\nReplace <fieldX> with the actual field names you want to extract.\nDo not modify <value>; it is a placeholder that the model will replace with the extracted value."
+        "Formated answer": "This skill is ideal for extracting structured data from a document.\nReplace <fieldX> with the actual field names you want to extract.\nDo not modify <value>; it is a placeholder that the model will replace with the extracted value.",
+        "Agent (VLM)": "Example of an agentic prompt to process files thanks to a Vision Language Model.\nBuild your workflow with a loop and 3 skill branches:\n- Python\n- Tool: VisionModel\n- Task finished: [DONE]."
     }
 
-    def __init__(self, parent=None, prompt_text="", parser_settings=None):
+    def __init__(self, parent=None, prompt_text=""):
         super().__init__(parent)
         self.setWindowTitle("Skill")
         self.resize(900, 650)
@@ -167,13 +243,6 @@ When you decide to use a tool, use the following format:
     def get_prompt_text(self):
         return self.prompt_edit.toPlainText()
 
-    def get_parser_settings(self):
-        # Parser/answer-parsing configuration has been replaced by template
-        # selection in this version. Kept as an empty list so the rest of the
-        # app's data model (entry["settings"], Outputs.settings) still works
-        # unchanged.
-        return []
-
 
 class OWSkillsManager(widget.OWWidget):
     name = "Agentic - Skills Manager"
@@ -186,6 +255,8 @@ class OWSkillsManager(widget.OWWidget):
     priority = 1060
 
     # Settings
+    request = Setting("")
+    index_selected_prompt = Setting(0)
     prompt_settings = Setting([])
 
     class Outputs:
@@ -226,8 +297,8 @@ class OWSkillsManager(widget.OWWidget):
 
         # Preview
         preview_layout = QVBoxLayout()
-        self.preview_text = QTextEdit()
-        self.preview_text.setReadOnly(True)
+        self.preview_text = QTextBrowser()
+        self.preview_text.setOpenExternalLinks(True)
         preview_layout.addWidget(self.preview_text)
         top_layout.addLayout(preview_layout, stretch=2)
 
@@ -250,6 +321,16 @@ class OWSkillsManager(widget.OWWidget):
         self.edit_button.clicked.connect(self.on_edit_prompt)
         button_layout.addWidget(self.edit_button)
 
+        self.export_button = QPushButton("Export")
+        self.export_button.setFixedWidth(60)
+        self.export_button.clicked.connect(self.on_export)
+        self.import_button = QPushButton("Import")
+        self.import_button.setFixedWidth(60)
+        self.import_button.clicked.connect(self.on_import)
+        button_layout.addStretch()
+        button_layout.addWidget(self.export_button)
+        button_layout.addWidget(self.import_button)
+
         top_layout.addLayout(button_layout, stretch=0)
 
         main_layout.addLayout(top_layout, stretch=1)
@@ -262,6 +343,7 @@ class OWSkillsManager(widget.OWWidget):
 
         self.request_edit = QTextEdit()
         self.request_edit.setPlaceholderText("Enter your request here...")
+        self.request_edit.setText(self.request)
         self.request_edit.setMaximumHeight(80)
         request_layout.addWidget(self.request_edit)
 
@@ -277,6 +359,17 @@ class OWSkillsManager(widget.OWWidget):
 
         main_layout.addLayout(bottom_layout)
 
+    def update_preview(self, text):
+        self.preview_text.setHtml(
+            markdown(
+                text,
+                extensions=[
+                    "fenced_code",
+                    "tables",
+                ],
+            )
+        )
+
     def load_prompts_from_settings(self):
         """Populate the list widget from previously saved prompt_settings.
 
@@ -284,14 +377,17 @@ class OWSkillsManager(widget.OWWidget):
         so a row index doubles as the index into self.prompt_settings.
         """
         for entry in self.prompt_settings:
-            name = entry.get("name") or self._make_item_label(entry.get("text", ""))
+            name = entry.get("name") or self._make_item_label(entry.get("description", ""))
             entry["name"] = name  # backfill for prompts saved before renaming existed
             item = self._make_list_item(name)
             self.prompt_list.addItem(item)
+        if self.prompt_settings:
+            self.prompt_list.setCurrentRow(self.index_selected_prompt)
 
     def on_prompt_selected(self, current, previous):
         entry = self._get_selected_entry()
-        self.preview_text.setPlainText(entry.get("text", "") if entry else "")
+        self.update_preview(entry.get("description", "") if entry else "")
+        self.index_selected_prompt = self.prompt_list.currentRow()
 
     def on_add_prompt(self):
         dialog = PromptSettingsDialog(self)
@@ -300,7 +396,7 @@ class OWSkillsManager(widget.OWWidget):
             if not prompt_text.strip():
                 return
             name = self._make_item_label(prompt_text)
-            entry = {"text": prompt_text, "settings": dialog.get_parser_settings(), "name": name}
+            entry = {"description": prompt_text, "name": name}
             self.prompt_settings.append(entry)
 
             item = self._make_list_item(name)
@@ -320,20 +416,18 @@ class OWSkillsManager(widget.OWWidget):
         entry = self.prompt_settings[row]
         dialog = PromptSettingsDialog(
             self,
-            prompt_text=entry.get("text", ""),
-            parser_settings=entry.get("settings", []),
+            prompt_text=entry.get("description", ""),
         )
         if dialog.exec() == QDialog.Accepted:
             updated_entry = {
-                "text": dialog.get_prompt_text(),
-                "settings": dialog.get_parser_settings(),
-                "name": entry.get("name", self._make_item_label(entry.get("text", ""))),
+                "description": dialog.get_prompt_text(),
+                "name": entry.get("name", self._make_item_label(entry.get("description", ""))),
             }
             self.prompt_settings[row] = updated_entry
             # Note: the displayed name/label is intentionally left untouched here -
             # it's now independently editable by double-clicking the list item.
             if row == self.prompt_list.currentRow():
-                self.preview_text.setPlainText(updated_entry["text"])
+                self.update_preview(updated_entry["description"])
 
     def on_prompt_renamed(self, item):
         """Called when the user finishes double-click-editing a list item's name."""
@@ -345,13 +439,63 @@ class OWSkillsManager(widget.OWWidget):
         if not new_name:
             # Don't allow an empty name - restore the previous one.
             new_name = self.prompt_settings[row].get("name") or self._make_item_label(
-                self.prompt_settings[row].get("text", "")
+                self.prompt_settings[row].get("description", "")
             )
             self.prompt_list.blockSignals(True)
             item.setText(new_name)
             self.prompt_list.blockSignals(False)
 
         self.prompt_settings[row]["name"] = new_name
+
+
+    def on_export(self):
+        self.warning("")
+        if not self.prompt_settings:
+            self.warning("Nothing to export")
+            return
+
+        rows = []
+        for row in self.prompt_settings:
+            name = row["name"]
+            prompt = row["description"]
+            rows.append([name, prompt])
+
+        import Orange.widgets.data.owsave as save_py
+        saver = save_py.OWSave()
+
+        var_name = Orange.data.StringVariable("skill")
+        var_prompt = Orange.data.StringVariable("description")
+        domain = Orange.data.Domain([], metas=[var_name, var_prompt])
+        table = Orange.data.Table.from_list(domain=domain, rows=rows)
+
+        saver.data = table
+        saver.save_file_as()
+
+
+    def on_import(self):
+        self.error("")
+
+        import Orange.widgets.data.owfile as file_py
+        loader = file_py.OWFile()
+        loader.browse_file()
+        data = loader.data
+
+        if not "skill" in data.domain:
+            self.error('You need a "skill" column in the imported file (name of the skill).')
+            return
+        if not "description" in data.domain:
+            self.error('You need a "description" column in the imported file (description of the skill).')
+            return
+
+        self.prompt_settings = []
+        for row in data:
+            name = row["skill"].value
+            description = row["description"].value
+            self.prompt_settings.append({"name": name, "description": description})
+
+        self.prompt_list.clear()
+        self.load_prompts_from_settings()
+
 
     @staticmethod
     def _make_list_item(name):
@@ -370,7 +514,7 @@ class OWSkillsManager(widget.OWWidget):
         return self.request_edit.toPlainText()
 
     def _get_selected_entry(self):
-        """Return the {"text": ..., "settings": [...], "name": ...} dict for the currently
+        """Return the {"description": ..., "name": ...} dict for the currently
         selected prompt, or None.
 
         Looks it up by row index in self.prompt_settings rather than storing the
@@ -383,13 +527,12 @@ class OWSkillsManager(widget.OWWidget):
             return self.prompt_settings[row]
         return None
 
-    def send_settings(self):
-        """Send the entire dict (text + parser settings) for the selected prompt."""
-        entry = self._get_selected_entry()
-        self.Outputs.settings.send(entry.get("settings", []) if entry else [])
-
     def send(self):
         """Send the selected prompt's text and its parser settings on separate outputs."""
+        # Save request in settings
+        self.request = self.get_request_text()
+
+        # Get the selected skill
         entry = self._get_selected_entry()
         if entry is None:
             self.Outputs.data.send(None)
@@ -400,11 +543,11 @@ class OWSkillsManager(widget.OWWidget):
         var2 = Orange.data.StringVariable("type")
         var3 = Orange.data.StringVariable("content")
         domain = Orange.data.Domain([], metas=[var1, var2, var3])
-        table = Orange.data.Table.from_list(domain, rows=[["system", "text", entry.get("text", "")],
+        table = Orange.data.Table.from_list(domain, rows=[["system", "text", entry.get("description", "")],
                                                           ["user", "text", self.get_request_text()]])
 
         self.Outputs.data.send(table)
-        self.Outputs.settings.send(entry.get("settings", []))
+
 
     def run(self):
         # Send Data / Settings

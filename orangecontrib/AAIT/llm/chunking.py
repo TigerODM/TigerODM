@@ -1,10 +1,9 @@
 import os
 import Orange
 from Orange.data import Domain, Table, StringVariable, ContinuousVariable
-from sentence_transformers import SentenceTransformer
 
 ### Chonkie
-from chonkie import TokenChunker, SentenceChunker, RecursiveChunker, SemanticChunker, LateChunker, CodeChunker
+from chonkie import TokenChunker, SentenceChunker, RecursiveChunker, LateChunker #, CodeChunker, SemanticChunker
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import wordchunker_deprecated
     from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
@@ -36,46 +35,47 @@ def create_chunks(table, column_name, tokenizer="character", chunk_size=300, chu
         Table: The table with added meta columns: "Chunks", "Chunks size", and "Metadata".
     """
 
-    model_name = os.path.basename(tokenizer.name_or_path) if hasattr(tokenizer, "name_or_path") else "character"
+    if hasattr(tokenizer, "name_or_path"):
+        model_name = os.path.basename(tokenizer.name_or_path)
+    elif hasattr(tokenizer, "model_name_or_path"):
+        model_name = os.path.basename(tokenizer.model_name_or_path)
+    else:
+        model_name = "character"
 
     # Définir la fonction de chunking selon le mode
     if mode == "tokens":
         chunker = TokenChunker(tokenizer=tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    elif mode == "words":
-        try:
-            path_ugly= get_path_or_retrieve("MPNET BASE V2")
-        except Exception as e:
-            raise ValueError(str(e))
 
-        tokenizer = SentenceTransformer(path_ugly, device="cpu")
+    elif mode == "words":
         model_name = "MPNET"
         chunker = wordchunker_deprecated.WordChunker(tokenizer=tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
     elif mode == "sentence":
-        chunker = SentenceChunker(tokenizer=tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-                                  min_sentences_per_chunk=1)
+        chunker = SentenceChunker(tokenizer=tokenizer, chunk_size=chunk_size, chunk_overlap=chunk_overlap, min_sentences_per_chunk=1)
+
     elif mode == "markdown":
         markdown_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/markdown_recipe.json")
-        chunker = RecursiveChunker.from_recipe(path=markdown_path,
-                                               tokenizer=tokenizer,
-                                               chunk_size=chunk_size,
-                                               min_characters_per_chunk=1)
+        chunker = RecursiveChunker.from_recipe(path=markdown_path, tokenizer=tokenizer, chunk_size=chunk_size, min_characters_per_chunk=1)
 
     # TODO : Ajouter la gestion des paramètres dans le .ui
     # Nécessite des "rules" pour faire un chunking différent de Token ou Sentence
     elif mode == "Recursive":
         chunker = RecursiveChunker(tokenizer=tokenizer, chunk_size=chunk_size, min_characters_per_chunk=24)
+
     # À tester avant d'ajouter la fonctionnalité dans l'UI
     # Model d'embeddings REQUIS !
     elif mode == "Semantic":
         chunker = SemanticChunker(embedding_model=tokenizer, threshold=0.7, chunk_size=chunk_size, similarity_window=3)
-    # À tester avant d'ajouter la fonctionnalité dans l'UI
+
     # Model d'embeddings REQUIS !
-    elif mode == "Late":
+    elif mode == "late":
         chunker = LateChunker(embedding_model=tokenizer, chunk_size=chunk_size, min_characters_per_chunk=24)
+
     elif mode == "Code":
         chunker = CodeChunker("blabla")
+
     else:
-        raise ValueError(f"Invalid mode: {mode}. Valid modes are: Token, Sentence, Recursive, Markdown")
+        raise ValueError(f"Invalid mode: {mode}. Valid modes are: Token, Sentence, Recursive, Markdown, Late")
 
     new_metas = list(table.domain.metas) + [StringVariable("Chunks"),
                                             ContinuousVariable("Chunks size"),
