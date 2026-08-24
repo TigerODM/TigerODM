@@ -18,6 +18,7 @@ import argparse
 import platform
 import subprocess
 import io, base64, zipfile
+import re
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert, hlit_workflow_management, management_workflow_sans_api
@@ -231,9 +232,7 @@ def get_worklow_id_list(key_name, api_key: str = Depends(get_api_key)):
 
     try:
         print(f"workflow_path : {workflow_path}")
-        # Simule ici une extraction typique (à adapter selon ton contexte réel)
         json_result = extract_property_ows.extract_property_for_hlit(workflow_path)
-
 
         if json_result is None:
             return JSONResponse(
@@ -280,9 +279,7 @@ def get_worklow_expected_input_output(key_name, api_key: str = Depends(get_api_k
 
     try:
         print(f"workflow_path : {workflow_path}")
-        # Simule ici une extraction typique (à adapter selon ton contexte réel)
         json_result = extract_property_ows.get_workflow_input_output_from_ows_file(workflow_path)
-
 
         if json_result is None:
             return JSONResponse(
@@ -348,7 +345,6 @@ def _process_workflow_input(input_data, upload_files=None, files_num_input=1):
     """Logique commune JSON + multipart. upload_files = liste de Starlette UploadFile (ou None)."""
     data_config = []
 
-    # check if ODM finished to load
     if input_data.get("workflow_id") is None:
         return JSONResponse(
             status_code=404,
@@ -369,7 +365,6 @@ def _process_workflow_input(input_data, upload_files=None, files_num_input=1):
             )
         liste_input_num_input.append(data["num_input"])
 
-    # num_input des fichiers (vient de metadata, pas du nom)
     if upload_files:
         liste_input_num_input.append(files_num_input)
 
@@ -537,7 +532,6 @@ def old_process_workflow_input(input_data, upload_files=None, files_num_input=1)
             )
         liste_input_num_input.append(data["num_input"])
 
-    # Si fichiers uploadés, on ajoute leurs num_input
     if upload_files:
         for i in range(files_num_input):
             liste_input_num_input.append(i)
@@ -572,7 +566,6 @@ def old_process_workflow_input(input_data, upload_files=None, files_num_input=1)
             content={"_message": "The workflow is already running"}
         )
 
-    # Ancienne logique JSON -> .tab
     for key, data in enumerate(input_data["data"]):
         table = convert.convert_json_to_orange_data_table(data)
 
@@ -598,7 +591,6 @@ def old_process_workflow_input(input_data, upload_files=None, files_num_input=1)
             "path": filename
         })
 
-    # Nouvelle logique fichiers uploadés
     if upload_files:
         for i, file in enumerate(upload_files):
             filename = file.filename
@@ -642,7 +634,6 @@ def read_root(workflow_id, api_key: str = Depends(get_api_key)):
             status_code=404,
             content={"_message": "Error no folder found"}
         )
-    ## on check si le timeout est défini et s'il est atteint
     if 0 != hlit_workflow_management.check_if_timout_is_reached(chemin_dossier):
         return JSONResponse(
             status_code=404,
@@ -662,7 +653,6 @@ def read_root(workflow_id, api_key: str = Depends(get_api_key)):
                 status_code=202,
                 content={"_message": "Your data are still being processed.", "_statut": None, "_result": None}
             )
-    # je ne comprend pas pourquoi ce n'est pas pris en compte avant je le rajoute ici par protection
     if not os.path.exists(chemin_dossier + ".out_ok"):
         return JSONResponse(
             status_code=202,
@@ -743,21 +733,167 @@ def chat(workflow_id, api_key: str = Depends(get_api_key)):
         os.remove(chemin_dossier + "chat_output.txt")
     return StreamingResponse(hlit_workflow_management.stream_tokens_from_file(chemin_dossier), media_type="text/event-stream")
 
+
+def _find_pid_in_value(value):
+    if isinstance(value, dict):
+        for key in ("pid", "process_id", "processId", "PID"):
+            if key in value:
+                try:
+                    return int(value[key])
+                except (TypeError, ValueError):
+                    pass
+        for child in value.values():
+            pid = _find_pid_in_value(child)
+            if pid is not None:
+                return pid
+    elif isinstance(value, list):
+        for child in value:
+            pid = _find_pid_in_value(child)
+            if pid is not None:
+                return pid
+    return None
+
+
+def _read_process_pid(process_file):
+    """
+    Lit le PID dans le fichier administratif du workflow.
+    Compatible avec un fichier JSON ou un fichier texte contenant un PID.
+    """
+    if platform.system() != "Darwin" or not os.path.exists(process_file):
+        return None
+
+    try:
+        with open(process_file, "r", encoding="utf-8") as file:
+            content = file.read().strip()
+    except Exception as e:
+        print(f"[TERMINAL] Impossible de lire le fichier processus : {e}")
+        return None
+
+    if not content:
+        return None
+
+    try:
+        pid = _find_pid_in_value(json.loads(content))
+        if pid is not None:
+            return pid
+    except Exception:
+        pass
+
+    match = re.search(r"(?<!\d)(\d{2,})(?!\d)", content)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+
+    return None
+
+
+def _get_process_tty(pid):
+    """
+    Retourne le TTY du processus avant qu'il soit tué.
+    Exemple : /dev/ttys003
+    """
+    if platform.system() != "Darwin" or pid is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "tty=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        tty_name = result.stdout.strip()
+
+        if not tty_name or tty_name in ("??", "?"):
+            return None
+
+        if not tty_name.startswith("/dev/"):
+            tty_name = "/dev/" + tty_name
+
+        return tty_name
+    except Exception as e:
+        print(f"[TERMINAL] Impossible de récupérer le TTY du PID {pid} : {e}")
+        return None
+
+
+def _close_terminal_for_tty(tty_path):
+    """
+    Ferme uniquement la fenêtre ou l'onglet Terminal correspondant au TTY.
+    La fenêtre du serveur Uvicorn n'est pas touchée si elle utilise un autre TTY.
+    """
+    if platform.system() != "Darwin" or not tty_path:
+        return False
+
+    tty_name = os.path.basename(tty_path)
+    full_tty = "/dev/" + tty_name
+
+    script = f'''
+    tell application "Terminal"
+        repeat with w in windows
+            repeat with t in tabs of w
+                try
+                    set currentTTY to tty of t
+                    if currentTTY is "{full_tty}" or currentTTY is "{tty_name}" then
+                        if (count of tabs of w) is 1 then
+                            close w
+                        else
+                            close t
+                        end if
+                        return true
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+    return false
+    '''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode != 0:
+            print(f"[TERMINAL] AppleScript error : {result.stderr.strip()}")
+            return False
+        return result.stdout.strip().lower() == "true"
+    except Exception as e:
+        print(f"[TERMINAL] Impossible de fermer le Terminal {tty_path} : {e}")
+        return False
+
+
 @app.get("/kill-process/{key_name}", summary="Kill process", description="On passe la key name pour savoir si un process est en cours, si c'est le cas on le kill")
 def kill_process(key_name, api_key: str = Depends(get_api_key)):
     chemin_dossier = MetManagement.get_api_local_folder_admin()
     chemin_dossier = chemin_dossier + key_name + ".txt"
-    message = hlit_workflow_management.kill_process(chemin_dossier,
-                 "python.exe")
+
+    process_pid = _read_process_pid(chemin_dossier)
+    process_tty = _get_process_tty(process_pid)
+
+    process_name = "python.exe" if platform.system() == "Windows" else "python3"
+    message = hlit_workflow_management.kill_process(
+        chemin_dossier,
+        process_name
+    )
+
     MetManagement.reset_files([chemin_dossier])
-    # si erreur pas grave
+
     if 0!=hlit_workflow_management.purge_worklow_input_id_list_from_keyname(key_name):
         pass
+
+    if process_tty:
+        time.sleep(0.4)
+        _close_terminal_for_tty(process_tty)
 
     return JSONResponse(
         status_code=200,
         content={"_statut": message}
     )
+
 @app.get("/kill-daemon/{key_name}", include_in_schema=False,summary="Kill daemon and associated process", description="On passe la key name pour savoir si un process est en cours, si c'est le cas on le kill")
 def kill_daemon(key_name, api_key: str = Depends(get_api_key)):
     chemin_dossier = MetManagement.get_api_local_folder_admin()
@@ -785,11 +921,9 @@ def kill_all_process_and_daemon(api_key: str = Depends(get_api_key)):
                 MetManagement.reset_files([chemin_dossier + f])
 
     chemin_dossier_api =MetManagement.get_api_local_folder()
-    # reset le dossier exchangeApi
     if os.path.exists(chemin_dossier_api):
         MetManagement.reset_folder(chemin_dossier_api, recreate=False)
 
-    # reset le dossier exchangeApiadm
     if os.path.exists(chemin_dossier):
         MetManagement.reset_folder(chemin_dossier, recreate=False)
 
@@ -857,7 +991,6 @@ def load_config_serveur(config_file="uvicorn.json"):
     global API_KEYS, SECURED_PATHS
     auth_required = True  # Mets False ici si tu veux désactiver la clé API
 
-    # on va lire le fichier config serveur
     data = hlit_workflow_management.lire_config_serveur(config_file)
 
     if data:
@@ -867,7 +1000,6 @@ def load_config_serveur(config_file="uvicorn.json"):
     else:
         API_KEYS = []
         SECURED_PATHS = []
-    # Variable d’environnement pour la logique
     os.environ["REQUIRE_AUTH"] = "true" if auth_required else "false"
 
 if __name__ == "__main__":
@@ -883,13 +1015,10 @@ if __name__ == "__main__":
         system = platform.system()
 
         if system == "Windows":
-            # Ferme la fenêtre du terminal (cmd.exe) en tuant le processus parent
             parent_pid = os.getppid()
             subprocess.Popen(f"taskkill /PID {parent_pid} /F", shell=True)
 
-
         elif system == "Darwin":
-            # AppleScript pour fermer la fenêtre Terminal
             script = '''
             tell application "Terminal"
                 if (count of window) > 0 then
