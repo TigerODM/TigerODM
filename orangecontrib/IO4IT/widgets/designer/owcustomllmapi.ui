@@ -1,0 +1,364 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>700</width>
+    <height>680</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <widget class="QLabel" name="Description">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>10</y>
+     <width>661</width>
+     <height>31</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Calls a company-internal /chat/completions API, using the widely adopted chat-completions message format, on the &quot;prompt&quot; column of the input data. Add an &quot;image paths&quot; column to send images to vision-capable models.</string>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="groupConnection">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>50</y>
+     <width>661</width>
+     <height>281</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Connection</string>
+   </property>
+   <widget class="QLabel" name="labelBaseUrl">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>30</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Base URL :</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineBaseUrl">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>26</y>
+      <width>491</width>
+      <height>29</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelRoute">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>66</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Route :</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineRoute">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>62</y>
+      <width>491</width>
+      <height>29</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelHeaderName">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>102</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Auth header name :</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineHeaderName">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>98</y>
+      <width>200</width>
+      <height>29</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelAuthScheme">
+    <property name="geometry">
+     <rect>
+      <x>360</x>
+      <y>102</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Prefix :</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineAuthScheme">
+    <property name="geometry">
+     <rect>
+      <x>441</x>
+      <y>98</y>
+      <width>200</width>
+      <height>29</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelApiKey">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>138</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>API key :</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineApiKey">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>134</y>
+      <width>491</width>
+      <height>29</height>
+     </rect>
+    </property>
+    <property name="echoMode">
+     <enum>QLineEdit::Password</enum>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelCertPath">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>174</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>.pem file :</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineCertPath">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>170</y>
+      <width>410</width>
+      <height>29</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="buttonBrowseCert">
+    <property name="geometry">
+     <rect>
+      <x>566</x>
+      <y>170</y>
+      <width>75</width>
+      <height>29</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Browse</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkCertIsCa">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>204</y>
+      <width>491</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Use .pem as server CA verification instead of client certificate</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkUseProxy">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>240</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Leave the field empty to force a direct connection (no proxy), instead of inheriting Orange's configured proxy.</string>
+    </property>
+    <property name="text">
+     <string>Use proxy</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineProxyUrl">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>236</y>
+      <width>491</width>
+      <height>29</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Leave empty to force a direct connection (no proxy), instead of inheriting Orange's configured proxy.</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="groupModel">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>340</y>
+     <width>661</width>
+     <height>121</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Model parameters</string>
+   </property>
+   <widget class="QLabel" name="labelModel">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>30</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Model :</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineModel">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>26</y>
+      <width>491</width>
+      <height>29</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelMaxTokens">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>66</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Max tokens :</string>
+    </property>
+   </widget>
+   <widget class="QSpinBox" name="boxMaxTokens">
+    <property name="geometry">
+     <rect>
+      <x>150</x>
+      <y>62</y>
+      <width>150</width>
+      <height>29</height>
+     </rect>
+    </property>
+    <property name="minimum">
+     <number>1</number>
+    </property>
+    <property name="maximum">
+     <number>1000000</number>
+    </property>
+   </widget>
+   <widget class="QLabel" name="labelTemperature">
+    <property name="geometry">
+     <rect>
+      <x>360</x>
+      <y>66</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Temperature :</string>
+    </property>
+   </widget>
+   <widget class="QDoubleSpinBox" name="boxTemperature">
+    <property name="geometry">
+     <rect>
+      <x>441</x>
+      <y>62</y>
+      <width>200</width>
+      <height>29</height>
+     </rect>
+    </property>
+    <property name="minimum">
+     <double>0.000000000000000</double>
+    </property>
+    <property name="maximum">
+     <double>2.000000000000000</double>
+    </property>
+    <property name="singleStep">
+     <double>0.100000000000000</double>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QPushButton" name="pushButtonRun">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>472</y>
+     <width>661</width>
+     <height>31</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Run</string>
+   </property>
+  </widget>
+  <widget class="QTextBrowser" name="textBrowser">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>512</y>
+     <width>661</width>
+     <height>151</height>
+    </rect>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

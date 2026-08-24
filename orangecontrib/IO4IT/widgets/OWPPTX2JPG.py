@@ -7,31 +7,43 @@ from Orange.data import Domain, StringVariable, Table, DiscreteVariable
 from Orange.widgets.settings import Setting
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from Orange.widgets.orangecontrib.IO4IT.utils import pptx2jpg
+    from Orange.widgets.orangecontrib.IO4IT.utils import file2images
     from Orange.widgets.orangecontrib.AAIT.utils.thread_management import Thread
     from Orange.widgets.orangecontrib.AAIT.utils import  base_widget
 else:
-    from orangecontrib.IO4IT.utils import pptx2jpg
+    from orangecontrib.IO4IT.utils import file2images
     from orangecontrib.AAIT.utils.thread_management import Thread
     from orangecontrib.AAIT.utils import  base_widget
-
+def _find_var(domain, name):
+    """Retourne la variable de nom `name` si elle existe dans le domaine, sinon None."""
+    if not name:
+        return None
+    try:
+        return domain[name]
+    except (KeyError, ValueError):
+        return None
 class OWPPTX2JPG(base_widget.BaseListWidget):
-    name = "PPTX to Images"
-    description = "Convertit les présentations PowerPoint en images JPG."
-    icon = "icons/pptx2jpg.png"
+    name = "PPTX/PDF to Images"
+    description = "Convertit les fichiers PowerPoint et PDF en images JPG."
+    icon = "icons/file2images.png"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-        icon = "icons_dev/pptx2jpg.png"
-    gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owpptx2jpg.ui")
+        icon = "icons_dev/file2images.png"
+    gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owfile2images.ui")
     want_control_area = False
     category = "AAIT - TOOLBOX"
     priority = 10000
 
     selected_column_name = Setting("path")
 
+    output_column_name = Setting("output_folder")
+    pages_column_name = Setting("pages")
+    output_ext = Setting("jpg")
+    output_dpi = Setting(150)
+
     auto_send = Setting(False)
     create_unique_folder = Setting(False)
     status_update_signal = pyqtSignal(list)
-
+    SUPPORTED_EXT = (".pptx", ".pdf")
     class Inputs:
         data = Input("Files Table", Table)
 
@@ -63,6 +75,20 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
             self.checkBox_multiple_folders.setChecked(self.create_unique_folder)
             self.checkBox_multiple_folders.toggled.connect(self._update_create_unique_folder_setting)
 
+        # Sélecteur de format de sortie (jpg / png / tif). Optionnel : si le combo
+        # n'existe pas dans le .ui, on garde la valeur par défaut du Setting ("jpg").
+        if hasattr(self, "comboBox_ext"):
+            idx = self.comboBox_ext.findText(self.output_ext)
+            if idx >= 0:
+                self.comboBox_ext.setCurrentIndex(idx)
+            self.comboBox_ext.currentTextChanged.connect(self._update_output_ext_setting)
+
+        # Sélecteur de résolution (DPI). Optionnel : si le spinbox n'existe
+        # pas dans le .ui, on garde la valeur par défaut du Setting (150).
+        if hasattr(self, "spinBox_dpi"):
+            self.spinBox_dpi.setValue(self.output_dpi)
+            self.spinBox_dpi.valueChanged.connect(self._update_output_dpi_setting)
+
         if hasattr(self, "pushButton_send"):
             self.pushButton_send.clicked.connect(self.run)
 
@@ -74,6 +100,12 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
     def _update_create_unique_folder_setting(self, checked):
         self.create_unique_folder = checked
 
+    def _update_output_ext_setting(self, text):
+        self.output_ext = text.strip().lower()
+
+    def _update_output_dpi_setting(self, value):
+        self.output_dpi = int(value)
+
     def run(self):
         self.error("")
         self.warning("")
@@ -83,34 +115,52 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
 
         if self.data is None:
             self.Outputs.data.send(None)
-            self.Outputs.status_data.send(None) 
+            self.Outputs.status_data.send(None)
             return
-        
-        col_name = self.selected_column_name  # ← colonne choisie par l'utilisateur
-        try:
-            attr = self.data.domain[col_name]
-            col_idx = self.data.domain.index(attr)
-        except (KeyError, ValueError):
-            self.error(f"Column '{col_name}' not found in input data.")
+
+        domain = self.data.domain
+
+        # --- Colonne fichier (obligatoire) ---
+        file_attr = _find_var(domain, self.selected_column_name)
+        if file_attr is None:
+            self.error(f"Column '{self.selected_column_name}' not found in input data.")
             self.Outputs.data.send(None)
-            self.Outputs.status_data.send(None) 
+            self.Outputs.status_data.send(None)
             return
 
-        pptx_files = [str(row[col_idx]) for row in self.data if str(row[col_idx]).lower().endswith(".pptx")]
-        
-        if not pptx_files:
+        # --- Colonnes optionnelles ---
+        out_attr = _find_var(domain, self.output_column_name)     # dossier de sortie
+        pages_attr = _find_var(domain, self.pages_column_name)    # pages/slides
+
+        if out_attr is None:
+            self.warning(f"Colonne dossier '{self.output_column_name}' absente : "
+                         f"dossier de sortie calculé automatiquement.")
+
+        # --- Construction des tâches : (fichier, dossier_sortie, pages) ---
+        jobs = []
+        for row in self.data:
+            f = str(row[file_attr]).strip()
+            if not f.lower().endswith(self.SUPPORTED_EXT):
+                continue
+            out_dir = str(row[out_attr]).strip() if out_attr is not None else ""
+            pages = str(row[pages_attr]).strip() if pages_attr is not None else "all"
+            jobs.append((f, out_dir or None, pages or "all"))
+
+        # Dédoublonnage : on ne convertit pas deux fois une tâche identique
+        jobs = list(dict.fromkeys(jobs))
+
+        if not jobs:
             self.Outputs.data.send(None)
-            self.Outputs.status_data.send(None) 
+            self.Outputs.status_data.send(None)
             return
 
-        self.processed_statuses = {}        
-
+        self.processed_statuses = {}
         self.progressBarInit()
 
         unique_folder = self.create_unique_folder
-
-        self.thread = Thread(self._convert_and_build_table, pptx_files, unique_folder)
-
+        out_ext = self.output_ext
+        dpi = self.output_dpi
+        self.thread = Thread(self._convert_and_build_table, jobs, unique_folder, out_ext, dpi)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
@@ -135,7 +185,7 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
             }
 
             status_domain = Domain([], metas=[
-                StringVariable("input_pptx"),
+                StringVariable("input_file"),
                 DiscreteVariable("status", values=["ok", "nok"]),
                 StringVariable("message"),
             ])
@@ -151,36 +201,48 @@ class OWPPTX2JPG(base_widget.BaseListWidget):
 
     def handle_finish(self):
         """Nettoyage final une fois le thread terminé"""
-        print("PPTX Conversion finished")
+        print("File Conversion finished")
         self.progressBarFinished()
 
-    def _convert_and_build_table(self, files, unique_folder, progress_callback):
+    def _convert_and_build_table(self, jobs, unique_folder, out_ext, dpi, progress_callback):
         results = []
-        for i, f in enumerate(files):
+        total = len(jobs)
+        for i, (f, out_dir, pages) in enumerate(jobs):
             self.status_update_signal.emit([f, "in_progress", "Processing..."])
             try:
-                # ✅ unique_folder transmis à la fonction de conversion
-                res = pptx2jpg.process_one_pptx(f, unique_folder=unique_folder)
+                res = file2images.process_one_file(
+                    f,
+                    out_dir_str=out_dir,
+                    pages=pages,
+                    out_ext=out_ext,
+                    dpi=dpi,
+                    unique_folder=unique_folder,
+                )
                 results.append(res)
                 self.status_update_signal.emit([res[0], res[2], res[4]])
             except Exception as e:
+                results.append([f, "", "nok", "0.0", str(e)])
                 self.status_update_signal.emit([f, "nok", str(e)])
-            
-            progress_callback((i + 1) / len(files) * 100)
-        
+
+            progress_callback((i + 1) / total * 100)
+
         # Build fresh img_rows — no accumulation from previous runs
-        seen = set()  # ✅ Deduplicate in case of reruns
+        seen = set()  # Deduplicate in case of reruns
         img_rows = []
         for res in results:
             if res[2] == "ok":
                 for img in str(res[1]).split("|"):
                     img = img.strip()
-                    if img and img not in seen:  # ✅ Skip duplicates
+                    if img and img not in seen:
                         seen.add(img)
                         img_rows.append([res[0], img])
 
-        out_domain = Domain([], metas=[StringVariable("original_pptx_path"), StringVariable("image_slide_path")])
+        out_domain = Domain([], metas=[
+            StringVariable("original_file_path"),
+            StringVariable("image_slide_path"),
+        ])
         return Table.from_list(out_domain, img_rows)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

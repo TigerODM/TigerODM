@@ -197,6 +197,60 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
             self.pushButton_run.setEnabled(True)
         self.progressBarFinished()
         print("Excel insertion process finished")
+    # --- Mise en forme des lignes ajoutées ---
+    def _extend_formatting(self, excel, ws, start_r, start_c, last_r, last_c, header_offset=0):
+        """Prolonge la mise en forme sur les lignes ajoutees apres une insertion en bloc.
+
+        - Si la zone ecrite touche un tableau Excel (ListObject) -> on redimensionne
+          le tableau : le style, les bordures et les bandes se reappliquent seuls.
+        - Sinon -> on recopie le format de la 1re ligne de DONNEES sur les lignes suivantes.
+
+        IMPORTANT - contrat sur les couleurs explicites :
+        cette methode ne touche QUE la couche "style" (style de tableau ou format
+        recopie). Elle n'ecrit aucune valeur et ne pose aucune couleur explicite.
+        Les couleurs %!color!% sont appliquees APRES cet appel, dans la boucle de
+        couleurs : un remplissage pose explicitement sur une cellule passe toujours
+        par-dessus le style de tableau, donc il n'est jamais ecrase. Ne jamais
+        deplacer cet appel APRES la boucle de couleurs, sous peine d'ecraser
+        justement ces couleurs.
+
+        header_offset : 1 si une ligne d'en-tete a ete ecrite (include_headers), sinon 0.
+        """
+        XL_PASTE_FORMATS = -4122  # xlPasteFormats
+        try:
+            # 1) La zone commence-t-elle dans un tableau (ou juste en dessous) ?
+            target_lo = None
+            for lo in ws.ListObjects:
+                r0 = lo.Range.Row                       # ligne d'en-tete du tableau
+                c0 = lo.Range.Column
+                c1 = c0 + lo.ListColumns.Count - 1
+                r_last = lo.Range.Row + lo.Range.Rows.Count - 1
+                if c0 <= start_c <= c1 and (r0 < start_r <= r_last + 1):
+                    target_lo = lo
+                    break
+
+            if target_lo is not None:
+                r0 = target_lo.Range.Row
+                c0 = target_lo.Range.Column
+                c1 = c0 + target_lo.ListColumns.Count - 1
+                cur_last = target_lo.Range.Row + target_lo.Range.Rows.Count - 1
+                new_last = max(last_r, cur_last)
+                new_range = ws.Range(ws.Cells(r0, c0), ws.Cells(new_last, c1))
+                target_lo.Resize(new_range)   # <-- reapplique tout le style du tableau
+                return
+
+            # 2) Pas de tableau : on propage le format de la 1re ligne de DONNEES
+            #    (on saute la ligne d'en-tete si include_headers, pour ne pas
+            #     recopier le format d'en-tete sur le corps du tableau).
+            first_data_r = start_r + header_offset
+            if last_r > first_data_r:
+                src = ws.Range(ws.Cells(first_data_r, start_c), ws.Cells(first_data_r, last_c))
+                dst = ws.Range(ws.Cells(first_data_r, start_c), ws.Cells(last_r, last_c))
+                src.Copy()
+                dst.PasteSpecial(Paste=XL_PASTE_FORMATS)  # formats uniquement, pas les valeurs
+                excel.CutCopyMode = False
+        except Exception as e:
+            print(f"[Excel] mise en forme non prolongee : {e}")
 
     # --- Thread Logic ---
     def _run_logic_com(self, params_df, df, create_sheet, include_headers, progress_callback):
@@ -292,8 +346,15 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
                     target_range = ws.Range(ws.Cells(start_r, start_c), ws.Cells(last_r, last_c))
                     target_range.Value = data_matrix
 
-                    # 3. Application des couleurs cellule par cellule si un préfixe %!color!% est détecté
                     header_offset = 1 if include_headers else 0
+                    
+                    # 2bis. On prolonge la mise en forme (redimensionne le tableau si besoin).
+                    #       Doit rester AVANT la boucle de couleurs : les couleurs
+                    #       explicites %!color!% sont posees ensuite et restent prioritaires.
+                    self._extend_formatting(excel, ws, start_r, start_c, last_r, last_c, header_offset)
+
+                    # 3. Couleurs explicites cellule par cellule (prefixe %!color!%).
+                    #    Appliquees APRES l'extension -> prioritaires sur le style de tableau.
                     for r_idx, row_data in enumerate(data_matrix[header_offset:], start=header_offset):
                         for c_idx, cell_value in enumerate(row_data):
                             clean_value, hex_bg = self.parse_color_prefix(str(cell_value))
