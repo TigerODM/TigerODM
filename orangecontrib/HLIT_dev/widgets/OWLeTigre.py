@@ -500,6 +500,12 @@ class OWLeTigre(widget.OWWidget):
             self.signal_label_update.emit(self.label_folder, "Nom du dossier")
             return
         # Check if the data table contains the required column
+        if "Error" in data.domain:
+            error_msg = data[0]["Error"].value
+            self.error(error_msg)
+            self.signal_label_update.emit(self.label_freeText, error_msg)
+            self.signal_label_update.emit(self.label_folder, "Nom du dossier")
+            return
         required_columns = ["path"]
         if not all(col in data.domain for col in required_columns):
             self.error('Cannot display the selected folder, the following column is needed in the result: "path".')
@@ -899,11 +905,13 @@ class OWLeTigre(widget.OWWidget):
 
         elif tag == "assistant":
             # Thinking
-            if "<think>" in content:
+            if "<think>" in content or "<|channel>thought" in content:
                 self.current_thinking_card = ThinkingMessageCard()
                 self.add_message_card(self.current_thinking_card)
-                parts = content.split("<think>", 1)
-                after_think = parts[1].lstrip()
+                if "<think>" in content:
+                    after_think = content.split("<think>", 1)[1].lstrip()
+                else:  # "<|channel>thought" in content
+                    after_think = content.split("<|channel>thought", 1)[1].lstrip()
                 if after_think:
                     self.current_thinking_card.addText(after_think)
                 return
