@@ -6,6 +6,7 @@ import traceback
 import Orange
 from Orange.data import StringVariable
 from Orange.widgets import widget
+from Orange.widgets.settings import Setting
 from Orange.widgets.widget import Input, Output
 from AnyQt.QtWidgets import QMessageBox, QApplication
 
@@ -14,6 +15,7 @@ from docx.shared import Pt as pt_docx
 from pptx import Presentation
 from pptx.util import Inches, Pt
 import pypandoc
+from docx2pdf import convert
 
 # Chargement UI
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
@@ -34,6 +36,12 @@ class OWExportMarkdown(widget.OWWidget):
     priority = 9999
     category = "AAIT - TOOLBOX"
 
+    # Par défaut : toutes les extensions sont sélectionnées
+    export_pdf = Setting(True)
+    export_docx = Setting(True)
+    export_pptx = Setting(True)
+    auto_send = Setting(True)
+
     class Inputs:
         data = Input("Data", Orange.data.Table)
 
@@ -45,6 +53,37 @@ class OWExportMarkdown(widget.OWWidget):
         self.data = None
         ui_path = os.path.join(os.path.dirname(__file__), "designer", "owexportmarkdown.ui")
         uic.loadUi(ui_path, baseinstance=self)
+        self.setFixedSize(732, 472)
+
+        # 1) Restaurer l'état des widgets depuis les settings
+        #    (avant de connecter les signaux pour éviter des déclenchements parasites)
+        self.checkBox_pdf.setChecked(self.export_pdf)
+        self.checkBox_docx.setChecked(self.export_docx)
+        self.checkBox_pptx.setChecked(self.export_pptx)
+        self.checkBox_send.setChecked(self.auto_send)
+
+        # 2) Connexions
+        self.checkBox_pdf.toggled.connect(self.on_formats_changed)
+        self.checkBox_docx.toggled.connect(self.on_formats_changed)
+        self.checkBox_pptx.toggled.connect(self.on_formats_changed)
+        self.checkBox_send.toggled.connect(self.on_auto_send_changed)
+        self.pushButton_send.clicked.connect(self.run)
+        self.saveButton.clicked.connect(self.run)
+
+    # -------------- handlers UI --------------
+    def on_formats_changed(self):
+        """Mémorise les extensions choisies dans les settings et relance si auto-send."""
+        self.export_pdf = self.checkBox_pdf.isChecked()
+        self.export_docx = self.checkBox_docx.isChecked()
+        self.export_pptx = self.checkBox_pptx.isChecked()
+        if self.auto_send:
+            self.run()
+
+    def on_auto_send_changed(self):
+        """Mémorise l'état de l'auto-send et relance immédiatement si activé."""
+        self.auto_send = self.checkBox_send.isChecked()
+        if self.auto_send:
+            self.run()
 
     # -------- helpers headers/footers --------
     def ajouter_en_tete_pied_docx(self, file_path, header_text, footer_text):
@@ -63,6 +102,7 @@ class OWExportMarkdown(widget.OWWidget):
                 p.runs[0].font.size = pt_docx(10)
             doc.save(file_path)
         except Exception:
+            # en-tête/pied non bloquants
             pass
 
     def ajouter_entete_pied_pptx(self, file_path, entete_text, pied_text):
@@ -83,115 +123,11 @@ class OWExportMarkdown(widget.OWWidget):
         except Exception:
             pass
 
-    # -------------- conversion PDF --------------
-    def convert_docx_to_pdf(self, docx_path: str, pdf_path: str) -> bool:
-        """
-        Conversion DOCX -> PDF via subprocess Python indépendant.
-        Détecte la session Windows : COM si interactif, weasyprint si session 0.
-        """
-        import subprocess
-        python_exe = os.path.join(os.path.dirname(sys.executable), "python.exe")
-
-        session = os.environ.get("SESSIONNAME", "")
-        session_interactive = session.strip() != "" and session.strip().lower() != "services"
-
-        if session_interactive:
-            # Session interactive : COM Word via subprocess
-            script_lines = [
-                "import sys, os, shutil, tempfile",
-                "import pythoncom",
-                "import win32com.client",
-                "pythoncom.CoInitialize()",
-                "docx_path = sys.argv[1]",
-                "pdf_path  = sys.argv[2]",
-                "tmp_dir    = tempfile.mkdtemp()",
-                "local_docx = os.path.join(tmp_dir, os.path.basename(docx_path))",
-                "local_pdf  = os.path.join(tmp_dir, os.path.basename(pdf_path))",
-                "shutil.copy2(docx_path, local_docx)",
-                "word = None",
-                "doc  = None",
-                "try:",
-                "    word = win32com.client.Dispatch('Word.Application')",
-                "    word.Visible = False",
-                "    word.DisplayAlerts = 0",
-                "    doc = word.Documents.Open(local_docx, ReadOnly=True, AddToRecentFiles=False)",
-                "    if doc is None:",
-                "        doc = word.Documents(1)",
-                "    doc.SaveAs2(local_pdf, FileFormat=17)",
-                "    doc.Close(False)",
-                "    shutil.copy2(local_pdf, pdf_path)",
-                "    sys.exit(0)",
-                "except Exception as e:",
-                "    import traceback",
-                "    print('ERREUR: ' + str(e), file=sys.stderr)",
-                "    traceback.print_exc(file=sys.stderr)",
-                "    sys.exit(1)",
-                "finally:",
-                "    try:",
-                "        if doc: doc.Close(False)",
-                "    except: pass",
-                "    try:",
-                "        if word: word.Quit()",
-                "    except: pass",
-                "    pythoncom.CoUninitialize()",
-                "    shutil.rmtree(tmp_dir, ignore_errors=True)",
-            ]
-        else:
-            # Session 0 : weasyprint sans COM
-            script_lines = [
-                "import sys, os",
-                "docx_path = sys.argv[1]",
-                "pdf_path  = sys.argv[2]",
-                "# Lecture du docx via python-docx pour extraire le texte",
-                "try:",
-                "    from docx import Document",
-                "    from weasyprint import HTML",
-                "    doc = Document(docx_path)",
-                "    paragraphs = [p.text for p in doc.paragraphs]",
-                "    html_body = ''.join(f'<p>{t}</p>' for t in paragraphs if t.strip())",
-                "    html = f'''<!DOCTYPE html><html><head><meta charset=\"utf-8\">",
-                "    <style>",
-                "    @page {{ margin: 2cm; @bottom-center {{ content: counter(page); font-size: 9pt; }} }}",
-                "    body {{ font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.6; }}",
-                "    </style></head><body>{html_body}</body></html>'''",
-                "    HTML(string=html).write_pdf(pdf_path)",
-                "    sys.exit(0)",
-                "except Exception as e:",
-                "    import traceback",
-                "    print('ERREUR: ' + str(e), file=sys.stderr)",
-                "    traceback.print_exc(file=sys.stderr)",
-                "    sys.exit(1)",
-            ]
-
-        tmp_script = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
-                f.write("\n".join(script_lines))
-                tmp_script = f.name
-
-            result = subprocess.run(
-                [python_exe, tmp_script, docx_path, pdf_path],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-
-            return result.returncode == 0 and os.path.exists(pdf_path)
-
-        except Exception as e:
-            print(e)
-            return False
-        finally:
-            if tmp_script and os.path.exists(tmp_script):
-                try:
-                    os.remove(tmp_script)
-                except Exception:
-                    pass
-
     # -------------- input --------------
     @Inputs.data
     def set_data(self, in_data):
         self.error("")
+        self.warning("")
         if in_data is None:
             self.data = None
             self.Outputs.data.send(None)
@@ -200,11 +136,32 @@ class OWExportMarkdown(widget.OWWidget):
         # On exige au moins 'path'
         if "path" not in in_data.domain:
             self.error("La table d'entrée doit contenir au moins la colonne 'path'.")
+            self.data = None
             self.Outputs.data.send(None)
             return
 
         # Optionnellement 'content'
         self.data = in_data
+
+        # En mode auto-send on lance directement, sinon on attend le bouton Run.
+        if self.auto_send:
+            self.run()
+
+    # -------------- déclenchement --------------
+    def run(self):
+        """Lance l'export puis envoie la table de sortie. Appelé par Run / Save / auto-send."""
+        self.error("")
+        self.warning("")
+
+        if self.data is None:
+            self.Outputs.data.send(None)
+            return
+
+        if not (self.export_pdf or self.export_docx or self.export_pptx):
+            self.warning("Aucune extension de sortie sélectionnée.")
+            self.Outputs.data.send(self.data)
+            return
+
         try:
             table_out = self.export_all_rows()
             self.Outputs.data.send(table_out)
@@ -219,7 +176,11 @@ class OWExportMarkdown(widget.OWWidget):
         has_content = "content" in self.data.domain
         file_contents = self.data.get_column("content") if has_content else [None] * len(base_paths)
 
-        pdf_paths, docx_paths, pptx_paths, txt_paths  = [], [], [], []
+        want_pdf = self.export_pdf
+        want_docx = self.export_docx
+        want_pptx = self.export_pptx
+
+        pdf_paths, docx_paths, pptx_paths = [], [], []
 
         for i, (md_text, base_path) in enumerate(zip(file_contents, base_paths)):
             base_path = str(base_path or "").strip()
@@ -230,7 +191,6 @@ class OWExportMarkdown(widget.OWWidget):
                     try:
                         with open(base_path, "r", encoding="utf-8") as f:
                             md_text = f.read()
-                        # on remplace base_path par le même (on garde la base pour sorties)
                     except Exception as e:
                         self.error(f"Impossible de lire le fichier : {base_path} ({e})")
                         pdf_paths.append("")
@@ -252,7 +212,6 @@ class OWExportMarkdown(widget.OWWidget):
                              "```" + "\n\n"
             md_text = md_text.replace("\\newpage", saut_page_word)
 
-
             if not md_text or not base_path:
                 pdf_paths.append("")
                 docx_paths.append("")
@@ -260,37 +219,20 @@ class OWExportMarkdown(widget.OWWidget):
                 continue
 
             # Normaliser la base: enlever extension si présente
-            base_no_ext, ext = os.path.splitext(base_path)
-            ext = ext.lower()
-
+            base_no_ext, _ = os.path.splitext(base_path)
             # Créer dossier si nécessaire
             out_dir = os.path.dirname(base_no_ext)
             if out_dir and not os.path.isdir(out_dir):
                 os.makedirs(out_dir, exist_ok=True)
-            # Extensions reconnues
-            EXTENSIONS_CONNUES = {".pdf", ".docx", ".pptx", ".txt"}
-
-            # Si extension connue -> export ciblé, sinon -> tout exporter
-            if ext in EXTENSIONS_CONNUES:
-                export_pdf = ext == ".pdf"
-                export_docx = ext == ".docx"
-                export_pptx = ext == ".pptx"
-                export_txt = ext == ".txt"
-                # base_no_ext est déjà correct (sans l'extension)
-            else:
-                # Pas d'extension reconnue ou pas d'extension -> tout exporter
-                export_pdf = True
-                export_docx = True
-                export_pptx = True
-                export_txt = True
-                # Si extension inconnue, on la garde dans la base
-                if ext and ext not in EXTENSIONS_CONNUES:
-                    base_no_ext = base_path  # garder le chemin tel quel comme base
 
             docx_out = base_no_ext + ".docx"
             pptx_out = base_no_ext + ".pptx"
             pdf_out = base_no_ext + ".pdf"
-            txt_out = base_no_ext + ".txt"
+
+            produced_docx = ""
+            produced_pptx = ""
+            produced_pdf = ""
+            temp_docx_for_pdf = None
 
             # MD temporaire
             with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, encoding="utf-8") as tmp:
@@ -298,76 +240,88 @@ class OWExportMarkdown(widget.OWWidget):
                 tmp_md = tmp.name
 
             try:
-                if utils_md.is_word_installed():
-                    # DOCX
-                    if export_docx or export_pdf:  # PDF nécessite le docx comme source
-                        pypandoc.convert_file(
-                            tmp_md,
-                            to="docx",
-                            format="commonmark_x+yaml_metadata_block",
-                            outputfile=docx_out
-                        )
-                        self.ajouter_en_tete_pied_docx(
-                            docx_out,
-                            "Rapport - Orange AI",
-                            "Page générée automatiquement - Ne pas diffuser"
-                        )
+                # ----- DOCX -----
+                if want_docx:
+                    pypandoc.convert_file(
+                        tmp_md,
+                        to="docx",
+                        format="commonmark_x+yaml_metadata_block",  # Version plus robuste
+                        outputfile=docx_out
+                    )
+                    self.ajouter_en_tete_pied_docx(
+                        docx_out,
+                        "Rapport - Orange AI",
+                        "Page générée automatiquement - Ne pas diffuser"
+                    )
+                    produced_docx = docx_out if os.path.isfile(docx_out) else ""
 
-                    # PPTX
-                    if export_pptx:
-                        pypandoc.convert_file(tmp_md, to="pptx", format="gfm-yaml_metadata_block", outputfile=pptx_out)
-                        self.ajouter_entete_pied_pptx(
-                            pptx_out,
-                            "Orange AI – Présentation",
-                            "Page générée automatiquement"
-                        )
-                else:
-                    raise Exception("Word non détecté")
+                # ----- PPTX -----
+                if want_pptx:
+                    pypandoc.convert_file(
+                        tmp_md,
+                        to="pptx",
+                        format="gfm-yaml_metadata_block",
+                        outputfile=pptx_out
+                    )
+                    self.ajouter_entete_pied_pptx(
+                        pptx_out,
+                        "Orange AI – Présentation",
+                        "Page générée automatiquement"
+                    )
+                    produced_pptx = pptx_out if os.path.isfile(pptx_out) else ""
 
-                # PDF
-                if export_pdf:
-                    ok = self.convert_docx_to_pdf(docx_out, pdf_out)
-                    if not ok:
+                # ----- PDF -----
+                if want_pdf:
+                    converted = False
+                    # Voie privilégiée : docx -> pdf via Word (docx2pdf)
+                    if utils_md.is_word_installed():
+                        if want_docx and os.path.isfile(docx_out):
+                            source_docx = docx_out
+                        else:
+                            # docx temporaire uniquement destiné à produire le PDF
+                            temp_docx_for_pdf = base_no_ext + "__tmp_for_pdf.docx"
+                            pypandoc.convert_file(
+                                tmp_md,
+                                to="docx",
+                                format="commonmark_x+yaml_metadata_block",
+                                outputfile=temp_docx_for_pdf
+                            )
+                            source_docx = temp_docx_for_pdf
+                        try:
+                            convert(source_docx, pdf_out)
+                            converted = os.path.isfile(pdf_out)
+                        except Exception:
+                            converted = False
+                    # Fallback : md -> pdf via pandoc (si LaTeX dispo)
+                    if not converted:
                         try:
                             pypandoc.convert_file(tmp_md, to="pdf", outputfile=pdf_out)
-                        except Exception as c:
-                            print("fallback pandoc échoué : ", c)
+                        except Exception:
                             self.error(f"Échec conversion PDF pour la ligne {i + 1}.")
-                            pdf_out = ""
-
-                # Si on voulait seulement le PDF, on supprime le docx intermédiaire
-                if export_pdf and not export_docx and os.path.isfile(docx_out):
-                    try:
-                        os.remove(docx_out)
-                        docx_out = ""
-                    except Exception:
-                        pass
-
-                # TXT
-                if export_txt:
-                    try:
-                        with open(txt_out, "w", encoding="utf-8") as f:
-                            f.write(md_text)
-                    except Exception as e:
-                        print(f"Échec écriture TXT : {e}")
-                        txt_out = ""
+                    produced_pdf = pdf_out if os.path.isfile(pdf_out) else ""
             finally:
                 try:
                     os.remove(tmp_md)
                 except Exception:
                     pass
+                if temp_docx_for_pdf:
+                    try:
+                        os.remove(temp_docx_for_pdf)
+                    except Exception:
+                        pass
 
-            pdf_paths.append(pdf_out if export_pdf and os.path.isfile(pdf_out) else "")
-            docx_paths.append(docx_out if export_docx and os.path.isfile(docx_out) else "")
-            pptx_paths.append(pptx_out if export_pptx and os.path.isfile(pptx_out) else "")
-            txt_paths.append(txt_out if export_txt and os.path.isfile(txt_out) else "")
+            pdf_paths.append(produced_pdf)
+            docx_paths.append(produced_docx)
+            pptx_paths.append(produced_pptx)
 
-        # Ajouter colonnes sortie
+        # Ajouter les colonnes de sortie uniquement pour les extensions sélectionnées
         table = self.data
-        table = table.add_column(StringVariable("output_pdf_path"), pdf_paths)
-        table = table.add_column(StringVariable("output_docx_path"), docx_paths)
-        table = table.add_column(StringVariable("output_pptx_path"), pptx_paths)
-        table = table.add_column(StringVariable("output_txt_path"), txt_paths)
+        if want_pdf:
+            table = table.add_column(StringVariable("output_pdf_path"), pdf_paths)
+        if want_docx:
+            table = table.add_column(StringVariable("output_docx_path"), docx_paths)
+        if want_pptx:
+            table = table.add_column(StringVariable("output_pptx_path"), pptx_paths)
 
         return table
 

@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>800</width>
-    <height>479</height>
+    <height>509</height>
    </rect>
   </property>
   <property name="minimumSize">
@@ -129,6 +129,22 @@ Other required columns in Parameters: sheet_name, col, row.</string>
    </property>
    <property name="text">
     <string>Include column headers</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="checkBox_force_text">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>440</y>
+     <width>171</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Écrit toutes les valeurs en texte et force le format cellule en Texte (@). Désactive la conversion en dates/nombres.</string>
+   </property>
+   <property name="text">
+    <string>Write everything as text</string>
    </property>
   </widget>
   <widget class="QPushButton" name="pushButton_run">

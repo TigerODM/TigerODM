@@ -1,8 +1,9 @@
 import os
 import sys
-from AnyQt.QtWidgets import QSpinBox, QLabel, QPushButton, QGroupBox
+from AnyQt.QtWidgets import QSpinBox, QLabel, QPushButton, QGroupBox, QCheckBox
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Output
+from Orange.widgets.settings import Setting
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.IO4IT.utils import pool_exec_utils
@@ -23,6 +24,8 @@ class OWProcessPoolExecutor(widget.OWWidget):
     want_control_area = False
     priority = 900
 
+    auto_send = Setting(False)
+
     class Outputs:
         executor = Output("ProcessPoolExecutor", object)
 
@@ -31,44 +34,76 @@ class OWProcessPoolExecutor(widget.OWWidget):
         self.setFixedWidth(470)
         self.setFixedHeight(300)
 
-        # We don't need a separate layout for the main widget anymore
-        # as the UI file now contains a QGroupBox that will manage the layout.
         uic.loadUi(self.gui, self)
 
         self.executor = None
         self.current_workers = None
 
-        # Rendre les widgets accessibles
-        self.cpu_label: QLabel = self.findChild(QLabel, "cpu_label")
-        self.spin_workers: QSpinBox = self.findChild(QSpinBox, "spin_workers")
-        self.btn_create: QPushButton = self.findChild(QPushButton, "btn_create")
-        self.info_label: QLabel = self.findChild(QLabel, "info_label")
+        self.cpu_label = self.findChild(QLabel, "cpu_label")
+        self.spin_workers = self.findChild(QSpinBox, "spin_workers")
+        self.btn_create = self.findChild(QPushButton, "btn_create")
+        self.info_label = self.findChild(QLabel, "info_label")
         self.group_box = self.findChild(QGroupBox, "groupBox")
+        self.checkBox_send = self.findChild(QCheckBox, "checkBox_send")
 
-        # Configuration des widgets
-        self.cpu_label.setText(pool_exec_utils.cpu_label_text())
-        self.spin_workers.setMinimum(1)
-        max_cpus = max(1, pool_exec_utils.available_cpus())
-        self.spin_workers.setMaximum(max_cpus)
-        self.spin_workers.setValue(min(4, max_cpus))
+        if self.cpu_label:
+            self.cpu_label.setText(pool_exec_utils.cpu_label_text())
 
-        self.btn_create.clicked.connect(self.create_or_update_clicked)
+        if self.spin_workers:
+            self.spin_workers.setMinimum(1)
+            max_cpus = max(1, pool_exec_utils.available_cpus())
+            self.spin_workers.setMaximum(max_cpus)
+            self.spin_workers.setValue(min(4, max_cpus))
+            self.spin_workers.valueChanged.connect(self._on_workers_changed)
+
+        if self.checkBox_send:
+            self.checkBox_send.setChecked(self.auto_send)
+            self.checkBox_send.toggled.connect(self._on_autorun_toggled)
+
+        if self.btn_create:
+            self.btn_create.setEnabled(not self.auto_send)
+            self.btn_create.clicked.connect(self.create_or_update_clicked)
 
         self.error("")
         self.warning("")
         self.post_initialized()
 
+        # Lancement automatique initial si coché
+        if self.auto_send:
+            self.create_or_update_clicked()
+
+    # ------------------------------------------------------------------
+    # Slots UI
+    # ------------------------------------------------------------------
+    def _on_autorun_toggled(self, checked: bool):
+        self.auto_send = checked
+        if self.btn_create:
+            self.btn_create.setEnabled(not self.auto_send)
+        # On relance automatiquement s'il vient d'être activé
+        if self.auto_send:
+            self.create_or_update_clicked()
+
+    def _on_workers_changed(self):
+        """Déclenche la mise à jour si le nombre de workers change et que auto_send est actif."""
+        if self.auto_send:
+            self.create_or_update_clicked()
+
+    # ------------------------------------------------------------------
+    # Core Logic
+    # ------------------------------------------------------------------
     def onDeleteWidget(self):
         pool_exec_utils.shutdown_executor(self.executor)
         self.executor = None
         super().onDeleteWidget()
 
     def create_or_update_clicked(self):
-        new_workers = int(self.spin_workers.value())
+        # Sécurisation en cas d'absence du spin_workers
+        new_workers = int(self.spin_workers.value()) if self.spin_workers else 1
         self.executor, self.current_workers, msg, _changed = pool_exec_utils.create_or_update_executor(
             self.executor, self.current_workers, new_workers
         )
-        self.info_label.setText(msg)
+        if self.info_label:
+            self.info_label.setText(msg)
         self.Outputs.executor.send(self.executor)
 
     def post_initialized(self):

@@ -4,11 +4,13 @@ import win32com.client as win32
 import pythoncom
 import openpyxl
 from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font
 import os
+import datetime
 from AnyQt.QtWidgets import QApplication, QPushButton, QCheckBox
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.signals import Input, Output
-from Orange.data import Domain, StringVariable, Table, DiscreteVariable
+from Orange.data import Domain, StringVariable, Table, DiscreteVariable, ContinuousVariable, TimeVariable
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils.thread_management import Thread
@@ -36,6 +38,7 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
     create_sheet_if_missing = Setting(False)
     create_file_if_missing = Setting(False)
     include_headers = Setting(False)
+    force_all_text = Setting(False)
 
 
     def _normalize_hex(self, color: str) -> str:
@@ -112,6 +115,15 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
                 lambda v: setattr(self, "include_headers", v)
             )
 
+        # Case "Tout écrire en texte" (objectName attendu dans le .ui : checkBox_force_text)
+        self.checkBox_force_text = self.findChild(QCheckBox, "checkBox_force_text")
+
+        if self.checkBox_force_text:
+            self.checkBox_force_text.setChecked(self.force_all_text)
+            self.checkBox_force_text.toggled.connect(
+                lambda v: setattr(self, "force_all_text", v)
+            )
+
         if self.pushButton_run:
             self.pushButton_run.clicked.connect(self.run)
 
@@ -146,7 +158,7 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
             params_df = self._orange_table_to_dataframe(self.parameters)
             params_df.columns = params_df.columns.str.strip().str.lower()
 
-            data_df = self._orange_table_to_dataframe(self.data)
+            data_df = self._orange_table_to_dataframe(self.data, preserve_types=not self.force_all_text)
 
         except Exception as e:
             self.error(f"Erreur initialisation : {e}")
@@ -158,7 +170,7 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
         self.progressBarInit()
 
         # Connect and start thread
-        self.thread = Thread(self._run_logic, params_df, data_df, self.create_sheet_if_missing, self.include_headers)
+        self.thread = Thread(self._run_logic, params_df, data_df, self.create_sheet_if_missing, self.include_headers, self.force_all_text)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
@@ -197,6 +209,7 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
             self.pushButton_run.setEnabled(True)
         self.progressBarFinished()
         print("Excel insertion process finished")
+
     # --- Mise en forme des lignes ajoutées ---
     def _extend_formatting(self, excel, ws, start_r, start_c, last_r, last_c, header_offset=0):
         """Prolonge la mise en forme sur les lignes ajoutees apres une insertion en bloc.
@@ -252,8 +265,49 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
         except Exception as e:
             print(f"[Excel] mise en forme non prolongee : {e}")
 
+    # --- Correctif d'affichage des dates (COM) ---
+    # Format applique aux colonnes de dates dont la cellule est encore Standard.
+    _DEFAULT_DATE_FORMAT = "jj/mm/aaaa"
+    _DEFAULT_DATETIME_FORMAT = "jj/mm/aaaa hh:mm:ss"
+
+    def _fix_date_display_com(self, ws, data_matrix, start_r, start_c, header_offset=0):
+        """Pose un format date sur les colonnes contenant de vraies dates, mais
+        SEULEMENT si la cellule est encore au format Standard/General (on ne
+        remplace jamais un format date deja present dans le template)."""
+        n_rows = len(data_matrix)
+        if n_rows <= header_offset:
+            return
+        n_cols = len(data_matrix[0]) if data_matrix else 0
+
+        for c in range(n_cols):
+            has_dt = False
+            has_time = False
+            for r in range(header_offset, n_rows):
+                v = data_matrix[r][c]
+                if isinstance(v, datetime.datetime):
+                    has_dt = True
+                    if v.hour or v.minute or v.second:
+                        has_time = True
+            if not has_dt:
+                continue
+
+            first_cell = ws.Cells(start_r + header_offset, start_c + c)
+            try:
+                fmt = str(first_cell.NumberFormat)
+            except Exception:
+                fmt = ""
+
+            # "General" (EN) / "Standard" (FR) = aucune mise en forme explicite.
+            if fmt.strip().lower() in ("general", "standard", ""):
+                rng = ws.Range(
+                    ws.Cells(start_r + header_offset, start_c + c),
+                    ws.Cells(start_r + n_rows - 1, start_c + c),
+                )
+                rng.NumberFormatLocal = (self._DEFAULT_DATETIME_FORMAT
+                                    if has_time else self._DEFAULT_DATE_FORMAT)
+
     # --- Thread Logic ---
-    def _run_logic_com(self, params_df, df, create_sheet, include_headers, progress_callback):
+    def _run_logic_com(self, params_df, df, create_sheet, include_headers, force_all_text, progress_callback):
         results = []
         excel = None
         try:
@@ -336,6 +390,28 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
                     else:
                         data_matrix = df.values.tolist()
 
+                    header_offset = 1 if include_headers else 0
+
+                    # 1b. Mode intelligent : on convertit les chaines ressemblant a une
+                    #     date en vraies dates (cas colonne texte melangeant titre + date).
+                    #     Desactive en mode "tout en texte".
+                    if not force_all_text:
+                        for r_idx in range(header_offset, len(data_matrix)):
+                            row_vals = data_matrix[r_idx]
+                            for c_idx in range(len(row_vals)):
+                                row_vals[c_idx] = self._maybe_parse_date(row_vals[c_idx])
+
+                    # 1c. Neutralisation du fuseau pywin32 : a l'ecriture, pywin32
+                    #     considere un datetime NAIF comme local et le convertit en UTC
+                    #     (-> decalage de 2h). On tague donc chaque datetime en UTC avec
+                    #     les chiffres a AFFICHER : la conversion devient neutre et
+                    #     l'heure murale est ecrite telle quelle. (COM uniquement :
+                    #     openpyxl refuse les datetime aware.)
+                    for r_idx in range(len(data_matrix)):
+                        row_vals = data_matrix[r_idx]
+                        for c_idx in range(len(row_vals)):
+                            row_vals[c_idx] = self._com_dt(row_vals[c_idx])
+
                     # 2. Insertion des données en bloc
                     start_r = file_params["start_row"]
                     start_c = file_params["start_col"]
@@ -344,14 +420,31 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
                     last_c = start_c + len(df.columns) - 1
 
                     target_range = ws.Range(ws.Cells(start_r, start_c), ws.Cells(last_r, last_c))
+
+                    # Mode "tout en texte" : format cellule Texte (@) AVANT ecriture
+                    # pour empecher Excel de reconvertir ("007" reste "007", etc.).
+                    if force_all_text:
+                        target_range.NumberFormat = "@"
+
                     target_range.Value = data_matrix
 
-                    header_offset = 1 if include_headers else 0
-                    
                     # 2bis. On prolonge la mise en forme (redimensionne le tableau si besoin).
                     #       Doit rester AVANT la boucle de couleurs : les couleurs
                     #       explicites %!color!% sont posees ensuite et restent prioritaires.
                     self._extend_formatting(excel, ws, start_r, start_c, last_r, last_c, header_offset)
+
+                    # En mode "tout en texte", on re-force @ APRES l'extension, car un
+                    # Resize de tableau reapplique le format de colonne et ecraserait @.
+                    if force_all_text:
+                        target_range.NumberFormat = "@"
+
+                    # 2ter. Correctif d'affichage des dates : une vraie date ecrite via
+                    #       COM dans une cellule Standard s'affiche comme son numero de
+                    #       serie. On pose un format date UNIQUEMENT sur les colonnes qui
+                    #       contiennent des dates ET dont la cellule est encore Standard
+                    #       (on ne touche donc jamais un format date deja present).
+                    if not force_all_text:
+                        self._fix_date_display_com(ws, data_matrix, start_r, start_c, header_offset)
 
                     # 3. Couleurs explicites cellule par cellule (prefixe %!color!%).
                     #    Appliquees APRES l'extension -> prioritaires sur le style de tableau.
@@ -363,7 +456,7 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
                                 target_cell = ws.Cells(start_r + r_idx, start_c + c_idx)
                                 target_cell.Interior.Color = self._hex_rgb_to_excel_bgr(hex_bg)
                                 target_cell.Font.Color = 0x000000
-                                target_cell.Value = clean_value
+                                target_cell.Value = clean_value if force_all_text else self._com_dt(self._maybe_parse_date(clean_value))
 
                     wb.Save()
                     wb.Close(False)
@@ -396,8 +489,15 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
             pythoncom.CoUninitialize()
 
     # ------------------------------------------------------------------ openpyxl logic (fallback)
-    def _run_logic_openpyxl(self, params_df, df, create_sheet, progress_callback):
-        """Fallback sans COM — fonctionne en session 0/service."""
+    def _run_logic_openpyxl(self, params_df, df, create_sheet, include_headers, force_all_text, progress_callback):
+        """Fallback sans COM — fonctionne en session 0/service.
+
+        Ecrit reellement les donnees (l'ancienne version ne le faisait pas).
+        Gere : parsing de dates, mode "tout en texte" (@), couleurs %!color!%,
+        et propagation du format de la 1re ligne de donnees vers les suivantes.
+        NB : l'extension de STYLE de tableau (bordures/bandes via ListObject.Resize)
+        n'est pas repliquee ici — seul le format numerique est propage.
+        """
         results = []
         total_files = len(params_df)
         col_name = self.selected_column_name.strip().lower()
@@ -445,6 +545,53 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
                         ws = wb.worksheets[0]
                         logs.append(f"Fallback sur '{ws.title}'.")
 
+                # 1. Préparation de la matrice
+                if include_headers:
+                    data_matrix = [list(df.columns)] + df.values.tolist()
+                else:
+                    data_matrix = df.values.tolist()
+
+                start_r = file_params["start_row"]
+                start_c = file_params["start_col"]
+                header_offset = 1 if include_headers else 0
+
+                # 1b. Parsing de dates (mode intelligent uniquement)
+                if not force_all_text:
+                    for r_idx in range(header_offset, len(data_matrix)):
+                        row_vals = data_matrix[r_idx]
+                        for c_idx in range(len(row_vals)):
+                            row_vals[c_idx] = self._maybe_parse_date(row_vals[c_idx])
+
+                # 2. Ecriture cellule par cellule (+ couleurs %!color!%)
+                for r_off, row_vals in enumerate(data_matrix):
+                    is_header = include_headers and r_off == 0
+                    for c_off, val in enumerate(row_vals):
+                        cell = ws.cell(row=start_r + r_off, column=start_c + c_off)
+                        write_val = val
+
+                        # Couleur explicite : uniquement sur les chaines avec prefixe
+                        if isinstance(val, str) and not is_header:
+                            clean_value, hex_bg = self.parse_color_prefix(val)
+                            if hex_bg:
+                                write_val = clean_value
+                                argb = "FF" + hex_bg.lstrip("#").upper().zfill(6)
+                                cell.fill = PatternFill(start_color=argb, end_color=argb, fill_type="solid")
+                                cell.font = Font(color="FF000000")
+
+                        cell.value = None if (write_val is None or write_val == "") else write_val
+                        if force_all_text:
+                            cell.number_format = "@"
+
+                # 3. Propagation du format numerique de la 1re ligne de donnees
+                #    vers les lignes suivantes (equivalent simplifie de _extend_formatting).
+                if not force_all_text and len(data_matrix) - header_offset > 1:
+                    first_data_r = start_r + header_offset
+                    n_cols = len(df.columns)
+                    for c_off in range(n_cols):
+                        fmt = ws.cell(row=first_data_r, column=start_c + c_off).number_format
+                        for r_off in range(1, len(data_matrix) - header_offset):
+                            ws.cell(row=first_data_r + r_off, column=start_c + c_off).number_format = fmt
+
                 wb.save(abs_path)
 
                 detail_msg = "Insertion réussie (openpyxl)"
@@ -459,23 +606,59 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
 
         return results
 
-    def _run_logic(self, params_df, df, create_sheet, include_headers, progress_callback):
+    def _run_logic(self, params_df, df, create_sheet, include_headers, force_all_text, progress_callback):
         """Détecte la session Windows et choisit la bonne méthode."""
         session = os.environ.get("SESSIONNAME", "")
         # Session 0 = service/planificateur sans desktop
         # Session Console ou RDP = session interactive
         if session.strip() == "" or session.strip().lower() == "services":
             print(f"[Excel] Session non-interactive ({session!r}), utilisation openpyxl")
-            return self._run_logic_openpyxl(params_df, df, create_sheet, progress_callback)
+            return self._run_logic_openpyxl(params_df, df, create_sheet, include_headers, force_all_text, progress_callback)
         else:
             print(f"[Excel] Session interactive ({session!r}), utilisation COM")
             try:
-                return self._run_logic_com(params_df, df, create_sheet, include_headers, progress_callback)
+                return self._run_logic_com(params_df, df, create_sheet, include_headers, force_all_text, progress_callback)
             except Exception as e:
                 print(f"[Excel] COM échoué ({e}), fallback openpyxl...")
-                return self._run_logic_openpyxl(params_df, df, create_sheet, progress_callback)
+                return self._run_logic_openpyxl(params_df, df, create_sheet, include_headers, force_all_text, progress_callback)
 
     # --- Helpers ---
+    # Formats testés (ordre = priorité). Jour/mois en premier (format FR).
+    _DATE_FORMATS = [
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%d-%m-%Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ]
+
+    def _maybe_parse_date(self, value):
+        """Si value est une chaîne ressemblant à une date, renvoie un datetime.
+        Sinon renvoie value inchangé (nombres, texte, datetime, None...)."""
+        if not isinstance(value, str):
+            return value
+        s = value.strip()
+        if not s:
+            return value
+        for fmt in self._DATE_FORMATS:
+            try:
+                return datetime.datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return value
+
+    def _com_dt(self, value):
+        """Tague un datetime NAIF en UTC (avec les memes chiffres) pour neutraliser
+        la conversion UTC que pywin32 applique a l'ecriture. Renvoie value inchange
+        si ce n'est pas un datetime naif. A n'utiliser QUE pour le chemin COM."""
+        if isinstance(value, datetime.datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=datetime.timezone.utc)
+        return value
+
     def safe_int(self, value, default=0):
         try:
             if value is None:
@@ -494,7 +677,7 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
         domain = Domain([], metas=[DiscreteVariable("status", values=["ok", "ko"]), StringVariable("details")])
         self.Outputs.status_data.send(Table.from_list(domain, [[status, details]]))
 
-    def _orange_table_to_dataframe(self, table: Table) -> pd.DataFrame:
+    def _orange_table_to_dataframe(self, table: Table, preserve_types: bool = False) -> pd.DataFrame:
         # Preserve original column order: attributes first, then metas, then class
         # but respect the domain's actual declaration order
         all_vars = list(table.domain.attributes) + list(table.domain.metas)
@@ -504,20 +687,48 @@ class OWInsertDataToExcel(base_widget.BaseListWidget):
         data = {}
         for var in all_vars:
             raw = list(table.get_column(var.name))
-            if isinstance(var, DiscreteVariable):
+
+            if isinstance(var, TimeVariable):
+                col = []
+                for v in raw:
+                    if isinstance(v, float) and pd.isna(v):
+                        col.append(None if preserve_types else "")
+                    elif preserve_types:
+                        col.append(datetime.datetime.fromtimestamp(float(v)))
+                    else:
+                        col.append(var.repr_val(v))
+                data[var.name] = col
+
+            elif isinstance(var, DiscreteVariable):
                 data[var.name] = [
                     var.values[int(v)] if not (isinstance(v, float) and pd.isna(v)) and int(v) >= 0 else ""
                     for v in raw
                 ]
+
+            elif isinstance(var, ContinuousVariable) and preserve_types:
+                col = []
+                for v in raw:
+                    if isinstance(v, float) and pd.isna(v):
+                        col.append(None)
+                    else:
+                        f = float(v)
+                        col.append(int(f) if f.is_integer() else f)
+                data[var.name] = col
+
             else:
                 data[var.name] = raw
 
-        df = pd.DataFrame(data).astype(str).replace("nan", "")
-        
+        if preserve_types:
+            # dtype=object pour ne pas recoercer les dates ni transformer
+            # les None en NaN/NaT (qui casseraient l'ecriture Excel).
+            df = pd.DataFrame({k: pd.Series(v, dtype=object) for k, v in data.items()})
+        else:
+            df = pd.DataFrame(data).astype(str).replace("nan", "")
+
         # Re-order columns to match the original Table column order
         original_order = [var.name for var in table.domain.variables + table.domain.metas]
         df = df[[col for col in original_order if col in df.columns]]
-        
+
         return df
 
 if __name__ == "__main__":

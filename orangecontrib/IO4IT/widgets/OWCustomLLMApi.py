@@ -77,7 +77,7 @@ class OWCustomLLMApi(widget.OWWidget):
     def __init__(self):
         super().__init__()
         self.setFixedWidth(700)
-        self.setFixedHeight(680)
+        self.setFixedHeight(695)
         uic.loadUi(self.gui, self)
 
         self.label_description = self.findChild(QLabel, 'Description')
