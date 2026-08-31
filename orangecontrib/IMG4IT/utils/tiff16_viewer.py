@@ -2323,7 +2323,6 @@ def convert_file_to_image_best_effort(
 
     # ---------- DICOM (.dcm) -> image (CORRECTEMENT DÉSINDENTÉ) ----------
     if ext_in in (".dcm", ".dicom"):
-        import pydicom
 
         ds = pydicom.dcmread(in_path, force=True)
 

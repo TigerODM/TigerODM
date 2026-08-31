@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>478</width>
-    <height>525</height>
+    <height>426</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,7 +19,7 @@
      <x>20</x>
      <y>30</y>
      <width>431</width>
-     <height>161</height>
+     <height>131</height>
     </rect>
    </property>
    <property name="title">
@@ -31,27 +31,11 @@
       <x>10</x>
       <y>30</y>
       <width>411</width>
-      <height>41</height>
+      <height>71</height>
      </rect>
     </property>
     <property name="text">
-     <string>Values parsed from the input 'transform' column. Supports Filters, Crop, and Rigid Registration. You </string>
-    </property>
-    <property name="wordWrap">
-     <bool>true</bool>
-    </property>
-   </widget>
-   <widget class="QLabel" name="Description_info_2">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>70</y>
-      <width>411</width>
-      <height>81</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>You can also convert a PDF to an image. To do this, specify the folder(s) containing the PDF(s) to be converted. You must pass the following parameters: a &quot;transform&quot; column set to “list_pdf,” the ‘path’ to the PDF folder, and “path_out,” which is the folder where the images will be stored. </string>
+     <string>Values parsed from the input 'transform' column. Supports Filters, Crop, and Rigid Registration.</string>
     </property>
     <property name="wordWrap">
      <bool>true</bool>
@@ -62,9 +46,9 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>230</y>
+     <y>170</y>
      <width>431</width>
-     <height>241</height>
+     <height>191</height>
     </rect>
    </property>
    <property name="title">
@@ -73,15 +57,14 @@
    <widget class="QPlainTextEdit" name="plainTextEdit">
     <property name="geometry">
      <rect>
-      <x>10</x>
-      <y>30</y>
+      <x>0</x>
+      <y>20</y>
       <width>401</width>
-      <height>181</height>
+      <height>151</height>
      </rect>
     </property>
     <property name="plainText">
      <string>convert
-list_pdf
 transform ou Crop | (xf xray viewer)
 Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = cross
 Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = invcross
@@ -92,8 +75,22 @@ Write | col = 50 | line = 100 | text = HELLO 123 | size = 2 | value = 255
     </property>
    </widget>
   </widget>
+  <widget class="QCheckBox" name="checkBox_overwrite">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>366</y>
+     <width>331</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Override existing output file</string>
+   </property>
+  </widget>
   <zorder>groupBox_4</zorder>
   <zorder>groupBox_3</zorder>
+  <zorder>checkBox_overwrite</zorder>
  </widget>
  <resources/>
  <connections/>
