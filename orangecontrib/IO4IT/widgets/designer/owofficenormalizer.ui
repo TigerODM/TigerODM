@@ -85,10 +85,26 @@
      <bool>true</bool>
     </property>
    </widget>
+   <widget class="QCheckBox" name="checkBox_generate_excel">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>175</y>
+      <width>250</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Generate normalization_results Excel</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+   </widget>
   </widget>
   <widget class="QCheckBox" name="checkBox_send">
    <property name="enabled">
-    <bool>false</bool>
+    <bool>true</bool>
    </property>
    <property name="geometry">
     <rect>
@@ -104,7 +120,7 @@
   </widget>
   <widget class="QPushButton" name="pushButton_send">
    <property name="enabled">
-    <bool>false</bool>
+    <bool>true</bool>
    </property>
    <property name="geometry">
     <rect>

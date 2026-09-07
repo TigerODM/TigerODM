@@ -8,10 +8,10 @@ from Orange.widgets.settings import Setting
 from AnyQt.QtWidgets import  QCheckBox
 from Orange.data import Table, Domain, StringVariable
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
-    from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert
+    from Orange.widgets.orangecontrib.HLIT.remote_server_smb import convert
     from Orange.widgets.orangecontrib.AAIT.utils import base_widget
 else:
-    from orangecontrib.HLIT_dev.remote_server_smb import convert
+    from orangecontrib.HLIT.remote_server_smb import convert
     from orangecontrib.AAIT.utils import base_widget
 
 class OWJsonToDataTable(base_widget.BaseListWidget):

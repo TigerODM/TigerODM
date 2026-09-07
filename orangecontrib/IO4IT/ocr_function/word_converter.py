@@ -16,6 +16,81 @@ def enable_long_path(path):
     """Simplifie la gestion des chemins longs sous Windows."""
     return pathlib.Path(r"\\?\\" + str(path))
 
+def get_word_application():
+    """
+    Retourne une instance Word DÉDIÉE au script, dans un processus séparé.
+
+    Point clé : on utilise DispatchEx et NON Dispatch.
+      - Dispatch("Word.Application")  -> se raccroche au Word déjà ouvert par
+        l'utilisateur (Running Object Table). Un Quit() fermerait alors TOUTE
+        l'application, donc le document de l'utilisateur.
+      - DispatchEx("Word.Application") -> force la création d'un NOUVEAU
+        processus WINWORD.EXE, isolé. Notre Quit() ne fermera que cette
+        instance ; le document ouvert par l'utilisateur n'est jamais touché.
+
+    L'instance est rendue invisible pour ne pas polluer l'écran de l'utilisateur.
+    """
+    word = win32com.client.DispatchEx("Word.Application")
+    try:
+        word.Visible = False       # mettre True uniquement pour débogage
+    except Exception:
+        pass
+    try:
+        word.DisplayAlerts = 0     # pas de pop-up (sur NOTRE instance uniquement)
+    except Exception:
+        pass
+    return word
+
+
+def safe_quit_word(word):
+    """
+    Ferme notre instance Word dédiée SANS jamais faire perdre de données.
+
+    Cas normal (DispatchEx a bien créé un processus séparé) : après nos
+    conversions, l'instance ne contient plus aucun document -> on quitte
+    proprement.
+
+    Cas anormal (DispatchEx est retombé sur le Word de l'utilisateur) :
+    il reste des documents ouverts que nous n'avons pas ouverts. On REFUSE
+    alors de forcer la fermeture :
+      - on tente de sauvegarder EN PLACE, sans dialogue bloquant, les
+        documents déjà associés à un fichier (doc.Save() est non destructif :
+        il réécrit le fichier existant, il ne crée pas de "Enregistrer sous") ;
+      - les documents jamais enregistrés (sans chemin) sont laissés tels
+        quels, en mémoire ;
+      - on NE quitte PAS : l'utilisateur reprend la main et sauvegarde
+        lui-même comme il l'entend.
+    """
+    if word is None:
+        return
+    try:
+        count = word.Documents.Count
+    except Exception:
+        count = 0
+
+    if count > 0:
+        # Instance non vide -> on ne force rien.
+        try:
+            for i in range(1, count + 1):
+                try:
+                    d = word.Documents.Item(i)
+                    # d.Saved == False  -> modifications non enregistrées
+                    # d.Path non vide   -> le document a déjà un fichier associé
+                    if (not d.Saved) and d.Path:
+                        d.Save()   # réécrit le fichier existant, aucune boîte de dialogue
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return  # surtout pas de Quit : on préserve le travail de l'utilisateur
+
+    # Instance vide : c'est bien la nôtre, on peut la fermer.
+    try:
+        word.Quit()
+    except Exception:
+        pass
+
+    
 def convert_pdf_structure(input_dir: str, output_dir: str,ignore_exsting_out_put=False,forceBasicConvertion=False,progress_callback=None):
     """
     return a string with log in  case of error
@@ -37,38 +112,52 @@ def convert_pdf_structure(input_dir: str, output_dir: str,ignore_exsting_out_put
         input_path = Path(str(input_dir[i]))
         for pdf_file in input_path.rglob("*.pdf"):
             nbre_file += 1
+    
+    pythoncom.CoInitialize()
+    word = None
+    try:
+        word = get_word_application()
+    except Exception as e:
+        pythoncom.CoUninitialize()
+        return f"Impossible de démarrer Microsoft Word : {e}"
 
     k = 1
-    for i, data in enumerate(input_dir):
-        input_path = Path(str(input_dir[i]))
-        output_path = Path(str(output_dir[i]))
+    try:
+        for i, data in enumerate(input_dir):
+            input_path = Path(str(input_dir[i]))
+            output_path = Path(str(output_dir[i]))
 
-        if not input_path.exists() or not input_path.is_dir():
-            print(f"Error: The input directory '{input_dir}' does not exist or is not a directory.")
-            return f"Error: The input directory '{input_dir}' does not exist or is not a directory. "
+            if not input_path.exists() or not input_path.is_dir():
+                print(f"Error: The input directory '{input_dir}' does not exist or is not a directory.")
+                return f"Error: The input directory '{input_dir}' does not exist or is not a directory. "
 
-        for pdf_file in input_path.rglob("*.pdf"):  # Recursively search for .pdf and .PDF files
-            print("traitement de ",str(pdf_file))
-            relative_path = pdf_file.relative_to(input_path)  # Get relative path from input root
-            new_file_path = output_path / relative_path.with_suffix(".docx")  # Change extension to .docx
-
-
-
-            if ignore_exsting_out_put:
-                if os.path.exists(enable_long_path(str(new_file_path))):
-                    print("ignoring",enable_long_path(str(new_file_path)))
-                    continue
+            for pdf_file in input_path.rglob("*.pdf"):  # Recursively search for .pdf and .PDF files
+                print("traitement de ",str(pdf_file))
+                relative_path = pdf_file.relative_to(input_path)  # Get relative path from input root
+                new_file_path = output_path / relative_path.with_suffix(".docx")  # Change extension to .docx
 
 
-            if 0!= convert_pdf_with_temp(str(pdf_file),str(new_file_path),forceBasicConvertion):#convert_pdf_with_temp #convert_pdf_to_docx
-                if error_log!="":
-                    error_log+="\n"
-                error_log+="error -> "+str(pdf_file)
-                return error_log # a supprimer
-            if progress_callback is not None:
-                progress_value = float(100 * (k) / nbre_file)
-                k += 1
-                progress_callback(progress_value)
+
+                if ignore_exsting_out_put:
+                    if os.path.exists(enable_long_path(str(new_file_path))):
+                        print("ignoring",enable_long_path(str(new_file_path)))
+                        continue
+
+
+                if 0!= convert_pdf_with_temp(str(pdf_file),str(new_file_path),forceBasicConvertion,word=word):#convert_pdf_with_temp #convert_pdf_to_docx
+                    if error_log!="":
+                        error_log+="\n"
+                    error_log+="error -> "+str(pdf_file)
+                    return error_log # a supprimer
+                if progress_callback is not None:
+                    progress_value = float(100 * (k) / nbre_file)
+                    k += 1
+                    progress_callback(progress_value)
+    finally:
+        # On ne ferme QUE notre instance dédiée (processus séparé), et jamais
+        # si elle contient encore des documents de l'utilisateur.
+        safe_quit_word(word)
+        pythoncom.CoUninitialize()
     # purge temp dir if everithing is ok
     if error_log=="":
         reset_folder(get_local_store_path() + "temp_word_conversion/", attempts=10, delay=0.05, recreate=False)
@@ -77,13 +166,22 @@ def convert_pdf_structure(input_dir: str, output_dir: str,ignore_exsting_out_put
 
 
 
-def convert_pdf_to_docx(pdf_path, docx_path):
+def convert_pdf_to_docx(pdf_path, docx_path, word=None):
     """
     Convertit un fichier PDF en DOCX en utilisant Microsoft Word.
 
     Args:
         pdf_path (str): Chemin du fichier PDF source.
         docx_path (str): Chemin du fichier DOCX de destination.
+        word: instance Word.Application à réutiliser. Si None, une instance
+              DÉDIÉE (processus séparé via DispatchEx) est créée puis fermée
+              à la fin de l'appel.
+
+    Cette fonction ne ferme JAMAIS un Word ouvert par l'utilisateur :
+      - si `word` est fourni, elle ne fait que fermer le document qu'elle a
+        ouvert (doc.Close), sans jamais appeler Quit ;
+      - si `word` est None, elle crée sa propre instance isolée et ne ferme
+        que celle-ci.
 
     Returns:
         int: 0 si la conversion a réussi, 1 en cas d'échec.
@@ -92,14 +190,14 @@ def convert_pdf_to_docx(pdf_path, docx_path):
         print(f"Erreur : Le fichier {pdf_path} n'existe pas.")
         return 1
 
+    own_instance = word is None
+    doc = None
     try:
-        # Initialiser COM
-        pythoncom.CoInitialize()
+        if own_instance:
+            # Initialiser COM et créer une instance dédiée isolée
+            pythoncom.CoInitialize()
+            word = get_word_application()
 
-        # Lancer Word
-        word = win32com.client.Dispatch("Word.Application")
-        word.DisplayAlerts = 0  # Désactiver les alertes
-        word.Visible = True  # Mettre à True pour voir Word en action
         print(f"Conversion de {pdf_path} en {docx_path}...")
 
         # Ouvrir le PDF en lecture seule
@@ -108,20 +206,26 @@ def convert_pdf_to_docx(pdf_path, docx_path):
         # Sauvegarder en DOCX
         doc.SaveAs(docx_path, FileFormat=16)  # 16 = wdFormatDocumentDefault
         doc.Close(False)
+        doc = None
 
         print(f"Conversion réussie : {docx_path}")
         return 0
 
     except Exception as e:
         print(f"Erreur lors de la conversion : {e}")
+        # Toujours refermer le document qu'on a ouvert, jamais l'application
+        if doc is not None:
+            try:
+                doc.Close(False)
+            except Exception:
+                pass
         return 1
 
     finally:
-        if 'word' in locals():
-            word.Quit()
-
-        # Libérer COM
-        pythoncom.CoUninitialize()
+        # On ne quitte Word QUE si c'est nous qui avons créé l'instance.
+        if own_instance and word is not None:
+            safe_quit_word(word)
+            pythoncom.CoUninitialize()
 
 
 def wait_for_file_access(file_path, timeout=10, interval=0.5):
@@ -259,11 +363,16 @@ def write_two_strings_to_file(file_path: str,string1: str, string2: str):
     return 0
 
 
-def convert_pdf_with_temp(temp_pdf, output_path,forceBasicConvertion=False):
+def convert_pdf_with_temp(temp_pdf, output_path,forceBasicConvertion=False, word=None):
     """
     Copie le PDF source dans un dossier temporaire, le convertit en DOCX,
     puis copie le fichier résultant vers le chemin de sortie spécifié,
     en gérant les chemins longs.
+
+    word : instance Word.Application à réutiliser pour toutes les tentatives.
+           Si None, une instance DÉDIÉE (processus séparé) est créée puis
+           fermée à la fin de l'appel. Dans tous les cas, un Word ouvert par
+           l'utilisateur n'est jamais fermé.
     """
     pdf_path = enable_long_path(os.path.abspath(temp_pdf))
     output_path = enable_long_path(os.path.abspath(output_path))
@@ -277,7 +386,11 @@ def convert_pdf_with_temp(temp_pdf, output_path,forceBasicConvertion=False):
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    own_instance = word is None
     try:
+        if own_instance:
+            pythoncom.CoInitialize()
+            word = get_word_application()
         dest_dir = get_local_store_path() + "temp_word_conversion/"
         if 0 != reset_folder(dest_dir, attempts=10, delay=0.05):
             print("impossible to reset " + dest_dir)
@@ -304,10 +417,10 @@ def convert_pdf_with_temp(temp_pdf, output_path,forceBasicConvertion=False):
                 wait_for_file_access(temp_pdf)
                 time.sleep(1)
         result=0
-        # Conversion du PDF en DOCX
+        # Conversion du PDF en DOCX (on réutilise la même instance Word dédiée)
         for _ in range(4):
             time.sleep(1)
-            result = convert_pdf_to_docx(str(temp_pdf), str(temp_docx))
+            result = convert_pdf_to_docx(str(temp_pdf), str(temp_docx), word=word)
             if result==0:
                 break
         if result == 0:
@@ -329,5 +442,8 @@ def convert_pdf_with_temp(temp_pdf, output_path,forceBasicConvertion=False):
         print(f"Erreur : {e}")
         return 1
 
-
-
+    finally:
+        # On ne quitte Word QUE si c'est nous qui avons créé l'instance ici.
+        if own_instance and word is not None:
+            safe_quit_word(word)
+            pythoncom.CoUninitialize()
