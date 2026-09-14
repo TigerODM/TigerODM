@@ -104,7 +104,7 @@ def run_inference(images_table, image_col_name, model_table, progress_callback=N
                         else:
                             pass
 
-                    except Exception as img_err:
+                    except Exception:
                         score = np.nan
                         verdict = "ERREUR_INFERENCE"
                         heatmap_path_str = ""

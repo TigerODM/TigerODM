@@ -45,6 +45,7 @@ Optionnel: scikit-image (CLAHE + Canny)
 import sys
 import os
 import re
+import random
 from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
@@ -69,6 +70,68 @@ else:
 
 from scipy.ndimage import gaussian_filter
 import pydicom
+
+
+# =========================================================
+# Support multi-format (tif via tifffile, autres via PIL/imageio)
+# =========================================================
+SUPPORTED_IMAGE_EXTS = (".tif", ".tiff", ".jpg", ".jpeg", ".png", ".bmp")
+
+
+def load_image_any(path: str) -> np.ndarray:
+    """Lit une image quel que soit son format et renvoie un tableau numpy.
+
+    - .tif/.tiff : via tifffile (préserve 16 bits)
+    - autres (jpg, png, bmp, ...) : via PIL, sinon imageio, sinon skimage.io
+    """
+    ext = os.path.splitext(str(path))[1].lower()
+    if ext in (".tif", ".tiff"):
+        return tiff.imread(path)
+
+    last_err = None
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return np.asarray(im)
+    except Exception as e:
+        last_err = e
+    try:
+        import imageio.v2 as imageio
+        return np.asarray(imageio.imread(path))
+    except Exception as e:
+        last_err = e
+    if HAS_SKIMAGE:
+        try:
+            from skimage import io as sk_io
+            return np.asarray(sk_io.imread(path))
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(
+        f"Impossible de lire l'image '{path}' ({ext}). "
+        f"Installez Pillow (pip install pillow) ou imageio. Détail: {last_err}"
+    )
+
+
+def save_image_any(arr: np.ndarray, path: str) -> None:
+    """Écrit un tableau numpy dans le format déduit de l'extension.
+
+    - .tif/.tiff : via tifffile
+    - autres : via PIL, sinon imageio
+    """
+    ext = os.path.splitext(str(path))[1].lower()
+    if ext in (".tif", ".tiff"):
+        photometric = "minisblack" if arr.ndim == 2 else "rgb"
+        tiff.imwrite(path, arr, photometric=photometric)
+        return
+    try:
+        from PIL import Image
+        Image.fromarray(arr).save(path)
+        return
+    except Exception:
+        pass
+    import imageio.v2 as imageio
+    imageio.imwrite(path, arr)
+
 
 # Police 8x8 simplifiée (1 = pixel allumé, 0 = éteint)
 FONT_8x8 = {
@@ -330,6 +393,55 @@ def qimage_from_gray_uint8(arr_u8: np.ndarray) -> QtGui.QImage:
     return qimg
 
 
+def to_display_uint8(arr: np.ndarray) -> np.ndarray:
+    """Convertit un array (2D gris ou 3D couleur) en uint8 pour un affichage brut.
+
+    Pas de courbe de contraste ni de percentile : uniquement le mapping linéaire
+    minimal nécessaire pour afficher l'original à l'écran.
+    - uint8  : tel quel (déjà en 0..255)
+    - autres : normalisation linéaire globale min->0, max->255
+      (globale = même échelle sur tous les canaux, donc couleurs préservées)
+    """
+    a = arr
+    if a.dtype == np.uint8:
+        return np.ascontiguousarray(a)
+
+    a = a.astype(np.float64)
+    mn = float(np.nanmin(a)) if a.size else 0.0
+    mx = float(np.nanmax(a)) if a.size else 0.0
+    if mx > mn:
+        out = ((a - mn) / (mx - mn) * 255.0).astype(np.uint8)
+    else:
+        out = np.zeros(a.shape, dtype=np.uint8)
+    return np.ascontiguousarray(out)
+
+
+def qimage_from_any_uint8(arr_u8: np.ndarray) -> QtGui.QImage:
+    """QImage depuis un array uint8 2D (gris) ou 3D (RGB/RGBA)."""
+    if arr_u8.ndim == 2:
+        return qimage_from_gray_uint8(arr_u8)
+
+    h, w = arr_u8.shape[:2]
+    c = arr_u8.shape[2]
+
+    if c == 1:
+        return qimage_from_gray_uint8(np.ascontiguousarray(arr_u8[..., 0]))
+
+    if c == 4:
+        arr_u8 = np.ascontiguousarray(arr_u8)
+        qimg = QtGui.QImage(arr_u8.data, w, h, arr_u8.strides[0],
+                            QtGui.QImage.Format.Format_RGBA8888)
+        qimg._arr_ref = arr_u8
+        return qimg
+
+    # c == 3 (ou plus : on garde les 3 premiers canaux)
+    rgb = np.ascontiguousarray(arr_u8[..., :3])
+    qimg = QtGui.QImage(rgb.data, w, h, rgb.strides[0],
+                        QtGui.QImage.Format.Format_RGB888)
+    qimg._arr_ref = rgb
+    return qimg
+
+
 def hist_uint16(arr_u16: np.ndarray) -> np.ndarray:
     return np.bincount(arr_u16.ravel(), minlength=65536)
 
@@ -435,6 +547,9 @@ class ImageView(QtWidgets.QGraphicsView):
     # signal rectangle crop (col, row, delta_col, delta_line)
     cropSelected = QtCore.Signal(int, int, int, int)
 
+    # signal ligne de calibration (x0, y0, x1, y1) en coordonnées image
+    calibrationSelected = QtCore.Signal(float, float, float, float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setRenderHints(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
@@ -460,6 +575,33 @@ class ImageView(QtWidgets.QGraphicsView):
         self._pan_active = False
         self._pan_last_pos = None
 
+        # --- Mode calibration (tracé d'une ligne pour mesurer une distance) ---
+        self._calib_mode = False          # activé/désactivé par le bouton "Calibration"
+        self._calib_active = False        # une ligne est en cours de tracé
+        self._calib_origin_scene = None   # point de départ en coordonnées scène (=image)
+        self._calib_line_item = None      # ligne d'aperçu temporaire pendant le glissement
+
+    def set_calibration_mode(self, on: bool):
+        """Active/désactive le mode calibration. En mode calibration, le clic
+        gauche + glisser trace une ligne (au lieu de la sélection rectangulaire)."""
+        self._calib_mode = bool(on)
+        # Annule un tracé éventuellement en cours
+        if not self._calib_mode:
+            self._clear_calib_preview()
+            self._calib_active = False
+            self._calib_origin_scene = None
+
+    def _clear_calib_preview(self):
+        """Retire la ligne d'aperçu temporaire de la scène."""
+        if getattr(self, "_calib_line_item", None) is not None:
+            try:
+                sc = self.scene()
+                if sc is not None:
+                    sc.removeItem(self._calib_line_item)
+            except Exception:
+                pass
+            self._calib_line_item = None
+
     def eventFilter(self, obj, ev):
         if obj is self.viewport() and ev.type() == QtCore.QEvent.CursorChange:
             if self.viewport().cursor().shape() != QtCore.Qt.CrossCursor:
@@ -483,6 +625,24 @@ class ImageView(QtWidgets.QGraphicsView):
             self._pan_active = True
             self._pan_last_pos = event.pos()
             self.viewport().setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and self._calib_mode:
+            # Démarre le tracé de la ligne de calibration
+            self._calib_active = True
+            self._calib_origin_scene = self.mapToScene(event.pos())
+            self._clear_calib_preview()
+            pen = QtGui.QPen(QtGui.QColor(40, 200, 90))
+            pen.setStyle(QtCore.Qt.PenStyle.SolidLine)
+            pen.setCosmetic(True)
+            pen.setWidth(2)
+            sc = self.scene()
+            if sc is not None:
+                x0 = self._calib_origin_scene.x()
+                y0 = self._calib_origin_scene.y()
+                self._calib_line_item = sc.addLine(x0, y0, x0, y0, pen)
+                self._calib_line_item.setZValue(11)
             event.accept()
             return
 
@@ -519,6 +679,13 @@ class ImageView(QtWidgets.QGraphicsView):
         else:
             self.mouseMoved.emit(-1, -1)
 
+        if self._calib_active and self._calib_origin_scene is not None \
+                and self._calib_line_item is not None:
+            sp2 = self.mapToScene(event.pos())
+            self._calib_line_item.setLine(
+                self._calib_origin_scene.x(), self._calib_origin_scene.y(),
+                sp2.x(), sp2.y()
+            )
         if self._rb_active and self._rb_origin is not None:
             rect = QtCore.QRect(self._rb_origin, event.pos()).normalized()
             self._rb.setGeometry(rect)
@@ -531,6 +698,31 @@ class ImageView(QtWidgets.QGraphicsView):
             self._pan_active = False
             self._pan_last_pos = None
             self.viewport().setCursor(QtCore.Qt.CursorShape.CrossCursor)
+            event.accept()
+            return
+        if self._calib_active and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self._calib_active = False
+            origin = self._calib_origin_scene
+            self._calib_origin_scene = None
+            # Retire l'aperçu temporaire (le parent tracera la ligne définitive)
+            self._clear_calib_preview()
+
+            if origin is None:
+                super().mouseReleaseEvent(event)
+                return
+
+            sp1 = self.mapToScene(event.pos())
+            x0, y0 = float(origin.x()), float(origin.y())
+            x1, y1 = float(sp1.x()), float(sp1.y())
+
+            # Clamp aux bornes de l'image
+            if self._img_w > 0 and self._img_h > 0:
+                x0 = float(np.clip(x0, 0, self._img_w - 1))
+                x1 = float(np.clip(x1, 0, self._img_w - 1))
+                y0 = float(np.clip(y0, 0, self._img_h - 1))
+                y1 = float(np.clip(y1, 0, self._img_h - 1))
+
+            self.calibrationSelected.emit(x0, y0, x1, y1)
             event.accept()
             return
 
@@ -578,6 +770,13 @@ class ImageView(QtWidgets.QGraphicsView):
 
 
 class Tiff16Viewer(QtWidgets.QWidget):
+    # Signal émis quand un crop est exporté :
+    # (chemin du crop, chemin image d'origine, line, col, delta_line, delta_col)
+    cropExported = QtCore.Signal(str, str, int, int, int, int)
+
+    # Signal émis quand une calibration est réalisée :
+    # (chemin image de référence, sizeOfPixel, distance, longueur_px, x0, y0, x1, y1, unité)
+    calibrationExported = QtCore.Signal(str, float, float, float, float, float, float, float, str)                                                                                              
     def __init__(self, input_path, parent=None):
         super().__init__(parent)
 
@@ -607,7 +806,21 @@ class Tiff16Viewer(QtWidgets.QWidget):
         self.name_label = QtWidgets.QLabel("--")
         self.name_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
 
+        # Bouton pour tirer une autre image du lot au hasard
+        self.btn_random = QtWidgets.QPushButton("Image aléatoire")
+        self.btn_random.setToolTip("Affiche une autre image du lot, choisie aléatoirement.")
+        self.btn_random.setEnabled(len(self.files) > 1)
+
+        # Bouton pour remettre la vue à sa position/zoom par défaut
+        self.btn_reset_view = QtWidgets.QPushButton("Réinitialiser la vue")
+        self.btn_reset_view.setToolTip(
+            "Remet l'image à sa position et son zoom par défaut\n"
+            "(utile si on s'est perdu en zoomant/dézoomant)."
+        )
+
         nav = QtWidgets.QHBoxLayout()
+        nav.addWidget(self.btn_random)
+        nav.addWidget(self.btn_reset_view)
         nav.addStretch(1)
         nav.addWidget(self.name_label)
 
@@ -745,6 +958,39 @@ class Tiff16Viewer(QtWidgets.QWidget):
         self.sh_rad_spin.setRange(0.1, 10.0)
         self.sh_rad_spin.setValue(1.0)
 
+        # --- Crop (bouton) ---
+        self.btn_crop = QtWidgets.QPushButton("Crop")
+        self.btn_crop.setEnabled(False)
+        self.btn_crop.setToolTip(
+            "Sélectionnez une zone à la souris (clic gauche + glisser), "
+            "puis cliquez sur « Crop » pour exporter le recadrage et propager le signal."
+        )
+        self.crop_status = QtWidgets.QLabel("Sélectionnez une zone puis cliquez sur « Crop ».")
+
+        # État de la sélection courante : (col, row, delta_col, delta_line)
+        self._crop_selection: Optional[Tuple[int, int, int, int]] = None
+        # Rectangle overlay persistant dans la scène
+        self._crop_rect_item = None
+        # Compteur pour générer des noms de sortie uniques
+        self._crop_counter = 0
+
+        # --- Calibration (bouton) ---
+        self.btn_calib = QtWidgets.QPushButton("Calibration")
+        self.btn_calib.setCheckable(True)
+        self.btn_calib.setToolTip(
+            "Activez ce mode puis tracez une ligne à la souris (clic gauche + glisser) "
+            "sur une distance connue de l'image.\n"
+            "Au relâchement, saisissez la distance réelle : le viewer calcule la taille "
+            "d'un pixel (sizeOfPixel) et l'envoie en sortie."
+        )
+        self.calib_status = QtWidgets.QLabel(
+            "Calibration : activez le mode, puis tracez une ligne sur une distance connue."
+        )
+        # Ligne overlay persistante + valeur mesurée
+        self._calib_line_item = None
+        self._calib_text_item = None
+        self.calib_size_of_pixel: Optional[float] = None
+        self.calib_unit: str = "mm"
         # --- Checkbox Relative Min/Max ---
         self.chk_relative_minmax = QtWidgets.QCheckBox("Relative Min/Max (%)")
         self.chk_relative_minmax.setChecked(False)
@@ -803,10 +1049,21 @@ class Tiff16Viewer(QtWidgets.QWidget):
         grid.addWidget(self.high_slider, 1, 1)
         grid.addWidget(self.high_spin, 1, 2)
 
+        # --- Checkbox affichage original couleur (sans filtre) ---
+        self.chk_original_color = QtWidgets.QCheckBox("Couleur d'origine (sans filtre)")
+        self.chk_original_color.setChecked(False)
+        self.chk_original_color.setToolTip(
+            "Affiche l'image d'origine telle quelle (couleur si disponible),\n"
+            "sans étalement ni courbe de contraste.\n"
+            "Cliquer un mode de contraste ou « Auto/Plein écart » redésactive ce mode."
+        )
+
         btns = QtWidgets.QHBoxLayout()
         btns.addWidget(self.btn_auto)
         btns.addWidget(self.btn_full)
         btns.addWidget(self.btn_reset)
+        btns.addSpacing(16)
+        btns.addWidget(self.chk_original_color)
         btns.addStretch(1)
 
         contrast_btns1 = QtWidgets.QHBoxLayout()
@@ -827,6 +1084,7 @@ class Tiff16Viewer(QtWidgets.QWidget):
         contrast_btns2.addWidget(self.btn_canny)
         contrast_btns2.addStretch(1)
 
+        # --- Ligne paramètres 1 : réglages des algorithmes de contraste/contours ---
         params_row = QtWidgets.QHBoxLayout()
         params_row.addWidget(QtWidgets.QLabel("HE nbins:"))
         params_row.addWidget(self.he_bins_spin)
@@ -853,28 +1111,44 @@ class Tiff16Viewer(QtWidgets.QWidget):
         params_row.addSpacing(6)
         params_row.addWidget(QtWidgets.QLabel("high:"))
         params_row.addWidget(self.canny_high_spin)
-
-        params_row.addSpacing(12)
-        params_row.addWidget(self.chk_relative_minmax)
-
-        params_row.addSpacing(12)
-        params_row.addWidget(self.chk_threshold)
-        params_row.addWidget(self.thr_mode_combo)
-        params_row.addWidget(self.thr_spin)
-        params_row.addWidget(self.chk_threshold_invert)
         params_row.addStretch(1)
 
-        params_row.addSpacing(12)
-        params_row.addWidget(self.btn_highpass)
-        params_row.addWidget(QtWidgets.QLabel("σ:"))
-        params_row.addWidget(self.hp_sigma_spin)
+        # --- Ligne paramètres 2 : options/opérations (seuil, min/max, passe-haut, netteté) ---
+        params_row2 = QtWidgets.QHBoxLayout()
+        params_row2.addWidget(self.chk_relative_minmax)
 
-        params_row.addSpacing(12)
-        params_row.addWidget(self.btn_sharpen)
-        params_row.addWidget(QtWidgets.QLabel("Amt:"))
-        params_row.addWidget(self.sh_amt_spin)
-        params_row.addWidget(QtWidgets.QLabel("Rad:"))
-        params_row.addWidget(self.sh_rad_spin)
+        params_row2.addSpacing(12)
+        params_row2.addWidget(self.chk_threshold)
+        params_row2.addWidget(self.thr_mode_combo)
+        params_row2.addWidget(self.thr_spin)
+        params_row2.addWidget(self.chk_threshold_invert)
+
+        params_row2.addSpacing(12)
+        params_row2.addWidget(self.btn_highpass)
+        params_row2.addWidget(QtWidgets.QLabel("σ:"))
+        params_row2.addWidget(self.hp_sigma_spin)
+
+        params_row2.addSpacing(12)
+        params_row2.addWidget(self.btn_sharpen)
+        params_row2.addWidget(QtWidgets.QLabel("Amt:"))
+        params_row2.addWidget(self.sh_amt_spin)
+        params_row2.addWidget(QtWidgets.QLabel("Rad:"))
+        params_row2.addWidget(self.sh_rad_spin)
+        params_row2.addStretch(1)
+
+        # --- Ligne Crop ---
+        crop_row = QtWidgets.QHBoxLayout()
+        crop_row.addWidget(self.btn_crop)
+        crop_row.addSpacing(12)
+        crop_row.addWidget(self.crop_status)
+        crop_row.addStretch(1)
+
+        # --- Ligne Calibration ---
+        calib_row = QtWidgets.QHBoxLayout()
+        calib_row.addWidget(self.btn_calib)
+        calib_row.addSpacing(12)
+        calib_row.addWidget(self.calib_status)
+        calib_row.addStretch(1)
 
         # --- Panneau d'infos (spec) ---
         self.info_edit = QtWidgets.QLineEdit()
@@ -890,6 +1164,9 @@ class Tiff16Viewer(QtWidgets.QWidget):
         v.addLayout(contrast_btns1)
         v.addLayout(contrast_btns2)
         v.addLayout(params_row)
+        v.addLayout(params_row2)
+        v.addLayout(crop_row)
+        v.addLayout(calib_row)
         v.addWidget(self.info_edit)
 
         # --- Connexions ---
@@ -901,6 +1178,7 @@ class Tiff16Viewer(QtWidgets.QWidget):
         self.btn_auto.clicked.connect(self.apply_auto)
         self.btn_full.clicked.connect(self.apply_full)
         self.btn_reset.clicked.connect(self.reset_view)
+        self.btn_reset_view.clicked.connect(self.reset_view)
 
         self.btn_lin.clicked.connect(lambda: self.set_contrast_mode("linear"))
         self.btn_gam05.clicked.connect(lambda: self.set_contrast_mode("gamma05"))
@@ -939,6 +1217,8 @@ class Tiff16Viewer(QtWidgets.QWidget):
 
         self.chk_relative_minmax.stateChanged.connect(self.update_view)
 
+        self.chk_original_color.toggled.connect(self.update_view)
+
         self.chk_threshold.stateChanged.connect(self.update_view)
         self.thr_spin.valueChanged.connect(self.update_view)
         self.chk_threshold_invert.stateChanged.connect(self.update_view)
@@ -946,14 +1226,226 @@ class Tiff16Viewer(QtWidgets.QWidget):
         self.view.mouseMoved.connect(self._on_mouse_moved)
         self.view.cropSelected.connect(self._on_crop_selected)
 
+        # --- Connexions Crop ---
+        self.btn_crop.clicked.connect(self._do_crop)
+
+        # --- Connexions Calibration ---
+        self.btn_calib.toggled.connect(self._on_calib_toggled)
+        self.view.calibrationSelected.connect(self._on_calibration_selected)
+
+        # --- Connexion image aléatoire ---
+        self.btn_random.clicked.connect(self._load_random_image)
+
         # --- Charge première image ---
         self._load_current_image()
 
     def _on_crop_selected(self, col: int, row: int, delta_col: int, delta_line: int):
         crop_spec = f"Crop | line = {row} | col = {col} | delta_line = {delta_line} | delta_col = {delta_col}"
-        crop_spec = '"' + crop_spec + '"'
-        self.info_edit.setText(crop_spec)
-        self._last_transform_spec = crop_spec
+        quoted = '"' + crop_spec + '"'
+        self.info_edit.setText(quoted)
+        self._last_transform_spec = quoted
+
+        # --- Crop : mémorise la zone, dessine le rectangle, active le bouton ---
+        self._crop_selection = (int(col), int(row), int(delta_col), int(delta_line))
+        self._update_crop_rect_item(col, row, delta_col, delta_line)
+        valid = (delta_col > 0 and delta_line > 0)
+        self.btn_crop.setEnabled(valid)
+        if valid:
+            self.crop_status.setText(
+                f"Zone : ligne={row}, col={col}, "
+                f"Δligne={delta_line}, Δcol={delta_col} — cliquez « Crop »."
+            )
+        else:
+            self.crop_status.setText("Zone invalide, recommencez la sélection.")
+
+    # -------------------------------------------------
+    # Crop
+    # -------------------------------------------------
+    def _clear_crop_rect_item(self):
+        """Retire le rectangle de sélection de la scène."""
+        if getattr(self, "_crop_rect_item", None) is not None:
+            try:
+                self.scene.removeItem(self._crop_rect_item)
+            except Exception:
+                pass
+            self._crop_rect_item = None
+
+    def _update_crop_rect_item(self, col, row, delta_col, delta_line):
+        """Affiche un rectangle overlay (coordonnées image) sur la zone sélectionnée."""
+        self._clear_crop_rect_item()
+        if delta_col <= 0 or delta_line <= 0:
+            return
+        pen = QtGui.QPen(QtGui.QColor(255, 60, 60))
+        pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)  # épaisseur constante quel que soit le zoom
+        pen.setWidth(2)
+        rect = QtCore.QRectF(float(col), float(row), float(delta_col), float(delta_line))
+        self._crop_rect_item = self.scene.addRect(rect, pen)
+        self._crop_rect_item.setZValue(10)
+
+    def _do_crop(self):
+        """Exporte la zone sélectionnée en .tif (16 bits préservés) et propage le signal."""
+        if self._crop_selection is None:
+            self.crop_status.setText("Sélectionnez d'abord une zone à l'écran.")
+            return
+
+        col, row, dcol, dline = self._crop_selection
+        if dcol <= 0 or dline <= 0:
+            self.crop_status.setText("Zone invalide (largeur/hauteur nulle).")
+            return
+
+        src_path = self.files[self.idx]
+
+        # Construit un chemin de sortie unique (à côté du fichier source),
+        # en conservant le format d'entrée (.tif -> .tif, .jpg -> .jpg, ...)
+        base, ext = os.path.splitext(src_path)
+        if ext.lower() not in SUPPORTED_IMAGE_EXTS:
+            ext = ".tif"
+        self._crop_counter += 1
+        dst_path = f"{base}_crop{self._crop_counter}{ext}"
+        while os.path.exists(dst_path):
+            self._crop_counter += 1
+            dst_path = f"{base}_crop{self._crop_counter}{ext}"
+
+        crop_spec = f"Crop | line = {row} | col = {col} | delta_line = {dline} | delta_col = {dcol}"
+        try:
+            crop_image_by_spec(src_path, dst_path, crop_spec)
+        except Exception as e:
+            self.crop_status.setText(f"Échec du crop : {e}")
+            return
+
+        self.crop_status.setText(f"Crop exporté : {os.path.basename(dst_path)}")
+        self._last_transform_spec = '"' + crop_spec + '"'
+        self.info_edit.setText(self._last_transform_spec)
+
+                # Propage le signal : chemin du crop + chemin d'origine + coordonnées
+        self.cropExported.emit(
+            dst_path, str(src_path), int(row), int(col), int(dline), int(dcol)
+        )
+
+    # -------------------------------------------------
+    # Calibration
+    # -------------------------------------------------
+    def _on_calib_toggled(self, checked: bool):
+        """Active/désactive le mode calibration dans la vue."""
+        self.view.set_calibration_mode(bool(checked))
+        if checked:
+            self.calib_status.setText(
+                "Mode calibration ACTIF : tracez une ligne sur une distance connue."
+            )
+        else:
+            self.calib_status.setText(
+                "Calibration : activez le mode, puis tracez une ligne sur une distance connue."
+            )
+
+    def _clear_calib_overlay(self):
+        """Retire la ligne définitive de calibration et son étiquette de la scène."""
+        for attr in ("_calib_line_item", "_calib_text_item"):
+            item = getattr(self, attr, None)
+            if item is not None:
+                try:
+                    self.scene.removeItem(item)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+    def _update_calib_overlay(self, x0, y0, x1, y1, size_of_pixel, unit):
+        """Trace la ligne de calibration définitive + une étiquette avec la valeur."""
+        self._clear_calib_overlay()
+        pen = QtGui.QPen(QtGui.QColor(40, 200, 90))
+        pen.setStyle(QtCore.Qt.PenStyle.SolidLine)
+        pen.setCosmetic(True)
+        pen.setWidth(2)
+        self._calib_line_item = self.scene.addLine(
+            float(x0), float(y0), float(x1), float(y1), pen
+        )
+        self._calib_line_item.setZValue(11)
+
+        try:
+            label = f"{size_of_pixel:.5g} {unit}/px"
+            txt = self.scene.addText(label)
+            txt.setDefaultTextColor(QtGui.QColor(40, 200, 90))
+            txt.setZValue(12)
+            txt.setPos(float((x0 + x1) / 2.0), float((y0 + y1) / 2.0))
+            self._calib_text_item = txt
+        except Exception:
+            self._calib_text_item = None
+
+    def _ask_calibration_distance(self):
+        """Demande la distance réelle et l'unité. Retourne (distance, unit, ok)."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Calibration — distance réelle")
+        form = QtWidgets.QFormLayout(dlg)
+
+        spin = QtWidgets.QDoubleSpinBox(dlg)
+        spin.setDecimals(6)
+        spin.setRange(0.0, 1e12)
+        spin.setValue(1.0)
+        form.addRow("Distance réelle :", spin)
+
+        unit_edit = QtWidgets.QLineEdit(dlg)
+        unit_edit.setText(self.calib_unit or "mm")
+        unit_edit.setPlaceholderText("mm, µm, cm, ...")
+        form.addRow("Unité :", unit_edit)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            QtCore.Qt.Orientation.Horizontal, dlg
+        )
+        form.addRow(buttons)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+
+        if dlg.exec() if hasattr(dlg, "exec") else dlg.exec_():
+            return float(spin.value()), unit_edit.text().strip() or "px", True
+        return 0.0, "", False
+
+    def _on_calibration_selected(self, x0: float, y0: float, x1: float, y1: float):
+        """Réception d'une ligne de calibration : demande la distance et calcule sizeOfPixel."""
+        pixel_length = float(np.hypot(x1 - x0, y1 - y0))
+        if pixel_length < 1e-6:
+            self.calib_status.setText(
+                "Ligne trop courte : tracez une ligne plus longue sur une distance connue."
+            )
+            return
+
+        distance, unit, ok = self._ask_calibration_distance()
+        if not ok:
+            self.calib_status.setText("Calibration annulée.")
+            return
+        if distance <= 0.0:
+            self.calib_status.setText("Distance invalide (doit être > 0).")
+            return
+
+        size_of_pixel = distance / pixel_length
+        self.calib_size_of_pixel = size_of_pixel
+        self.calib_unit = unit
+
+        # Overlay + infos
+        self._update_calib_overlay(x0, y0, x1, y1, size_of_pixel, unit)
+        self.calib_status.setText(
+            f"sizeOfPixel = {size_of_pixel:.6g} {unit}/px "
+            f"(distance {distance:g} {unit} / {pixel_length:.2f} px)"
+        )
+        calib_spec = (
+            f"Calibration | distance = {distance:g} | unit = {unit} | "
+            f"pixel_length = {pixel_length:.4f} | sizeOfPixel = {size_of_pixel:.8g}"
+        )
+        self._last_transform_spec = '"' + calib_spec + '"'
+        self.info_edit.setText(self._last_transform_spec)
+
+        # Chemin de l'image de référence courante
+        try:
+            ref_path = str(self.files[self.idx])
+        except Exception:
+            ref_path = ""
+
+        # Propage le signal vers le widget Orange
+        self.calibrationExported.emit(
+            ref_path, float(size_of_pixel), float(distance), float(pixel_length),
+            float(x0), float(y0), float(x1), float(y1), str(unit)
+        )
 
     def build_transform_spec_from_ui(self, low_val_i16: int, high_val_i16: int) -> str:
         parts = ["Transform"]
@@ -1030,6 +1522,24 @@ class Tiff16Viewer(QtWidgets.QWidget):
         self.info_edit.setText('"' + spec + '"')
 
     def _resolve_inputs(self, input_path):
+        # --- Cas 1 : liste/tuple explicite de fichiers ---
+        if isinstance(input_path, (list, tuple)):
+            exts = set(SUPPORTED_IMAGE_EXTS)
+            files = [
+                os.path.abspath(str(p)) for p in input_path
+                if os.path.splitext(str(p))[1].lower() in exts
+            ]
+            if not files:
+                QtWidgets.QMessageBox.critical(
+                    None, "Erreur", "Aucune image supportée dans la liste fournie."
+                )
+                sys.exit(1)
+            self.files = files
+            # Démarre sur une image choisie aléatoirement
+            self.idx = random.randrange(len(self.files))
+            return
+
+        # --- Cas 2 : chemin unique (fichier ou dossier) — comportement d'origine ---
         path = os.path.abspath(input_path)
         if os.path.isdir(path):
             folder = path
@@ -1038,12 +1548,12 @@ class Tiff16Viewer(QtWidgets.QWidget):
             folder = os.path.dirname(path) if os.path.dirname(path) else "."
             start_file = os.path.basename(path)
 
-        exts = {".tif", ".tiff"}
+        exts = set(SUPPORTED_IMAGE_EXTS)
         files = [f for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in exts]
         files.sort(key=lambda x: x.lower())
 
         if not files:
-            QtWidgets.QMessageBox.critical(None, "Erreur", f"Aucune image .tif/.tiff dans :\n{folder}")
+            QtWidgets.QMessageBox.critical(None, "Erreur", f"Aucune image supportée dans :\n{folder}")
             sys.exit(1)
 
         self.files = [os.path.join(folder, f) for f in files]
@@ -1056,6 +1566,18 @@ class Tiff16Viewer(QtWidgets.QWidget):
         else:
             self.idx = 0
 
+    def _load_random_image(self):
+        """Affiche une autre image du lot, choisie aléatoirement."""
+        if not self.files:
+            return
+        if len(self.files) == 1:
+            self.idx = 0
+        else:
+            # tire un index différent de l'image actuellement affichée
+            choices = [i for i in range(len(self.files)) if i != self.idx]
+            self.idx = random.choice(choices)
+        self._load_current_image()
+
     def _load_current_image(self):
         path = self.files[self.idx]
         self._load_image_from_path(path)
@@ -1063,10 +1585,43 @@ class Tiff16Viewer(QtWidgets.QWidget):
         self.update_view()
         self._update_name_label()
 
+        # Réinitialise la sélection crop pour la nouvelle image
+        if hasattr(self, "_crop_rect_item"):
+            self._clear_crop_rect_item()
+            self._crop_selection = None
+            if hasattr(self, "btn_crop"):
+                self.btn_crop.setEnabled(False)
+            if hasattr(self, "crop_status"):
+                self.crop_status.setText(
+                    "Sélectionnez une zone puis cliquez sur « Crop »."
+                )
+
+        # Réinitialise la calibration pour la nouvelle image (mesure valable par image)
+        if hasattr(self, "_calib_line_item"):
+            self._clear_calib_overlay()
+            self.calib_size_of_pixel = None
+            if hasattr(self, "calib_status"):
+                if hasattr(self, "btn_calib") and self.btn_calib.isChecked():
+                    self.calib_status.setText(
+                        "Mode calibration ACTIF : tracez une ligne sur une distance connue."
+                    )
+                else:
+                    self.calib_status.setText(
+                        "Calibration : activez le mode, puis tracez une ligne sur une distance connue."
+                    )
+
     def _load_image_from_path(self, path):
-        arr = tiff.imread(path)
+        arr = load_image_any(path)
+        # Conserve l'original (couleur éventuelle) pour l'affichage "sans filtre"
+        self._arr_original = arr
         if arr.ndim == 3:
-            arr = arr[..., 0]
+            c = arr.shape[2]
+            if c >= 3:
+                # Conversion luminance (RGB/RGBA -> niveaux de gris)
+                rgb = arr[..., :3].astype(np.float64)
+                arr = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+            else:
+                arr = arr[..., 0]
         if arr.dtype != np.uint16:
             arr = arr.astype(np.uint16, copy=False)
         self.arr16 = np.ascontiguousarray(arr)
@@ -1085,6 +1640,8 @@ class Tiff16Viewer(QtWidgets.QWidget):
 
     def set_contrast_mode(self, mode: str):
         self.contrast_mode = mode
+        # Choisir un filtre quitte le mode "original couleur"
+        self._exit_original_color_mode()
         self.update_view()
 
     def compute_low_high_values_i16(self) -> Tuple[int, int]:
@@ -1214,6 +1771,21 @@ class Tiff16Viewer(QtWidgets.QWidget):
         return np.clip(y * 255.0, 0.0, 255.0).astype(np.uint8)
 
     def update_view(self):
+        # --- Mode "original couleur (sans filtre)" ---
+        if (getattr(self, "chk_original_color", None) is not None
+                and self.chk_original_color.isChecked()
+                and getattr(self, "_arr_original", None) is not None):
+            disp = to_display_uint8(self._arr_original)
+            qimg = qimage_from_any_uint8(disp)
+            self.pixmap_item.setPixmap(QtGui.QPixmap.fromImage(qimg))
+            ch = 1 if self._arr_original.ndim == 2 else self._arr_original.shape[2]
+            kind = "couleur" if ch >= 3 else "gris"
+            self.setWindowTitle(
+                f"Original {kind} (sans filtre) – {self.w}x{self.h} – "
+                f"{self._arr_original.dtype}"
+            )
+            return
+
         low_val_i16, high_val_i16 = self.compute_low_high_values_i16()
         img8 = self.stretch_to_8bit(self.arr16, low_val_i16, high_val_i16)
         self._last_img8 = img8
@@ -1294,17 +1866,29 @@ class Tiff16Viewer(QtWidgets.QWidget):
             self.val_edit.setText(f"{v16}" + (f" \u2192 {v8}" if v8 is not None else ""))
 
     def apply_auto(self):
+        self._exit_original_color_mode()
         self.low_slider.setValue(2)
         self.high_slider.setValue(98)
         self.update_view()
 
     def apply_full(self):
+        self._exit_original_color_mode()
         self.low_slider.setValue(0)
         self.high_slider.setValue(100)
         self.update_view()
 
+    def _exit_original_color_mode(self):
+        """Décoche le mode 'original couleur' sans redéclencher update_view."""
+        if getattr(self, "chk_original_color", None) is not None and self.chk_original_color.isChecked():
+            self.chk_original_color.blockSignals(True)
+            self.chk_original_color.setChecked(False)
+            self.chk_original_color.blockSignals(False)
+
     def reset_view(self):
         self.view.resetTransform()
+        # Recentre sur l'image (utile si on s'est perdu en pannant/zoomant)
+        if getattr(self, "pixmap_item", None) is not None:
+            self.view.centerOn(self.pixmap_item)
         self.update_view()
 
 
@@ -2650,11 +3234,12 @@ def crop_tiff_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str,
         fmt = ("mono16" if arr.dtype == np.uint16 else "mono", arr.dtype)
     elif arr.ndim == 3:
         H, W, C = arr.shape
-        if arr.dtype == np.uint8 and C in (3, 4):
-            fmt = ("rgb" if C == 3 else "rgba", np.uint8)
-        elif arr.dtype == np.uint8 and C == 1:
+        if C == 1:
             arr = arr[..., 0]
-            fmt = ("mono", np.uint8)
+            fmt = ("mono16" if arr.dtype == np.uint16 else "mono", arr.dtype)
+        elif C in (3, 4):
+            # RGB / RGBA quel que soit le dtype (uint8, uint16, ...)
+            fmt = ("rgb" if C == 3 else "rgba", arr.dtype)
         else:
             raise ValueError(f"Unsupported 3D image shape/dtype: {arr.shape}, {arr.dtype}")
     else:
@@ -2762,6 +3347,52 @@ def crop_tiff_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str,
         "n_outputs": int(len(outputs)),
         "outputs": outputs,
     }
+
+
+def crop_image_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str, Any]:
+    """Crop générique préservant le format d'entrée.
+
+    - .tif/.tiff : délègue à crop_tiff_by_spec (comportement inchangé, mode center inclus)
+    - autres (jpg, png, ...) : lecture/écriture via load_image_any/save_image_any
+      (mode legacy uniquement — celui produit par la sélection souris du viewer)
+    """
+    ext = os.path.splitext(str(src_path))[1].lower()
+    if ext in (".tif", ".tiff"):
+        return crop_tiff_by_spec(src_path, dst_path, crop_spec)
+
+    cfg = _parse_crop_spec(crop_spec)
+    if cfg.get("type") == "center":
+        raise ValueError("Le mode 'center' n'est supporté que pour les fichiers .tif.")
+
+    arr = load_image_any(src_path)
+    H, W = arr.shape[:2]
+
+    line = int(cfg["line"])
+    col = int(cfg["col"])
+    dline = int(cfg["delta_line"])
+    dcol = int(cfg["delta_col"])
+
+    y0 = max(0, line)
+    x0 = max(0, col)
+    y1 = min(H, y0 + dline)
+    x1 = min(W, x0 + dcol)
+
+    if y1 <= y0 or x1 <= x0:
+        raise ValueError("Crop is empty after clamping to image bounds.")
+
+    roi = np.ascontiguousarray(arr[y0:y1, x0:x1, ...])
+    save_image_any(roi, dst_path)
+
+    return {
+        "src": src_path,
+        "dst": dst_path,
+        "input_shape": tuple(arr.shape),
+        "output_shape": tuple(roi.shape),
+        "dtype": str(roi.dtype),
+        "crop_type": "legacy",
+        "crop_effective": {"y0": int(y0), "x0": int(x0), "y1": int(y1), "x1": int(x1)},
+    }
+
 
 def convert_pdfs_to_png_fitz(input_folder, output_folder, zoom=2):
     """
