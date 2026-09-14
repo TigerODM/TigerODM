@@ -64,15 +64,15 @@ def create_chunks(table, column_name, tokenizer="character", chunk_size=300, chu
 
     # À tester avant d'ajouter la fonctionnalité dans l'UI
     # Model d'embeddings REQUIS !
-    elif mode == "Semantic":
-        chunker = SemanticChunker(embedding_model=tokenizer, threshold=0.7, chunk_size=chunk_size, similarity_window=3)
+    # elif mode == "Semantic":
+    #     chunker = SemanticChunker(embedding_model=tokenizer, threshold=0.7, chunk_size=chunk_size, similarity_window=3)
 
     # Model d'embeddings REQUIS !
     elif mode == "late":
         chunker = LateChunker(embedding_model=tokenizer, chunk_size=chunk_size, min_characters_per_chunk=24)
 
-    elif mode == "Code":
-        chunker = CodeChunker("blabla")
+    # elif mode == "Code":
+    #     chunker = CodeChunker("blabla")
 
     else:
         raise ValueError(f"Invalid mode: {mode}. Valid modes are: Token, Sentence, Recursive, Markdown, Late")

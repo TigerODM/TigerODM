@@ -171,7 +171,7 @@ class OWChunker(base_widget.BaseListWidget):
                 return
             else:
                 try:
-                    self.tokenizer = SentenceTransformerEmbeddings(self.tokenizer_path, device="cpu")
+                    self.tokenizer = SentenceTransformerEmbeddings(self.tokenizer_path, device="cpu", trust_remote_code=True)
                 except Exception as e:
                     self.error(f"Invalid model for 'late' chunking. Try with Model - Embeddings - MPNET. ({e})")
                     self.Outputs.data.send(None)

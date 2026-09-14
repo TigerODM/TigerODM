@@ -105,6 +105,7 @@ class OWCreateEmbeddings(base_widget.BaseListWidget):
         except Exception as e:
             self.error(f"An error occurred when trying to load the embeddings model: {e}")
             self.Outputs.data.send(None)
+            return
 
         # Start progress bar
         self.progressBarInit()
@@ -113,7 +114,7 @@ class OWCreateEmbeddings(base_widget.BaseListWidget):
         # --> progress is used in the main function to track progress (with a callback)
         # --> result is used to collect the result from main function
         # --> finish is just an empty signal to indicate that the thread is finished
-        self.thread = thread_management.Thread(embeddings.create_embeddings, self.data, self.model, self.selected_column_name)
+        self.thread = thread_management.Thread(embeddings.create_embeddings, self.data, self.model, self.selected_column_name, self)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)

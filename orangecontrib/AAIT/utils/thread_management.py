@@ -1,5 +1,6 @@
 import inspect
 import time
+import traceback
 
 from AnyQt.QtCore import QThread, pyqtSignal
 
@@ -40,6 +41,7 @@ class Thread(QThread):
     progress = pyqtSignal(object)
     result = pyqtSignal(object)
     finish = pyqtSignal()
+    error = pyqtSignal(str)
 
     def __init__(self, func, *args, **kwargs):
         super().__init__()
@@ -60,9 +62,24 @@ class Thread(QThread):
         if "argself" in inputs:
             final_kwargs["argself"] = self
 
-        result = self.func(*final_args, **final_kwargs)
-        self.result.emit(result)
-        self.finish.emit()
+        # If func raises (model load failure, OOM, context overflow, ...),
+        # we still need finish to fire so the widget doesn't hang forever
+        # with a spinning progress bar and no feedback. `result` is only
+        # emitted on success: most existing handle_result() implementations
+        # across widgets assume `result` is either real data or an already
+        # "normal" None (e.g. func explicitly returning None) - not a stand-in
+        # for "an exception happened mid-way, internal state may be partial".
+        # Emitting error separately keeps that contract intact for every
+        # widget that doesn't know about this new signal.
+        try:
+            result = self.func(*final_args, **final_kwargs)
+        except Exception as e:
+            traceback.print_exc()
+            self.error.emit(str(e))
+        else:
+            self.result.emit(result)
+        finally:
+            self.finish.emit()
 
     def safe_quit(self):
         self.stop = True

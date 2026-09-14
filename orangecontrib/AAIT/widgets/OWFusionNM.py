@@ -476,16 +476,14 @@ class OWFusionNN(widget.OWWidget):
             else:
                 table, idx = table_b, idx_b
 
-        # Si pas d'index, retourner None
         if idx is None:
-            return None
+            return np.nan
 
         # Extraire la valeur
         var, vtype, vidx = self._find_var(table, source_name)
         if var is None:
-            return None
+            return np.nan
 
-        # Récupérer la valeur brute
         raw_value = np.nan
         if vtype == "attr":
             raw_value = table.X[idx, vidx]
@@ -497,13 +495,26 @@ class OWFusionNN(widget.OWWidget):
         elif vtype == "meta":
             raw_value = table.metas[idx, vidx]
 
-        if same_key and var_name == key_a and table is table_b and isinstance(out_var, DiscreteVariable):
-            if isinstance(var, DiscreteVariable) and isinstance(raw_value, (int, float)) and not np.isnan(raw_value):
-                try:
-                    str_val = var.values[int(raw_value)]
-                    return float(out_var.values.index(str_val))
-                except (IndexError, ValueError):
-                    pass
+        if same_key and var_name == key_a and table is table_b:
+            if isinstance(out_var, DiscreteVariable):
+                if isinstance(var, DiscreteVariable) and isinstance(raw_value, (int, float)) and not np.isnan(raw_value):
+                    try:
+                        str_val = var.values[int(raw_value)]
+                        return float(out_var.values.index(str_val))
+                    except (IndexError, ValueError):
+                        pass
+                elif isinstance(raw_value, str):
+                    try:
+                        return float(out_var.values.index(raw_value))
+                    except ValueError:
+                        pass
+            else:
+                # Le domaine fusionné attend un String, mais la table B fournit une Catégorie
+                if isinstance(var, DiscreteVariable) and isinstance(raw_value, (int, float)) and not np.isnan(raw_value):
+                    try:
+                        return var.values[int(raw_value)]
+                    except IndexError:
+                        pass
 
         return raw_value
 

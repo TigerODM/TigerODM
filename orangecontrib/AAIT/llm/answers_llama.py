@@ -29,7 +29,7 @@ supported_VLM = {
     "Qwen3-VL-8B-Instruct-Q4_K_M.gguf": "mmproj-F16.gguf",
     "Qwen3.5-9B-Q6_K.gguf": "mmproj-F16.gguf",
     "Qwen3.5-4B-Q4_K_M.gguf": "mmproj-F16.gguf"
-}# manque Qwen3-VL
+}
 
 
 
@@ -179,16 +179,24 @@ def count_tokens(model, message, image_token_cost=1968, overhead_size=4):
     return total_tokens
 
 
-def load_model(model_path, use_gpu, n_ctx=10000, k_cache=0, v_cache=0, verbose=False):
+def load_model(model_path, use_gpu, n_ctx=10000, k_cache=0, v_cache=0, verbose=False, error_callback=None):
     """
     Charge un modèle GGUF avec llama_cpp.Llama.
 
     - use_gpu=True : tente d'utiliser l'accélération (Metal/CUDA/Vulkan selon build)
       en mettant n_gpu_layers à -1 (= toutes les couches si possible).
     - use_gpu=False : CPU only (n_gpu_layers=0).
+    - error_callback : optionnel, callable(("error", message)) - permet de remonter
+      la vraie cause de l'échec jusqu'au widget (au lieu du message générique
+      "unable to load model"). N'est utilisé ici que pour ça, jamais pour du
+      streaming/progression - contrairement au progress_callback des fonctions
+      de génération (run_query, chat_completion_with_handler, ...).
     """
     if not os.path.exists(model_path):
-        print(f"Model could not be found: {model_path} does not exist")
+        message = f"Model could not be found: {model_path} does not exist"
+        print(message)
+        if error_callback is not None:
+            error_callback(("error", message))
         return
 
     try:
@@ -215,6 +223,8 @@ def load_model(model_path, use_gpu, n_ctx=10000, k_cache=0, v_cache=0, verbose=F
         return model
     except Exception as e:
         print("Failed to load model with llama_cpp:", e)
+        if error_callback is not None:
+            error_callback(("error", f"Failed to load model: {e}"))
         return
 
 
@@ -229,7 +239,10 @@ def generate_answers(table, model_path, use_gpu=False, n_ctx=4096, query_paramet
     class_dom = list(data.domain.class_vars)
 
     # Chargement modèle (llama_cpp)
-    model = load_model_with_handler(model_path=model_path, use_gpu=use_gpu, n_ctx=n_ctx, verbose=True)
+    # Note: `progress_callback` est le canal multi-usage (tokens, %, warnings, erreurs).
+    # load_model/load_model_with_handler ne l'utilisent que pour signaler un échec,
+    # d'où le nom `error_callback` côté de leur signature.
+    model = load_model_with_handler(model_path=model_path, use_gpu=use_gpu, n_ctx=n_ctx, verbose=True, error_callback=progress_callback)
     with_handler = True
     if model is None:
         model = load_model(model_path=model_path,
@@ -237,6 +250,7 @@ def generate_answers(table, model_path, use_gpu=False, n_ctx=4096, query_paramet
                            n_ctx=n_ctx,
                            k_cache=query_parameters["k_cache"],
                            v_cache=query_parameters["v_cache"],
+                           error_callback=progress_callback,
                            verbose=True)
         with_handler = False
     if model is None:
@@ -311,11 +325,7 @@ def generate_answers(table, model_path, use_gpu=False, n_ctx=4096, query_paramet
                 f"not supported yet.\n\nModel name: {ntpath.basename(model_path)}"
             )
 
-        thinking = ""
-        matches = re.findall(r"<think>[\s\S]*?</think>", answer)
-        if matches:
-            thinking = matches[0]
-            answer = answer.replace(thinking, "").strip()
+        thinking, answer = split_think(answer)
         metas += [answer, thinking]
         rows.append(features + metas)
 
@@ -424,8 +434,11 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
                 return answer
 
     except Exception as e:
-        # En cas d'erreur pendant la génération, on retourne ce qu'on a + log
+        # En cas d'erreur pendant la génération (contexte dépassé, allocation
+        # mémoire, ...), on retourne ce qu'on a + on remonte l'erreur au widget
         print("Generation error (llama_cpp):", e)
+        if progress_callback is not None:
+            progress_callback(("error", f"Generation failed: {e}"))
 
     # Nettoyage des séquences d'arrêt
     for stop in stop_sequences:
@@ -461,59 +474,69 @@ def handle_context_length(prompt, model, n_ctx, method="truncate", margin=0, pro
     """
     # Keep a margin for generated tokens
     limit = max(n_ctx - margin, 0)  # clamp to at least 0
-
     if method == "truncate":
-        tokens = model.tokenize(prompt.encode("utf-8"))  # pass string, not bytes
+        tokens = model.tokenize(prompt.encode("utf-8"))
         initial_length = len(tokens)
         if initial_length > limit:
-            # take last `limit` tokens safely
             tokens = tokens[-limit:] if limit > 0 else []
             truncated_length = len(tokens)
             prompt = model.detokenize(tokens).decode("utf-8") if tokens else ""
             if progress_callback:
-                warning = (
-                    f"Complete prompt contains {initial_length} tokens - context limit is {limit} (Context length - Max tokens). "
-                    f"The {truncated_length} last tokens have been kept in the prompt."
-                )
+                if limit <= 0:
+                    warning = (
+                        f"Max tokens ({margin}) >= Context Length ({n_ctx}) : aucune place pour l'entrée, "
+                        f"elle a été entièrement coupée ({initial_length} tokens perdus).\n"
+                        f"-> Baissez Max tokens ou augmentez Context Length."
+                    )
+                else:
+                    warning = (
+                        f"Entrée trop longue : {initial_length} tokens pour une place utilisable de {limit} "
+                        f"(Context Length {n_ctx} - Max tokens {margin}). "
+                        f"Les {initial_length - truncated_length} premiers tokens ont été coupés, "
+                        f"les {truncated_length} derniers conservés.\n"
+                        f"-> Augmentez Context Length (plus de VRAM) ou baissez Max tokens "
+                        f"pour ne pas tronquer l'entrée."
+                    )
                 progress_callback(("warning", warning))
         return prompt
-    elif method == "summarize":
-        pass
-    else:
-        return prompt
 
 
-def handle_long_messages(messages, model, n_ctx, method="truncate", margin=0, progress_callback=None):
+def handle_long_messages(messages, model, n_ctx, method="truncate", margin=0, progress_callback=None, mode="chat"):
     limit = max(n_ctx - margin, 0)
 
     if method == "truncate":
-        return _handle_truncate(messages, model, limit, progress_callback)
+        return _handle_truncate(messages, model, limit, progress_callback,
+                                context_length=n_ctx, max_tokens=margin, mode=mode)
     elif method == "summarize":
-        # Placeholder for future implementation
-        raise NotImplementedError("Summarization method is not yet implemented.")
+        raise NotImplementedError("La méthode de résumé n'est pas encore implémentée.")
     else:
-        raise ValueError(f"Unknown method: {method}")
+        raise ValueError(f"Méthode inconnue : {method}")
 
 
-def _handle_truncate(messages, model, limit, progress_callback):
+def _handle_truncate(messages, model, limit, progress_callback, context_length=None, max_tokens=0, mode="chat"):
     kept_messages = []
     total_tokens = 0
     system_msg = None
 
-    # 1. Separate and count the system message first
     if messages and messages[0]["role"] == "system":
         system_msg = messages[0]
         text = messages[0]["content"]
         total_tokens += count_tokens(model=model, message=text)
 
-        # If the system message itself exceeds the limit, we're in trouble
         if total_tokens > limit:
             if progress_callback:
-                progress_callback(("error", "System message exceeds context limit."))
+                if limit <= 0:
+                    progress_callback(("error",
+                        f"Max tokens ({max_tokens}) >= Context Length ({context_length}) : il ne reste "
+                        f"aucune place pour l'entrée, pas même le prompt système.\n"
+                        f"-> Baissez Max tokens ou augmentez Context Length."))
+                else:
+                    progress_callback(("error",
+                        f"Le prompt système seul (~{total_tokens} tokens) dépasse la place utilisable "
+                        f"({limit} = Context Length {context_length} - Max tokens {max_tokens}).\n"
+                        f"-> Raccourcissez le prompt système, baissez Max tokens, ou augmentez Context Length."))
             return [system_msg]
 
-    # 2. Iterate through the rest of the messages (newest to oldest)
-    # We skip index 0 if it's the system message
     chat_history = messages[1:] if system_msg else messages
 
     for msg in reversed(chat_history):
@@ -522,26 +545,33 @@ def _handle_truncate(messages, model, limit, progress_callback):
 
         if total_tokens + tokens > limit:
             if progress_callback:
-                warning = (
-                    f"Context limit reached ({limit} tokens). "
-                    f"Keeping {len(kept_messages)} recent messages plus system prompt."
-                    f"Remember that an image ≈ 2000 tokens."
-                )
-                progress_callback(("warning", warning))
+                if mode == "single":
+                    # Question unique : pas d'historique, on coupe DANS l'entrée
+                    progress_callback(("warning",
+                        f"L'entrée (prompt + image) dépasse la place utilisable "
+                        f"({limit} = Context Length {context_length} - Max tokens {max_tokens} ; "
+                        f"une image ~= 2000 tokens, estimé). Une partie de l'entrée sera coupée.\n"
+                        f"-> Augmentez Context Length (plus de VRAM) ou baissez Max tokens "
+                        f"pour ne pas tronquer l'entrée."))
+                else:
+                    # Conversation : on jette les tours les plus anciens
+                    dropped = len(chat_history) - len(kept_messages)
+                    progress_callback(("warning",
+                        f"Limite de contexte atteinte : {len(kept_messages)} message(s) récent(s) conservé(s) "
+                        f"+ prompt système, {dropped} ancien(s) écarté(s) "
+                        f"(place utilisable {limit} = Context Length {context_length} - Max tokens {max_tokens} ; "
+                        f"une image ~= 2000 tokens, estimé).\n"
+                        f"-> Augmentez Context Length (plus de VRAM) ou baissez Max tokens "
+                        f"pour garder plus de conversation."))
             break
 
         kept_messages.append(msg)
         total_tokens += tokens
 
-    # 3. Restore chronological order
     kept_messages.reverse()
-
-    # 4. Re-attach the system message at the very top
     if system_msg:
         kept_messages.insert(0, system_msg)
-
     return kept_messages
-
 
 
 # For pure display
@@ -607,14 +637,15 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
     data = copy.deepcopy(table)
 
     if handler_llama.find_mmproj_path(model_path) is not None:
-        model = load_model_with_handler(model_path, n_ctx=n_ctx, use_gpu=use_gpu, verbose=True)
+        model = load_model_with_handler(model_path, n_ctx=n_ctx, use_gpu=use_gpu, verbose=True, error_callback=progress_callback)
         with_handler = True
     else:
         model = load_model(model_path=model_path,
                            use_gpu=use_gpu,
                            n_ctx=n_ctx,
                            k_cache=query_parameters["k_cache"],
-                           v_cache=query_parameters["v_cache"])
+                           v_cache=query_parameters["v_cache"],
+                           error_callback=progress_callback)
         with_handler = False
     if model is None:
         return None
@@ -626,8 +657,9 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
     # Build the conversation from table
     messages = table_to_messages(data)
     if not messages:
+        if progress_callback is not None:
+            progress_callback(("error", "Could not build a conversation from the input data (empty or invalid role/type/content rows)."))
         return
-    messages = handle_long_messages(messages, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
 
     ### GENERATE ANSWER
     if with_handler:
@@ -638,6 +670,8 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
                                               progress_callback=progress_callback,
                                               argself=argself)
     else:
+        messages = handle_long_messages(messages, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
+
         try:
             print("Trying native prompt formating...")
             chat_template = model.metadata["tokenizer.chat_template"]
@@ -661,6 +695,13 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
             argself=argself,
             progress_callback=progress_callback
         )
+
+    if answer == "":
+        answer = (
+            "Error: The answer could not be generated. Your prompt might be too long, or the model architecture you tried to use is possibly "
+            f"not supported yet.\n\nModel name: {ntpath.basename(model_path)}"
+        )
+
     thinking, answer = split_think(answer)
 
     # Create output table
@@ -681,7 +722,7 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
 
 
 # Should replace load_Qwen3VL (more generic)
-def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True):
+def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True, error_callback=None):
     """
     Loads a multimodal (vision-language) model using a dedicated chat handler and GGUF backend.
 
@@ -700,6 +741,9 @@ def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True)
         If True, enables GPU acceleration by offloading layers.
     verbose : bool, optional
         If True, enables detailed logging during model loading and inference.
+    error_callback : callable, optional
+        callable(("warning", message)) - used only to report why this failed
+        (not a fatal error here since callers typically fall back to load_model()).
 
     Returns:
     -------
@@ -714,15 +758,22 @@ def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True)
         return None
 
     n_gpu_layers = -1 if use_gpu else 0
-    model = None
-    chat_handler = handler_llama.get_chat_handler(model_path, mmproj_path, verbose=verbose, use_gpu=use_gpu)
-    model = Llama(model_path=model_path,
-                  chat_handler=chat_handler,
-                  n_ctx=n_ctx,
-                  n_gpu_layers=n_gpu_layers,
-                  verbose=verbose)
-
-    return model
+    try:
+        chat_handler = handler_llama.get_chat_handler(model_path, mmproj_path, verbose=verbose, use_gpu=use_gpu)
+        model = Llama(model_path=model_path,
+                      chat_handler=chat_handler,
+                      n_ctx=n_ctx,
+                      n_gpu_layers=n_gpu_layers,
+                      verbose=verbose)
+        return model
+    except Exception as e:
+        # Non-fatal: generate_answers() falls back to load_model() when this
+        # returns None, so this is only a "warning" - not necessarily the
+        # final failure the user needs to see as an error.
+        print("Failed to load model with handler (llama_cpp):", e)
+        if error_callback is not None:
+            error_callback(("warning", f"Multimodal loading failed, falling back to standard mode: {e}"))
+        return None
 
 
 def run_Qwen3VL_query(query, image_paths, image_prompts, model, system_prompt=" ", workflow_id="", progress_callback=None):
@@ -803,38 +854,111 @@ def chat_completion_with_handler(messages, model, parameters, workflow_id="", pr
     """
     thinks = handler_llama.is_a_thinking_model(model)
     think_token_added = False
-    generator = model.create_chat_completion(messages=messages,
-                                             temperature=parameters["temperature"],
-                                             top_p=parameters["top_p"],
-                                             top_k=parameters["top_k"],
-                                             repeat_penalty=parameters["repeat_penalty"],
-                                             max_tokens=parameters["max_tokens"],
-                                             stream=True)
+
+    # --- Ajuste la conversation à la fenêtre de contexte --------------------
+    # Empêche "prompt + image + réponse > n_ctx" de lever une erreur bloquante :
+    # l'entrée est tronquée si nécessaire, et max_tokens est borné à la place
+    # réellement disponible.
+    messages, effective_max_tokens = fit_messages_to_context(
+        messages,
+        model,
+        requested_max_tokens=parameters.get("max_tokens", 0),
+        progress_callback=progress_callback,
+    )
+
     full_response = ""
-    for chunk in generator:
-        # chunk is a dict, often with a 'choices' list
-        for choice in chunk.get("choices", []):
-            # Each choice may have a 'delta' dict with 'content'
-            delta = choice.get("delta", {})
-            token = delta.get("content")
+    try:
+        generator = model.create_chat_completion(
+            messages=messages,
+            temperature=parameters["temperature"],
+            top_p=parameters["top_p"],
+            top_k=parameters["top_k"],
+            repeat_penalty=parameters["repeat_penalty"],
+            max_tokens=effective_max_tokens,
+            stream=True,
+        )
+        for chunk in generator:
+            for choice in chunk.get("choices", []):
+                delta = choice.get("delta", {})
+                token = delta.get("content")
 
-            if thinks and not think_token_added:
-                thinking_token = "<think>\n"
-                full_response += thinking_token
-                write_tokens_to_file(thinking_token, workflow_id)
-                if progress_callback is not None:
-                    progress_callback(("assistant", thinking_token))
-                think_token_added = True
+                if thinks and not think_token_added:
+                    thinking_token = "<think>\n"
+                    full_response += thinking_token
+                    write_tokens_to_file(thinking_token, workflow_id)
+                    if progress_callback is not None:
+                        progress_callback(("assistant", thinking_token))
+                    think_token_added = True
 
-            if token:
-                full_response += token
-                write_tokens_to_file(token, workflow_id)
-                if progress_callback is not None:
-                    progress_callback(("assistant", token))
-                if argself is not None and getattr(argself, "stop", False):
-                    return full_response
+                if token:
+                    full_response += token
+                    write_tokens_to_file(token, workflow_id)
+                    if progress_callback is not None:
+                        progress_callback(("assistant", token))
+                    if argself is not None and getattr(argself, "stop", False):
+                        return full_response
+    except Exception as e:
+        # Filet défensif : si le vrai coût en tokens de l'image dépasse notre
+        # estimation et que le contexte déborde en cours de génération, on
+        # retourne ce qu'on a au lieu de faire planter tout le batch.
+        print("Generation error (chat handler):", e)
+        if progress_callback is not None:
+            progress_callback(("warning", f"Génération interrompue tôt : {e}"))
+
     return full_response
 
+def count_messages_tokens(model, messages, image_token_cost=1968, overhead_size=4):
+    """Somme des tokens estimés sur toute une liste de messages VLM (texte + images)."""
+    total = 0
+    for msg in messages:
+        total += count_tokens(model=model, message=msg["content"],
+                              image_token_cost=image_token_cost, overhead_size=overhead_size)
+    return total
+
+
+def fit_messages_to_context(messages, model, requested_max_tokens,
+                            n_ctx=None, min_generation=64, safety=16,
+                            progress_callback=None):
+    """
+    Garantit que (prompt + images) laisse de la place pour la génération dans n_ctx.
+
+    Retourne (messages, effective_max_tokens) :
+      - messages : tronqués si besoin (system prompt + messages récents conservés)
+      - effective_max_tokens : borné pour que prompt_tokens + max_tokens <= n_ctx - safety,
+        ce qui empêche llama_cpp de lever une erreur de dépassement de contexte.
+
+    requested_max_tokens == 0 est traité comme "utilise tout le contexte restant".
+    """
+    if n_ctx is None:
+        try:
+            n_ctx = model.n_ctx()
+        except Exception:
+            n_ctx = 4096
+
+    # Marge qu'on réserve pour la réponse pendant qu'on tronque l'entrée
+    margin = requested_max_tokens if requested_max_tokens and requested_max_tokens > 0 else min_generation
+
+    # 1) Tronque les vieux messages si l'entrée seule est déjà trop grosse
+    messages = handle_long_messages(messages, model, n_ctx, method="truncate",
+                                margin=margin, progress_callback=progress_callback,
+                                mode="single")
+
+    # 2) Borne max_tokens à ce qui reste réellement après le prompt (tronqué)
+    prompt_tokens = count_messages_tokens(model, messages)
+    available = max(1, n_ctx - prompt_tokens - safety)
+
+    if requested_max_tokens and requested_max_tokens > 0:
+        effective_max_tokens = min(requested_max_tokens, available)
+    else:
+        effective_max_tokens = available  # illimité demandé → tout ce qui rentre
+
+    if progress_callback is not None and requested_max_tokens and effective_max_tokens < requested_max_tokens:
+        progress_callback(("warning",
+            f"Réponse limitée à {effective_max_tokens} tokens (au lieu de {requested_max_tokens}) "
+            f"pour tenir dans le contexte : Context Length {n_ctx}, entrée ~= {prompt_tokens} tokens "
+            f"(images estimées).\n"
+            f"-> Augmentez Context Length ou baissez Max tokens pour une réponse plus longue."))
+    return messages, effective_max_tokens
 
 
 def table_to_messages(data):

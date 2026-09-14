@@ -3,6 +3,7 @@ import sys
 import os
 
 from AnyQt.QtWidgets import QApplication, QPushButton, QCheckBox
+from Orange.widgets.settings import Setting
 from Orange.widgets.utils.signals import Input, Output
 from Orange.data import Domain, Table
 from AnyQt.QtCore import QTimer
@@ -32,6 +33,7 @@ class OWAccumulator(widget.OWWidget):
 
     want_main_area = True
     want_control_area = False
+    auto_send = Setting(True)
 
     class Inputs:
         data = Input("Input Data", Table, auto_summary=False)
@@ -39,75 +41,102 @@ class OWAccumulator(widget.OWWidget):
 
     class Outputs:
         sample = Output("Output", Table, auto_summary=False)
+        preview = Output("Preview", Table, auto_summary=False)
 
     def __init__(self):
         super().__init__()
 
         # --- Chargement du fichier UI ---
         uic.loadUi(self.gui, self)
+        self.setFixedSize(500,300)
 
         # --- Récupération dynamique des widgets ---
         self.checkBox_send = self.findChild(QCheckBox, 'checkBox_send')
         self.pushButton_send = self.findChild(QPushButton, 'pushButton_send')
+        self.pushButton_purge = self.findChild(QPushButton, 'pushButton_purge')
 
         # --- Variables d’état ---
         self.data = None
         self.out_data = None
-        self.str_auto_send = "True"  # valeur par défaut ; peut être persistée via ini
 
-        # --- Initialisation de la checkbox ---
-        if self.checkBox_send is not None:
-            # Restauration de l’état précédent
-            if self.str_auto_send != "False":
-                self.checkBox_send.setChecked(True)
-            else:
-                self.checkBox_send.setChecked(False)
+        # --- Bouton "Send Data" (envoi sans purge) ---
+        self.pushButton_send.clicked.connect(lambda: self.push(clean=False))
 
-            # ✅ Connexion au changement d’état
-            self.checkBox_send.stateChanged.connect(self.update_auto_send_state)
+        # --- Bouton "Purge" (vidage manuel) ---
+        # Recupere depuis le .ui sous le nom "pushButton_purge" s'il existe, sinon cree au vol.
+        self.pushButton_purge.clicked.connect(self.purge)
 
-        # --- Connexion du bouton manuel ---
-        if self.pushButton_send is not None:
-            self.pushButton_send.clicked.connect(self.push)
+        # --- Checkbox auto-send (etat restaure depuis le Setting) ---
+        self.checkBox_send.setChecked(self.auto_send)
+        self.checkBox_send.toggled.connect(self.on_auto_send_changed)
 
         self.post_initialized()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
-    def update_auto_send_state(self):
-        self.str_auto_send = "True" if self.checkBox_send.isChecked() else "False"
+    def on_auto_send_changed(self):
+        """Memorise l'etat de l'auto-send et envoie immediatement si on vient de l'activer."""
+                                 
+        self.auto_send = self.checkBox_send.isChecked()
+        if self.auto_send:
+            self.push(clean=False)
 
-    def push(self):
-        """Sends the accumulated data and resets the accumulator."""
-        if self.data is not None:
-            self.out_data = self.data.copy()
-            self.Outputs.sample.send(self.out_data)
-        else:
+    def push(self, clean=False):
+        """Envoie les donnees accumulees.
+
+        clean=False -> envoie sans vider (les donnees continuent de s'accumuler).
+        clean=True  -> envoie puis vide l'accumulateur (flush / purge manuel).
+        """
+        self.warning("")
+        if self.data is None:
             self.Outputs.sample.send(None)
             self.warning("Accumulator is empty, nothing to send.")
+            return
+
+        self.out_data = self.data.copy()
+        self.Outputs.sample.send(self.out_data)
+
+        if clean:
+            self.data = None
+            self.Outputs.preview.send(None)
+
+    def purge(self):
+        """Vide l'accumulateur sans rien envoyer sur "Output".
+
+        N'emet rien sur sample (la sortie aval garde sa derniere valeur) :
+        on remet juste le tampon a None et on vide la preview.
+        """
+        self.warning("")
+        self.data = None
+        self.Outputs.preview.send(None)
 
     @Inputs.trigger
     def on_trigger(self, signal_data):
-        """Handles the incoming trigger signal."""
+        """Un vrai signal (table non None) declenche un envoi + purge.
+        On ignore les None (ex. debranchement en amont) pour ne pas vider par accident."""
+        if signal_data is None:
+            return
         if self.data is not None:
-            self.Outputs.sample.send(self.data.copy())
+            self.push(clean=False)
             self.information("Data sent on trigger.")
-            self.data = None
+                            
 
     @Inputs.data
     def set_data(self, dataset):
-        """Accumulates incoming data, merging columns if necessary, with robust variable handling."""
+        """Accumule les donnees entrantes, en fusionnant les colonnes si necessaire."""
         self.error("")  # Clear previous errors
         self.information("")
-        if dataset is None:
-            self.data = None
-            self.Outputs.sample.send(None)
-            return
-        # on unlink le domaine pour les données qui rentre
-        dataset=unlink_domain(dataset)
+        self.warning("")
 
+        # Une entree None n'efface JAMAIS l'accumulateur : le vidage est uniquement
+        # manuel (bouton "Send Data and Purge" ou trigger). On ignore donc le None.
+        if dataset is None:
+            return
+                                                           
+        # on unlink le domaine pour les donnees qui rentrent
+        dataset = unlink_domain(dataset)
 
         if self.data is None:
-            # Première table reçue
+            # Premiere table recue
             self.data = dataset.copy()
         else:
             try:
@@ -120,7 +149,7 @@ class OWAccumulator(widget.OWWidget):
                     if var.name not in unique_vars:
                         unique_vars[var.name] = var
 
-                # 2. Identifier les noms d'attributs réguliers et de méta-attributs uniques
+                # 2. Identifier les noms d'attributs reguliers et de meta-attributs uniques
                 current_regular_names = set(v.name for v in self.data.domain.variables)
                 new_regular_names = set(v.name for v in dataset.domain.variables)
                 current_metas_names = set(v.name for v in self.data.domain.metas)
@@ -129,7 +158,7 @@ class OWAccumulator(widget.OWWidget):
                 all_vars_names = current_regular_names | new_regular_names
                 all_metas_names = current_metas_names | new_metas_names
 
-                # 3. Filtrer les variables uniques pour créer le nouveau domaine
+                # 3. Filtrer les variables uniques pour creer le nouveau domaine
                 all_vars = sorted([unique_vars[name] for name in all_vars_names if name not in all_metas_names],
                                   key=lambda x: x.name)
                 all_metas = sorted([unique_vars[name] for name in all_metas_names], key=lambda x: x.name)
@@ -140,18 +169,20 @@ class OWAccumulator(widget.OWWidget):
                 dataset_expanded = dataset.transform(new_domain)
 
                 # 6. Concatenate the rows of the two uniformly expanded tables
-                #self.data = data_expanded.__class__.concatenate((data_expanded, dataset_expanded))
+                                                                                                   
                 self.data = concatenate_tables_harmonized([unlink_domain(data_expanded), unlink_domain(dataset_expanded)])
             except Exception as e:
                 self.error(f"Data tables could not be aggregated/concatenated. Error: {e}")
                 return
 
-        if self.checkBox_send and self.checkBox_send.isChecked():
-            self.Outputs.sample.send(self.data)
+        # Apercu live du tampon accumule (independant de l'envoi sur "Output")
+        self.Outputs.preview.send(self.data)
+
+        if self.auto_send:
+            self.push(clean=False)
 
     def post_initialized(self):
         pass
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

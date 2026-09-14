@@ -3,7 +3,7 @@ import copy
 from Orange.data import ContinuousVariable, Domain, Table
 
 
-def create_embeddings(table, model, column_name, progress_callback=None, argself=None):
+def create_embeddings(table, model, column_name, widget_object=None, progress_callback=None, argself=None):
     if len(table) == 0:
         return None
     # Copy of input data
@@ -12,6 +12,10 @@ def create_embeddings(table, model, column_name, progress_callback=None, argself
     metas_dom = list(data.domain.metas)
     class_dom = list(data.domain.class_vars)
 
+    # Get tokenizer to measure input
+    tokenizer = model.tokenizer
+    max_length = model.get_max_seq_length()
+
     # Generate embeddings on column named "content"
     embeddings = None
     rows = []
@@ -19,7 +23,14 @@ def create_embeddings(table, model, column_name, progress_callback=None, argself
         features = [row[x] for x in attr_dom]
         targets = [row[y] for y in class_dom]
         metas = list(data.metas[i])
-        embeddings = model.encode(str(row[column_name]), show_progress_bar=False)
+        text = str(row[column_name])
+        if widget_object is not None:
+            encoded = tokenizer(text, add_special_tokens=True, truncation=False)
+            nb_tokens = len(encoded["input_ids"])
+            if nb_tokens > max_length:
+                widget_object.warning(f"The text you are trying to embed ({nb_tokens} tokens) is longer than the maximum length supported by this model ({max_length} tokens).")
+
+        embeddings = model.encode(text, show_progress_bar=False)
         features += list(embeddings)
         rows.append(features + targets + metas)
         if progress_callback is not None:

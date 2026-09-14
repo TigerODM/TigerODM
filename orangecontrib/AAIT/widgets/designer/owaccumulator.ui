@@ -47,12 +47,28 @@
      <bool>true</bool>
     </property>
    </widget>
+   <widget class="QCheckBox" name="checkBox_send">
+    <property name="enabled">
+     <bool>true</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>150</y>
+      <width>131</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Auto send data</string>
+    </property>
+   </widget>
    <widget class="QPushButton" name="pushButton_send">
     <property name="geometry">
      <rect>
-      <x>138</x>
-      <y>140</y>
-      <width>281</width>
+      <x>155</x>
+      <y>145</y>
+      <width>150</width>
       <height>31</height>
      </rect>
     </property>
@@ -60,20 +76,17 @@
      <string>Send Accumulated Data</string>
     </property>
    </widget>
-   <widget class="QCheckBox" name="checkBox_send">
-    <property name="enabled">
-     <bool>true</bool>
-    </property>
+   <widget class="QPushButton" name="pushButton_purge">
     <property name="geometry">
      <rect>
-      <x>17</x>
-      <y>147</y>
-      <width>131</width>
-      <height>16</height>
+      <x>313</x>
+      <y>145</y>
+      <width>100</width>
+      <height>31</height>
      </rect>
     </property>
     <property name="text">
-     <string>Auto send data</string>
+     <string>Purge</string>
     </property>
    </widget>
   </widget>

@@ -62,6 +62,7 @@ class LoopStartWidget(OWWidget):
         self.iter = 0
         self.data = None
         self.ready=0
+        self._progress_running = False
 
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
@@ -69,6 +70,7 @@ class LoopStartWidget(OWWidget):
         self.ready=1
 
     def button_reintialise_action(self):
+        self._stop_progress()
         self.iter = 0
         dataset = self.data
         self.set_data(dataset)
@@ -156,6 +158,7 @@ class LoopStartWidget(OWWidget):
         return self.iter
 
     def reinitialize_iter(self):
+        self._stop_progress()
         self.iter = 0
         return
 
@@ -170,6 +173,7 @@ class LoopStartWidget(OWWidget):
     def execute_iter_of_line_number(self):
         table = Table.from_table(domain=self.data.domain, source=self.data, row_indices=[self.iter])
         self.iter += 1
+        self.update_progress()
         self.Outputs.data_out.send(unlink_domain(table))
 
     def get_column_name_and_type(self):
@@ -257,6 +261,20 @@ class LoopStartWidget(OWWidget):
         """Send a pointer to the current class for the loop."""
         pointer = str(id(self))
         self.Outputs.out_pointer.send(pointer)
+
+    def update_progress(self):
+        """Affiche l'avancement de la boucle ligne par ligne."""
+        total = 0 if self.data is None else len(self.data)
+        if total == 0:
+            self.setStatusMessage("")
+            return
+        current = min(self.iter, total)
+        self.setStatusMessage(f"{current}/{total} - {100.0 * current / total:.0f} %")
+
+
+    def _stop_progress(self):
+        """A appeler si la boucle est reinitialisee avant la fin."""
+        self.setStatusMessage("")
 
 if __name__ == "__main__":
     from AnyQt.QtWidgets import QApplication

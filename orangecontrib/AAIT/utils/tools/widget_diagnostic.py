@@ -406,7 +406,6 @@ class EditorMainWindow(QMainWindow):
 
         cats = self._selected_categories()
         include = self.cb_packages.isChecked()
-        out_path = self.le_output.text().strip()
 
         # Référence (comparaison) éventuelle
         reference = None
@@ -462,15 +461,11 @@ class EditorMainWindow(QMainWindow):
 
             if self._cancel:
                 self.status.showMessage(f"Annulé — {len(rows)} ligne(s) partielle(s).")
-            elif out_path:
-                p = core.write_rows(out_path, headers, rows, metadata=self._metadata)
-                self.status.showMessage(f"Terminé — {len(rows)} ligne(s) — enregistré : {p}")
-                QMessageBox.information(
-                    self, "Diagnostic terminé",
-                    f"{len(rows)} ligne(s) générée(s).\nFichier enregistré :\n{p}",
-                )
             else:
-                self.status.showMessage(f"Terminé — {len(rows)} ligne(s) (non enregistré).")
+                self.status.showMessage(
+                    f"Terminé — {len(rows)} ligne(s). "
+                    "Clique « Enregistrer » pour sauvegarder."
+                )
 
             self.act_export.setEnabled(bool(rows))
 

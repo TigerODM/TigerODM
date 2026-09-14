@@ -47,32 +47,6 @@
      <bool>true</bool>
     </property>
    </widget>
-   <widget class="QLabel" name="Description_2">
-    <property name="geometry">
-     <rect>
-      <x>20</x>
-      <y>60</y>
-      <width>391</width>
-      <height>131</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>&quot;Please note the following requirements:&quot;
-
-- Column Type: This operation works exclusively with string (text) variables.
-- Filtering Input: Accepts only a single column for the filtering criteria.
-- Matching Name: The primary data input must contain a column that shares the exact same name as the filtering column.</string>
-    </property>
-    <property name="textFormat">
-     <enum>Qt::AutoText</enum>
-    </property>
-    <property name="alignment">
-     <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
-    </property>
-    <property name="wordWrap">
-     <bool>true</bool>
-    </property>
-   </widget>
   </widget>
   <widget class="QPushButton" name="pushButton_send">
    <property name="enabled">

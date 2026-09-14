@@ -17,6 +17,7 @@ else:
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
     from orangecontrib.AAIT.utils import help_management
 
+
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OWSelectRowsDynamic(widget.OWWidget):
     name = "Select Rows Dynamic"
@@ -39,45 +40,38 @@ class OWSelectRowsDynamic(widget.OWWidget):
 
     @Inputs.data
     def set_data(self, data_in):
+        self.in_data = data_in
         if data_in is None:
             self.Outputs.data_matching.send(None)
             self.Outputs.data_unmatching.send(None)
             return
-        self.in_data = data_in
         if self.data_filter_in is None:
             return
         self.run()
 
     @Inputs.data_for_filter
     def set_path_table(self, in_data_filter):
+        self.data_filter_in = in_data_filter
         if in_data_filter is None:
             self.Outputs.data_matching.send(None)
             self.Outputs.data_unmatching.send(None)
             return
 
-        total_columns = len(in_data_filter.domain.attributes) + len(in_data_filter.domain.class_vars) + len(
-            in_data_filter.domain.metas)
+        total_columns = (
+            len(in_data_filter.domain.attributes)
+            + len(in_data_filter.domain.class_vars)
+            + len(in_data_filter.domain.metas)
+        )
         self.error("")
-        if total_columns != 1:
-            self.error("error filter_input can only use 1 column in this version")
-            return
-        if len(in_data_filter.domain.metas) != 1:
-            self.error("error filter_input can only use Stringvariable")
-            return
-        if not isinstance(in_data_filter.domain.metas[0], Orange.data.StringVariable):
-            self.error("error filter_input can only use Stringvariable.")
+        if total_columns == 0:
+            self.error("error filter_input must contain at least 1 column")
+            self.data_filter_in = None
+            self.Outputs.data_matching.send(None)
+            self.Outputs.data_unmatching.send(None)
             return
 
-        self.data_filter_in = in_data_filter
         if self.in_data is not None:
             self.run()
-
-            # if total_columns != 1:
-            #
-            #     return
-            #
-            # print("in_data_filter")
-            # print(in_data_filter)
 
     def __init__(self):
         super().__init__()
@@ -93,26 +87,52 @@ class OWSelectRowsDynamic(widget.OWWidget):
 
     def run(self):
         self.error("")
-        filter_var = self.data_filter_in.domain.metas[0]
-        filter_var_name = filter_var.name
+        filter_vars = (
+            list(self.data_filter_in.domain.attributes)
+            + list(self.data_filter_in.domain.class_vars)
+            + list(self.data_filter_in.domain.metas)
+        )
 
-        # On utilise .index() ou une recherche directe dans le domaine
-        match_var = self.in_data.domain[filter_var_name]
-        if match_var is None or not match_var.is_string:
-            self.error(f"La colonne '{filter_var_name}' est absente ou n'est pas une StringVariable.")
+        if not filter_vars:
+            self.error("error filter_input must contain at least 1 column")
+            self.Outputs.data_matching.send(None)
+            self.Outputs.data_unmatching.send(None)
             return
 
-        # On accède directement à l'attribut .metas (Tableau numpy d'objets pour les strings)
-        filter_col_idx = self.data_filter_in.domain.metas.index(filter_var)
-        filter_values = self.data_filter_in.metas[:, filter_col_idx]
-        values_filter_set = {str(v) for v in filter_values if v and v != ""}
+        match_vars = []
+        for filter_var in filter_vars:
+            try:
+                match_vars.append(self.in_data.domain[filter_var.name])
+            except (KeyError, IndexError):
+                self.error(f"La colonne '{filter_var.name}' est absente.")
+                self.Outputs.data_matching.send(None)
+                self.Outputs.data_unmatching.send(None)
+                return
 
-        # Au lieu de boucler sur les 'rows', on récupère toute la colonne d'un coup
-        data_col_idx = self.in_data.domain.metas.index(match_var)
-        data_values = self.in_data.metas[:, data_col_idx]
+        def normalize_value(value):
+            if value is None:
+                return None
+            text = str(value).strip()
+            if not text or text == "?":
+                return None
+            return text
 
-        # La compréhension sur un array numpy est souvent plus rapide que sur des objets 'Row'
-        mask = np.array([str(val) in values_filter_set for val in data_values])
+        def make_key(row, variables):
+            return tuple(normalize_value(row[var]) for var in variables)
+
+        values_filter_set = {
+            make_key(row, filter_vars)
+            for row in self.data_filter_in
+        }
+
+        mask = np.fromiter(
+            (
+                make_key(row, match_vars) in values_filter_set
+                for row in self.in_data
+            ),
+            dtype=bool,
+            count=len(self.in_data),
+        )
 
         matched_table = self.in_data[mask] if np.any(mask) else None
         unmatched_table = self.in_data[~mask] if np.any(~mask) else None
@@ -120,9 +140,9 @@ class OWSelectRowsDynamic(widget.OWWidget):
         self.Outputs.data_matching.send(matched_table)
         self.Outputs.data_unmatching.send(unmatched_table)
 
-
     def post_initialized(self):
         pass
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

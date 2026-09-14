@@ -111,6 +111,7 @@ class OWQEdgeLLM(widget.OWWidget):
         self.use_gpu = True
         self.can_run = True
         self.result = None
+        self._error_shown = False
         self.n_ctx = self.edit_nCtx.text() if self.edit_nCtx.text().isdigit() else "32768"
         self.workflow_id = self.edit_ID.text()
 
@@ -159,6 +160,7 @@ class OWQEdgeLLM(widget.OWWidget):
         # Clear error & warning
         self.warning("")
         self.error("")
+        self._error_shown = False
 
         # If Thread is already running, interrupt it
         if self.thread is not None:
@@ -266,6 +268,7 @@ class OWQEdgeLLM(widget.OWWidget):
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
+        self.thread.error.connect(self.handle_error)
         self.thread.start()
 
     def handle_progress(self, progress) -> None:
@@ -284,6 +287,7 @@ class OWQEdgeLLM(widget.OWWidget):
         elif action == "warning":
             self.warning(value)
         elif action == "error":
+            self._error_shown = True
             self.error(value)
 
     def append_text_at_end(self, text):
@@ -295,8 +299,18 @@ class OWQEdgeLLM(widget.OWWidget):
         cursor.insertText(text)
 
     def handle_result(self, result):
+        # Note: this is only reached on a "clean" completion of the thread
+        # (thread_management.Thread only emits `result` when self.func didn't
+        # raise). An exception mid-generation goes through handle_error()
+        # instead, so `result is None` here still only means what it always
+        # meant: generate_answers/continue_conversation returned None on purpose
+        # (e.g. model failed to load - without raising - or empty conversation).
         if result is None:
-            self.error("unable to load model")
+            # Don't stomp on a specific message already shown via handle_progress
+            # (e.g. the real "Failed to load model: ..." reason) with this generic
+            # fallback - only show it when nothing more precise was reported.
+            if not self._error_shown:
+                self.error("unable to load model")
             self.Outputs.data.send(None)
             return
         try:
@@ -306,6 +320,12 @@ class OWQEdgeLLM(widget.OWWidget):
             print("An error occurred when sending out_data:", e)
             self.Outputs.data.send(None)
             return
+
+    def handle_error(self, message):
+        print("hello")
+        # Raised when the background thread's function threw an exception
+        # (model load failure, out-of-memory, context overflow, etc.).
+        self.error(f"Generation failed: {message}")
 
     def handle_finish(self):
         print("Generation finished")

@@ -1,6 +1,8 @@
 import os
 import re
 from pathlib import Path
+from gguf import GGUFReader
+from llama_cpp.llama_multimodal import GenericMTMDChatHandler
 
 
 
@@ -48,6 +50,8 @@ def is_a_thinking_model(model):
         "phi-4",
         "qwen2.5",
         "qwen2.5-instruct",
+        "qwen3.5",
+        "qwen-3.5",
         # "qwen3",
         # "qwen3-instruct",
         "yi",
@@ -611,64 +615,18 @@ def find_mmproj_path(model_path):
     return str(best_file)
 
 def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
+    reader = GGUFReader(model_path)
+    field = reader.get_field("tokenizer.chat_template")
+    if field is None:
+        return None
+    chat_template = field.contents()
 
-    model_name = os.path.basename(model_path).lower()
-
-    # =============================================================================
-    # Qwen3-VL
-    # =============================================================================
-    if "qwen3-vl" in model_name or "qwen3_vl" in model_name:
-
-        try:
-            from llama_cpp.llama_chat_format import Qwen3VLChatHandler
-
-            return Qwen3VLChatHandler(
-                clip_model_path=mmproj_path,
-                force_reasoning=False,
-                verbose=verbose
-            )
-
-        except Exception as e:
-            print("Unable to load Qwen3VLChatHandler:", e)
-            return None
-
-    # =============================================================================
-    # Qwen 3.5
-    # =============================================================================
-    elif (
-        "qwen3.5" in model_name
-        or "qwen35" in model_name
-        or "qwen-3.5" in model_name
-    ):
-        try:
-            from llama_cpp.llama_chat_format import Qwen35ChatHandler
-
-            return Qwen35ChatHandler(
-                clip_model_path=mmproj_path,
-                verbose=verbose,
-                use_gpu=use_gpu
-            )
-
-        except Exception as e:
-            print("Unable to load Qwen35ChatHandler:", e)
-            return None
-
-
-    elif (
-            "gemma4" in model_name
-            or "gemma-4" in model_name
-    ):
-        try:
-            from llama_cpp.llama_chat_format import Gemma4ChatHandler
-
-            return Gemma4ChatHandler(
-                clip_model_path=mmproj_path,
-                verbose=verbose,
-                use_gpu=use_gpu
-            )
-
-        except Exception as e:
-            print("Unable to load Gemma4ChatHandler:", e)
-            return None
-
-    return None
+    try:
+        chat_handler = GenericMTMDChatHandler(
+            chat_format=chat_template,
+            mmproj_path=mmproj_path
+        )
+        return chat_handler
+    except Exception as e:
+        print("Unable to load chat handler:", e)
+        return None

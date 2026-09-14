@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>480</width>
-    <height>442</height>
+    <height>433</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,7 +19,7 @@
      <x>20</x>
      <y>20</y>
      <width>440</width>
-     <height>120</height>
+     <height>145</height>
     </rect>
    </property>
    <property name="title">
@@ -41,11 +41,30 @@
      <bool>true</bool>
     </property>
    </widget>
+   <widget class="QCheckBox" name="checkBox_overwrite">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>68</y>
+      <width>400</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>À cocher lorsque les données source ont été mises à jour : le dossier _sheets existant est supprimé puis régénéré.</string>
+    </property>
+    <property name="text">
+     <string>Overwrite already generated folders</string>
+    </property>
+    <property name="checked">
+     <bool>false</bool>
+    </property>
+   </widget>
    <widget class="QLabel" name="label">
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>75</y>
+      <y>100</y>
       <width>390</width>
       <height>30</height>
      </rect>

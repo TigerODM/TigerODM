@@ -1,16 +1,25 @@
 import os
 import sys
+import math
 from pathlib import Path
 import datetime
 import platform
 
+
 import Orange.data
 from Orange.data import Table, Domain, StringVariable, ContinuousVariable
-from AnyQt.QtWidgets import QApplication
+from Orange.widgets.settings import Setting
+from AnyQt.QtWidgets import QApplication, QPushButton, QCheckBox
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
 from AnyQt.QtCore import QTimer
 
+try:
+    from PIL import Image as _PIL_Image
+    PIL_AVAILABLE = True
+except ImportError:
+    _PIL_Image = None
+    PIL_AVAILABLE = False
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
@@ -33,13 +42,13 @@ class OWFileMetadata(widget.OWWidget):
     gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owfilemetadata.ui")
     want_control_area = False
     priority = 1060
+    autorun = Setting(True)
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
 
     class Outputs:
         data = Output("Data", Orange.data.Table)
-
 
     @Inputs.data
     def set_data(self, in_data):
@@ -59,13 +68,28 @@ class OWFileMetadata(widget.OWWidget):
         self.data = None
         self.result = None
         self.thread = None
-        self.autorun = True
+
+        self._run_button = self.findChild(QPushButton)
+        self._run_button.clicked.connect(self.run)
+
+        self._autosend_box = self.findChild(QCheckBox)
+        self._autosend_box.setChecked(self.autorun)
+        self._autosend_box.toggled.connect(self.on_autorun_changed)
+
         self.post_initialized()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
+
+    def on_autorun_changed(self, state):
+        self.autorun = state
+        if self.autorun:
+            self.run()
 
     def run(self):
         self.error("")
         self.warning("")
+
+        if not PIL_AVAILABLE:
+            self.warning("Les dimensions d'image (width/height) ne seront pas calculées.")
 
         if self.data is None:
             self.Outputs.data.send(None)
@@ -107,7 +131,8 @@ class OWFileMetadata(widget.OWWidget):
 
 def add_metadatas_to_table(table, progress_callback=None, argself=None):
     """
-    Add file metadata (size, creation time, modification time) to an Orange table.
+    Add file metadata (size, creation time, modification time, image width/height)
+    to an Orange table.
 
     Optimized version with:
     - Batch stat() calls with caching
@@ -115,6 +140,7 @@ def add_metadatas_to_table(table, progress_callback=None, argself=None):
     - Vectorized datetime formatting
     - Reduced object creation
     - Long path support on Windows
+    - Image dimensions (width/height in pixels) when the file is an image
     """
     data = table.copy()
     attr_dom = list(data.domain.attributes)
@@ -132,6 +158,12 @@ def add_metadatas_to_table(table, progress_callback=None, argself=None):
     filepaths = [row["path"].value for row in data]
     metadata_list = get_metadata_batch(filepaths, progress_callback, argself, total_rows)
 
+    # Only expose width/height columns if at least one file is actually an image.
+    has_images = any(
+        isinstance(m["width"], float) and not math.isnan(m["width"])
+        for m in metadata_list
+    )
+
     # OPTIMIZATION 3: Build rows efficiently
     rows = []
     for i in range(total_rows):
@@ -140,17 +172,30 @@ def add_metadatas_to_table(table, progress_callback=None, argself=None):
 
         metadata = metadata_list[i]
         metas = list(metas_array[i])
-        metas += [metadata["file size"], metadata["creation time"], metadata["modification time"]]
+        metas += [
+            metadata["file size"],
+            metadata["creation time"],
+            metadata["modification time"],
+        ]
+        if has_images:
+            metas += [metadata["width"], metadata["height"]]
         rows.append(features_list[i] + targets_list[i] + metas)
     # Generate new Domain
     filesize_var = ContinuousVariable("file size")
     filesize_var.format_str = "%.0f"
     ctime_var = StringVariable("creation time")
     mtime_var = StringVariable("modification time")
+    new_metas = [filesize_var, ctime_var, mtime_var]
+    if has_images:
+        width_var = ContinuousVariable("width")
+        width_var.format_str = "%.0f"
+        height_var = ContinuousVariable("height")
+        height_var.format_str = "%.0f"
+        new_metas += [width_var, height_var]
     domain = Domain(
         attributes=attr_dom,
         class_vars=class_dom,
-        metas=metas_dom + [filesize_var, ctime_var, mtime_var]
+        metas=metas_dom + new_metas
     )
 
     # Create and return table
@@ -192,6 +237,27 @@ def get_metadata_batch(filepaths, progress_callback=None, argself=None, total=No
 
     return results
 
+def get_image_dimensions(path):
+    """
+    Return (width, height) in pixels for an image file, or (nan, nan) otherwise.
+
+    Uses Pillow's lazy Image.open: only the header is read to get .size, so no
+    pixel data is loaded into memory. Any file that is not a readable image
+    (including all non-image files) yields missing values.
+
+    :param path: pathlib.Path (already resolved, long-path safe on Windows).
+    :return: Tuple (width, height) as floats; (nan, nan) if unavailable.
+    """
+    if not PIL_AVAILABLE:
+        return float("nan"), float("nan")
+    try:
+        with _PIL_Image.open(path) as img:
+            width, height = img.size
+            return float(width), float(height)
+    except Exception:
+        # Not an image, corrupt, or unreadable as an image.
+        return float("nan"), float("nan")
+
 
 def get_metadata_fast(filepath, datetime_format, is_windows):
     """
@@ -200,7 +266,8 @@ def get_metadata_fast(filepath, datetime_format, is_windows):
     :param filepath: Path to the file (str or Path).
     :param datetime_format: Pre-compiled datetime format string.
     :param is_windows: Boolean indicating if running on Windows.
-    :return: Dictionary with keys "file size", "creation time", "modification time".
+    :return: Dictionary with keys "file size", "creation time",
+             "modification time", "width", "height".
     """
     try:
         path = Path(filepath)
@@ -225,40 +292,53 @@ def get_metadata_fast(filepath, datetime_format, is_windows):
         ctime = datetime.datetime.fromtimestamp(stat_info.st_ctime).strftime(datetime_format)
         mtime = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime(datetime_format)
 
+        # Image dimensions (missing values if the file is not an image)
+        width, height = get_image_dimensions(path)
+
         return {
             "file size": file_size,
             "creation time": ctime,
-            "modification time": mtime
+            "modification time": mtime,
+            "width": width,
+            "height": height
         }
 
     except FileNotFoundError:
         return {
             "file size": "0",
             "creation time": "File not found",
-            "modification time": "File not found"
+            "modification time": "File not found",
+            "width": float("nan"),
+            "height": float("nan")
         }
     except PermissionError:
         return {
             "file size": "0",
             "creation time": "Permission denied",
-            "modification time": "Permission denied"
+            "modification time": "Permission denied",
+            "width": float("nan"),
+            "height": float("nan")
         }
     except Exception as e:
         error_msg = str(e)
         return {
             "file size": "0",
             "creation time": error_msg,
-            "modification time": error_msg
+            "modification time": error_msg,
+            "width": float("nan"),
+            "height": float("nan")
         }
 
 
 def get_metadata(filepath):
     """
     Legacy function - kept for backward compatibility.
-    Retrieve file metadata: size, creation time, and modification time as strings.
+    Retrieve file metadata: size, creation time, modification time, and image
+    dimensions as a dictionary.
 
     :param filepath: Path to the file (str or Path).
-    :return: Dictionary with keys "file size", "creation time", "modification time".
+    :return: Dictionary with keys "file size", "creation time",
+             "modification time", "width", "height".
     """
     is_windows = platform.system() == 'Windows'
     datetime_format = "%Y-%m-%d %H:%M:%S"

@@ -74,11 +74,35 @@ def pip_name(name):
 
 
 def build_import_to_pip_map():
+    """Map {nom_import: nom_pip}.
+
+    1) API standard packages_distributions() (fiable quand elle connaît le module).
+    2) Complément via le top_level.txt de chaque distribution : rattrape les cas
+       où l'API ne liste pas le module (Orange -> orange3, add-ons, etc.).
+       setdefault() garantit qu'on n'écrase jamais l'info de l'étape 1.
+    """
     mapping = {}
     try:
         for mod, dists in importlib.metadata.packages_distributions().items():
             if dists:
                 mapping[mod.lower()] = pip_name(dists[0])
+    except Exception:
+        pass
+    try:
+        for dist in importlib.metadata.distributions():
+            try:
+                dist_name = pip_name(dist.metadata["Name"])
+            except Exception:
+                continue
+            tops = []
+            try:
+                tl = dist.read_text("top_level.txt")
+                if tl:
+                    tops = [t.strip() for t in tl.splitlines() if t.strip()]
+            except Exception:
+                pass
+            for top in (tops or [dist_name]):
+                mapping.setdefault(top.lower(), dist_name)
     except Exception:
         pass
     return mapping
@@ -228,21 +252,37 @@ def iter_widget_modules(pkg_name):
 
 # ── Colonnes de sortie (dynamiques selon les options) ───────────────────────
 
+# Source de vérité unique : clé interne -> libellé affiché.
+# _columns_for ET build_summary s'y réfèrent, pour qu'un renommage ici se
+# répercute partout sans casser le récapitulatif.
+COLUMN_LABELS = {
+    "name": "Widget_Orange_Name",
+    "widget": "Widget",
+    "category": "Catégorie",
+    "package": "Package pip",
+    "pkg_status": "Version lib (réf → actuelle)",
+    "statut": "Statut",
+    "file_status": ".py modifié ?",
+    "launch": "Lancer le widget",
+}
+
+
+def _col(key):
+    """(libellé, clé) pour une colonne, d'après COLUMN_LABELS."""
+    return (COLUMN_LABELS[key], key)
+
+
 def _columns_for(include_packages, compare=False):
     """Retourne la liste ordonnée (en-tête, clé_interne) des colonnes."""
-    cols = [
-        ("Widget_Orange_Name", "name"),
-        ("Widget", "widget"),
-        ("Catégorie", "category"),
-    ]
+    cols = [_col("name"), _col("widget"), _col("category")]
     if include_packages:
-        cols.append(("Package pip", "package"))
+        cols.append(_col("package"))
         if compare:
-            cols.append(("Version lib (réf → actuelle)", "pkg_status"))
-    cols.append(("Statut", "statut"))
+            cols.append(_col("pkg_status"))
+    cols.append(_col("statut"))
     if compare:
-        cols.append((".py modifié ?", "file_status"))
-    cols.append(("Lancer le widget", "launch"))
+        cols.append(_col("file_status"))
+    cols.append(_col("launch"))
     return cols
 
 
@@ -612,7 +652,7 @@ def compare_package(pip_name_, reference):
     ref_ver = ref_pkgs.get(pip_name_)
     cur = installed_version(pip_name_)
     if ref_ver is None and cur is None:
-        return "?"
+        return "(hors pip / local)"
     if ref_ver is None:
         return f"nouvelle (actuelle {cur})"
     if cur is None:
@@ -669,21 +709,21 @@ def load_tutorials():
 
 def _hlit_modules():
     """Importe tout ce qu'il faut pour le mode serveur (comme agentIA),
-    en gérant les deux dispositions de packages HLIT_dev."""
+    en gérant les deux dispositions de packages HLIT."""
     try:
-        from orangecontrib.HLIT_dev.remote_server_smb import (
+        from orangecontrib.HLIT.remote_server_smb import (
             convert, server_uvicorn, management_workflow_sans_api,
         )
-        from orangecontrib.HLIT_dev.utils import hlit_python_api
-        from orangecontrib.HLIT_dev.utils.hlit_python_api import (
+        from orangecontrib.HLIT.utils import hlit_python_api
+        from orangecontrib.HLIT.utils.hlit_python_api import (
             daemonizer_with_input_output,
         )
     except Exception:
-        from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import (
+        from Orange.widgets.orangecontrib.HLIT.remote_server_smb import (
             convert, server_uvicorn, management_workflow_sans_api,
         )
-        from Orange.widgets.orangecontrib.HLIT_dev.utils import hlit_python_api
-        from Orange.widgets.orangecontrib.HLIT_dev.utils.hlit_python_api import (
+        from Orange.widgets.orangecontrib.HLIT.utils import hlit_python_api
+        from Orange.widgets.orangecontrib.HLIT.utils.hlit_python_api import (
             daemonizer_with_input_output,
         )
     return (convert, server_uvicorn, management_workflow_sans_api,
@@ -833,7 +873,7 @@ def run_tutorial(entry, ip_port="127.0.0.1:8000", poll_sleep=0.3):
     try:
         convert, server_uvicorn, mws, hlit_api, daemonizer = _hlit_modules()
     except Exception as e:
-        result["detail"] = f"API HLIT_dev indisponible : {e}"
+        result["detail"] = f"API HLIT indisponible : {e}"
         return result
 
     # 0) Purge du verrou résiduel (agentIA.purge_locker)
@@ -979,6 +1019,133 @@ def collect_metadata(when=None):
     ]
 
 
+# ── Récapitulatif (statistiques) ────────────────────────────────────────────
+
+def _pct(n, total):
+    return f"{(100.0 * n / total):.0f} %" if total else "—"
+
+
+def build_summary(headers, rows):
+    """Statistiques récapitulatives calculées à partir des en-têtes + lignes.
+
+    Robuste : chaque section n'est produite que si sa colonne est présente.
+    Renvoie une liste (label, valeur) ; une valeur None marque un titre de
+    section (rendu en gras dans le .xlsx).
+    """
+    def col(key, *aliases):
+        """Index de colonne d'après la clé interne (COLUMN_LABELS) + alias.
+
+        Les alias couvrent les exports au schéma différent (ex. tutoriels :
+        'Résultat' pour le statut, 'Tutoriel' pour le nom)."""
+        for nm in (COLUMN_LABELS.get(key, key), *aliases):
+            if nm in headers:
+                return headers.index(nm)
+        return None
+
+    c_status = col("statut", "Résultat")
+    c_name = col("name", "Tutoriel")
+    c_cat = col("category")
+    c_file = col("file_status")
+    c_pver = col("pkg_status")
+    c_pkg = col("package")
+
+    def cell(row, ci):
+        return "" if ci is None or ci >= len(row) else str(row[ci]).strip()
+
+    # ── Unités "widget" : on dédoublonne les lignes (widget, librairie) ──
+    # Clé = (nom, catégorie) si dispo, sinon l'index de ligne (pas de dédup).
+    units = {}  # clé -> {"status":..., "file":...}
+    for i, row in enumerate(rows):
+        if c_name is not None:
+            key = (cell(row, c_name), cell(row, c_cat))
+        else:
+            key = i
+        u = units.setdefault(key, {"status": "", "file": ""})
+        if not u["status"]:
+            u["status"] = cell(row, c_status)
+        if not u["file"]:
+            u["file"] = cell(row, c_file)
+
+    total_units = len(units)
+    out = [("RÉCAPITULATIF", None)]
+    out.append(("Lignes (page brute)", len(rows)))
+    out.append(("Widgets analysés", total_units))
+
+    # ── Statuts OK / NOK ──
+    if c_status is not None:
+        n_ok = sum(1 for u in units.values() if u["status"].upper() == "OK")
+        n_nok = sum(1 for u in units.values() if u["status"].upper() == "NOK")
+        n_err = sum(1 for u in units.values() if u["status"].upper().startswith("ERR"))
+        n_other = total_units - n_ok - n_nok - n_err
+        out.append(("STATUTS", None))
+        out.append(("OK", f"{n_ok}  ({_pct(n_ok, total_units)})"))
+        out.append(("NOK", f"{n_nok}  ({_pct(n_nok, total_units)})"))
+        out.append(("Erreur", f"{n_err}  ({_pct(n_err, total_units)})"))
+        if n_other:
+            out.append(("Autres / non lancés", n_other))
+
+    # ── Fichiers .py modifiés (si comparaison) ──
+    if c_file is not None:
+        vals = [u["file"] for u in units.values() if u["file"]]
+        def _n(pred):
+            return sum(1 for v in vals if pred(v.lower()))
+        n_mod = _n(lambda v: "oui" in v or "modif" in v)
+        n_unch = _n(lambda v: v == "non")
+        n_new = _n(lambda v: "nouveau" in v)
+        n_pb = _n(lambda v: "introuvable" in v or "illisible" in v)
+        out.append((".PY vs RÉFÉRENCE", None))
+        out.append(("Modifiés", n_mod))
+        out.append(("Inchangés", n_unch))
+        out.append(("Nouveaux (absents réf)", n_new))
+        if n_pb:
+            out.append(("Illisibles / introuvables", n_pb))
+
+    # ── Différences pip (si comparaison + grain fin) ──
+    if c_pver is not None:
+        changed = []       # (package, "ref → actuelle")
+        n_same = n_new = n_absent = n_offpip = 0
+        for row in rows:
+            s = cell(row, c_pver)
+            if not s:
+                continue
+            low = s.lower()
+            if s.startswith("= "):
+                n_same += 1
+            elif "→" in s:
+                changed.append((cell(row, c_pkg), s))
+            elif low.startswith("nouvelle"):
+                n_new += 1
+            elif low.startswith("absente"):
+                n_absent += 1
+            elif low.startswith("(hors pip"):
+                n_offpip += 1
+        out.append(("LIBRAIRIES PIP vs RÉFÉRENCE", None))
+        out.append(("Versions changées", len(changed)))
+        out.append(("Versions identiques", n_same))
+        out.append(("Nouvelles (absentes réf)", n_new))
+        out.append(("Absentes (présentes en réf)", n_absent))
+        if n_offpip:
+            out.append(("Hors pip / local", n_offpip))
+        for pkg, s in changed:
+            out.append((f"  • {pkg}", s))
+
+    # ── Répartition par catégorie ──
+    if c_cat is not None and c_name is not None:
+        cats = {}
+        for (nm, cat), u in units.items():
+            d = cats.setdefault(cat or "(sans catégorie)", [0, 0])
+            d[0] += 1
+            if u["status"].upper() == "OK":
+                d[1] += 1
+        if cats:
+            out.append(("PAR CATÉGORIE (OK / total)", None))
+            for cat in sorted(cats):
+                tot, ok = cats[cat][0], cats[cat][1]
+                out.append((cat, f"{ok} / {tot}"))
+
+    return out
+
+
 # ── Écriture des résultats ──────────────────────────────────────────────────
 
 def _write_delimited(path, headers, rows, delimiter):
@@ -999,6 +1166,8 @@ def _write_xlsx(path, headers, rows, metadata=None):
             "Le format .xlsx nécessite le paquet 'openpyxl'. "
             "Installe-le (pip install openpyxl) ou choisis un fichier .csv."
         ) from e
+    from openpyxl.styles import Font
+
     path = Path(path)
     wb = Workbook()
     ws = wb.active
@@ -1006,6 +1175,23 @@ def _write_xlsx(path, headers, rows, metadata=None):
     ws.append(list(headers))
     for r in rows:
         ws.append(list(r))
+
+    # Feuille récap, placée en première position (page d'accueil du classeur).
+    try:
+        summary = build_summary(list(headers), rows)
+    except Exception:
+        summary = None
+    if summary:
+        rs = wb.create_sheet("Récapitulatif")
+        for label, value in summary:
+            if value is None:                       # titre de section
+                cell = rs.cell(row=rs.max_row + 1, column=1, value=str(label))
+                cell.font = Font(bold=True)
+            else:
+                rs.append([str(label), "" if value is None else str(value)])
+        rs.column_dimensions["A"].width = 34
+        rs.column_dimensions["B"].width = 24
+        wb.move_sheet("Récapitulatif", -(wb.index(rs)))  # -> index 0
 
     if metadata:
         ms = wb.create_sheet("Métadonnées")
@@ -1045,6 +1231,17 @@ def write_rows(path, headers, rows, metadata=None):
             w.writerow(["Clé", "Valeur"])
             for k, v in metadata:
                 w.writerow([k, "" if v is None else str(v)])
+    # Récapitulatif dans un sidecar dédié.
+    try:
+        summary = build_summary(list(headers), rows)
+    except Exception:
+        summary = None
+    if summary:
+        side = p.with_suffix(p.suffix + ".summary.csv")
+        with open(side, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f, delimiter=";")
+            for label, value in summary:
+                w.writerow([label, "" if value is None else value])
     return out
 
 
