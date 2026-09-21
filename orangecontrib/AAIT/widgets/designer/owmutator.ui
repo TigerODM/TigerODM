@@ -106,6 +106,19 @@
      <string>Multiply by selected ColName to All Numeric Column</string>
     </property>
    </widget>
+   <widget class="QRadioButton" name="radioButton_ffill">
+    <property name="geometry">
+     <rect>
+      <x>30</x>
+      <y>120</y>
+      <width>381</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Impute the last value until next value</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QPushButton" name="pushButton">
    <property name="geometry">
