@@ -58,6 +58,8 @@ class OWWidgetRandomData(widget.OWWidget):
     strauto :str =Setting('False')
     strWaitTwoinput :str =Setting('False')
     strReproducible :str =Setting('True')
+    strUse_Min_Max: str = Setting('False')
+
 
     @Inputs.data
     def set_data(self, data):
@@ -88,7 +90,7 @@ class OWWidgetRandomData(widget.OWWidget):
         SimpleDialogQt.transformboutontools2wrench(self.bouttontool)
         self.bouttontool.clicked.connect(self.set_defaut_value_for_new_widget)
 
-
+        self.checkBox_4=self.findChild(QCheckBox, 'checkBox_4')
         self.spinbox = self.findChild(QtWidgets.QSpinBox, 'lineEdit_nomFichier')
         self.spinbox.setValue(int(self.nombre_generation))
         self.spinbox.valueChanged.connect(self.spinbox_value_changed)
@@ -118,7 +120,15 @@ class OWWidgetRandomData(widget.OWWidget):
         else:
             self.checkbox_Reproducible.setChecked(False)
 
+        if self.strUse_Min_Max!='True':
+            self.checkBox_4.setChecked(False)
+        else:
+            self.checkBox_4.setChecked(True)
+
+
         self.checkbox_Reproducible.stateChanged.connect(self.on_checkbox3_toggled)
+        self.checkBox_4.stateChanged.connect(self.on_checkBox_4_toggled)
+
         self.post_initialized()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
@@ -152,7 +162,11 @@ class OWWidgetRandomData(widget.OWWidget):
         else:
             self.strReproducible="False"
 
-
+    def on_checkBox_4_toggled(self):
+        if self.checkBox_4.isChecked():
+            self.strUse_Min_Max="True"
+        else:
+            self.strUse_Min_Max = "False"
 
     def set_defaut_value_for_new_widget(self):
         selected_value = SimpleDialogQt.get_number_from_dialog("select a number between 1 et 100 000 :", 1, 100000)
@@ -224,6 +238,90 @@ class OWWidgetRandomData(widget.OWWidget):
                 d.append(value)
             data.append(d)
         return data
+
+    # Mode facultatif : les bornes Min/Max se trouvent sur chaque ligne.
+    def get_min_max_column_groups(self):
+        numeric_variables = {
+            variable.name: variable
+            for variable in (
+                list(self.in_data.domain.attributes)
+                + list(self.in_data.domain.class_vars)
+                + list(self.in_data.domain.metas)
+            )
+            if variable.is_continuous
+        }
+
+        groups = []
+        for name, min_variable in numeric_variables.items():
+            if not name.endswith("_Min"):
+                continue
+
+            generated_name = name[:-4]
+            max_variable = numeric_variables.get(generated_name + "_Max")
+            if max_variable is None:
+                continue
+
+            step_variable = numeric_variables.get(generated_name + "_Step")
+            groups.append((generated_name, min_variable, max_variable, step_variable))
+
+        return groups
+
+    # Duplique chaque ligne et ajoute une valeur aléatoire par groupe Min/Max.
+    def generate_random_data_from_min_max_columns(self, nb_iterations):
+        groups = self.get_min_max_column_groups()
+        if len(groups) == 0:
+            self.error("No numeric column pairs ending with '_Min' and '_Max' were found")
+            return None
+
+        existing_names = {
+            variable.name
+            for variable in (
+                list(self.in_data.domain.attributes)
+                + list(self.in_data.domain.class_vars)
+                + list(self.in_data.domain.metas)
+            )
+        }
+        duplicate_names = [name for name, _, _, _ in groups if name in existing_names]
+        if len(duplicate_names) > 0:
+            self.error("Output column already exists: " + ", ".join(duplicate_names))
+            return None
+
+        if self.strReproducible == "True":
+            random.seed(0)
+
+        row_indices = []
+        generated_columns = [[] for _ in groups]
+
+        for row_index, row in enumerate(self.in_data):
+            for _ in range(nb_iterations):
+                row_indices.append(row_index)
+
+                for group_index, (_, min_variable, max_variable, step_variable) in enumerate(groups):
+                    min_value = row[min_variable].value
+                    max_value = row[max_variable].value
+
+                    if math.isnan(min_value) or math.isnan(max_value):
+                        value = float("nan")
+                    else:
+                        value_min = min(min_value, max_value)
+                        value_max = max(min_value, max_value)
+                        step_value = None if step_variable is None else row[step_variable].value
+
+                        if step_value is not None and not math.isnan(step_value) and step_value != 0:
+                            value = self.random_float_with_step(value_min, value_max, abs(step_value))
+                        else:
+                            value = random.uniform(value_min, value_max)
+
+                    generated_columns[group_index].append(value)
+
+        output_data = self.in_data[row_indices]
+        for group_index, (generated_name, _, _, _) in enumerate(groups):
+            output_data = output_data.add_column(
+                ContinuousVariable(generated_name),
+                generated_columns[group_index]
+            )
+
+        return output_data
 
     def del_space_debut_fin(self,text_to_edit):
         if text_to_edit[0] == " ":
@@ -302,6 +400,18 @@ class OWWidgetRandomData(widget.OWWidget):
         if self.strWaitTwoinput!='False':
             if self.data_rules == None:
                 return
+
+        if self.nombre_generation == "0":
+            self.error("Error in the numner of generation")
+            return
+
+        # Nouveau comportement, sans modifier le comportement historique.
+        if self.strUse_Min_Max == "True":
+            output_data = self.generate_random_data_from_min_max_columns(int(self.nombre_generation))
+            if output_data is not None:
+                self.Outputs.data.send(output_data)
+            return
+
         has_name = (
                 "name" in self.in_data.domain
                 or "Feature" in self.in_data.domain
@@ -316,10 +426,6 @@ class OWWidgetRandomData(widget.OWWidget):
 
 
 
-
-        if self.nombre_generation == "0":
-            self.error("Error in the numner of generation")
-            return
 
         if (
                 "Feature" in self.in_data.domain
@@ -361,6 +467,3 @@ if __name__ == "__main__":
         app.exec()
     else:
         app.exec_()
-
-
-

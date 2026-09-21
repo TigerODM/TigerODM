@@ -8,6 +8,7 @@ from Orange.data import Table, Domain, Variable, DiscreteVariable
 from Orange.widgets import widget
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.signals import Input, Output
+from Orange.data import Table, Domain, Variable, DiscreteVariable, TimeVariable, ContinuousVariable
 
 from AnyQt.QtWidgets import (
     QApplication,
@@ -388,7 +389,9 @@ class OWFusionNN(widget.OWWidget):
                             merged_values.append(v)
                     return DiscreteVariable(new_name, values=merged_values)
                 return DiscreteVariable(new_name, values=var.values)
-            return var.__class__(new_name)
+            cloned = var.copy()
+            cloned.name = new_name
+            return cloned
 
         out_attrs: List[Variable] = []
         out_classes: List[Variable] = []

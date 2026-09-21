@@ -36,12 +36,12 @@ class OWAccumulator(widget.OWWidget):
     auto_send = Setting(True)
 
     class Inputs:
-        data = Input("Input Data", Table, auto_summary=False)
-        trigger = Input("Trigger", Table, auto_summary=False)
+        data = Input("Input Data", Table)
+        trigger = Input("Trigger", Table)
 
     class Outputs:
-        sample = Output("Output", Table, auto_summary=False)
-        preview = Output("Preview", Table, auto_summary=False)
+        sample = Output("Output", Table)
+        preview = Output("Preview", Table)
 
     def __init__(self):
         super().__init__()

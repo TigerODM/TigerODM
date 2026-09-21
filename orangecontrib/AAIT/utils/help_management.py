@@ -24,5 +24,5 @@ def override_help_action(argself):
 def open_help(name):
     html_filename = name.lower().replace(" ", "_")+".html"
     print(html_filename)
-    url = "https://tigerodm.com/public/documentation/dossier_html/"+ html_filename
+    url = "https://tigerodmrepo.com/public/documentation/dossier_html/"+ html_filename
     QDesktopServices.openUrl(QUrl(url))
