@@ -2,6 +2,8 @@ import os
 import re
 import json
 import ntpath
+import hashlib
+import tempfile
 from pathlib import Path
 import pandas as pd
 import zipfile
@@ -845,6 +847,10 @@ def _resolve_locator_to_paragraphs(doc, locator):
             j = int(parts[3])
             txbxs = child.findall(".//" + qn("w:txbxContent"))
             return txbxs[j].findall(".//" + qn("w:p")) if j < len(txbxs) else []
+        # Les locators d'image (body:{i}:image:{k}) ne désignent aucun paragraphe :
+        # une édition qui les cible échoue proprement plutôt que d'écrire ailleurs.
+        if len(parts) >= 4 and parts[2] == "image":
+            return []
         if child.tag == qn("w:p"):
             return [child]
         return child.findall(".//" + qn("w:p"))
@@ -852,6 +858,8 @@ def _resolve_locator_to_paragraphs(doc, locator):
     if kind == "section":
         si = int(parts[1])
         if si >= len(doc.sections):
+            return []
+        if len(parts) >= 5 and parts[3] == "image":
             return []
         attr = _HF_ATTR.get(parts[2])
         hf = getattr(doc.sections[si], attr, None) if attr else None
@@ -1486,7 +1494,146 @@ def apply_docx_edits_batch(docx_path, edits, output_path=None, update_fields="au
         _finalize_update_fields(doc, update_fields, all_edited, output_path, docx_path)
     return results, total
 
-def extract_docx_objects(docx_path):
+
+# ---------------------------------------------------------------------------
+# Extraction des IMAGES d'un .docx
+# ---------------------------------------------------------------------------
+# Namespaces déclarés en dur : le nsmap de python-docx ne garantit pas la
+# présence des préfixes "a" (DrawingML) et "v" (VML hérité) selon les versions,
+# et qn() lèverait alors un KeyError.
+
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_NS_V = "urn:schemas-microsoft-com:vml"
+_NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+_TAG_BLIP = "{%s}blip" % _NS_A
+_TAG_IMAGEDATA = "{%s}imagedata" % _NS_V
+_ATTR_EMBED = "{%s}embed" % _NS_R
+_ATTR_LINK = "{%s}link" % _NS_R
+_ATTR_RID = "{%s}id" % _NS_R
+
+_SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _iter_image_rids(element):
+    """
+    Identifiants de relation (r:id) des images contenues sous `element`.
+
+    Couvre les deux encodages rencontrés dans un .docx :
+      - DrawingML moderne : <a:blip r:embed="rId7"/> dans un <w:drawing>
+      - VML hérité        : <v:imagedata r:id="rId7"/> dans un <w:pict>
+
+    Un même rid n'est renvoyé qu'une fois : Word duplique fréquemment une image
+    dans <mc:Choice> ET <mc:Fallback>, les deux pointant vers la même relation.
+    """
+    seen = set()
+    for node in element.iter():
+        tag = node.tag
+        if tag == _TAG_BLIP:
+            rid = node.get(_ATTR_EMBED) or node.get(_ATTR_LINK)
+        elif tag == _TAG_IMAGEDATA:
+            rid = node.get(_ATTR_RID)
+        else:
+            continue
+        if rid and rid not in seen:
+            seen.add(rid)
+            yield rid
+
+
+def _resolve_media_dir(docx_path, media_dir=None):
+    """
+    Dossier de sortie des images extraites.
+
+    Par défaut : sous-dossier "_aait_media" à côté du document. Si ce dossier
+    n'est pas créable ou pas inscriptible (partage réseau en lecture seule,
+    fréquent en environnement industriel), repli silencieux sur le dossier
+    temporaire du système.
+    """
+    if media_dir:
+        target = media_dir
+    else:
+        target = os.path.join(os.path.dirname(os.path.abspath(docx_path)), "_aait_media")
+
+    for candidate in (target, os.path.join(tempfile.gettempdir(), "aait_media")):
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            probe = os.path.join(candidate, ".aait_write_test")
+            with open(probe, "w") as fh:
+                fh.write("")
+            os.remove(probe)
+            return candidate
+        except Exception:
+            continue
+    return tempfile.gettempdir()
+
+
+def _safe_stem(docx_path):
+    """Radical de nom de fichier sûr sous Windows, tronqué (contrainte MAX_PATH)."""
+    return _SAFE_STEM_RE.sub("_", Path(docx_path).stem)[:60] or "document"
+
+
+def _save_image_part(image_part, media_dir, stem):
+    """
+    Écrit une image sur disque et renvoie son chemin (séparateurs normalisés).
+
+    Le nom intègre une empreinte SHA-1 du contenu : une image réutilisée dix fois
+    dans le document n'est écrite qu'une seule fois, et un second passage
+    (extract_text puis extract_docx_objects sur le même fichier) ne réécrit rien.
+    """
+    # Garde-fou : les rId sont numérotés PAR PART. Si l'on résout un rid d'en-tête
+    # contre doc.part, on obtient une part existante mais fausse (styles.xml...).
+    content_type = str(getattr(image_part, "content_type", "") or "")
+    partname = str(getattr(image_part, "partname", ""))
+    if not content_type.startswith("image/") and "/media/" not in partname.replace("\\", "/"):
+        return None
+
+    try:
+        blob = image_part.blob
+    except Exception:
+        return None  # relation externe ou part non binaire
+    if not blob:
+        return None
+
+    ext = os.path.splitext(partname)[1].lower() or ".bin"
+    digest = hashlib.sha1(blob).hexdigest()[:10]
+    out_path = os.path.join(media_dir, "%s_%s%s" % (stem, digest, ext))
+
+    if not os.path.exists(out_path):
+        try:
+            with open(out_path, "wb") as fh:
+                fh.write(blob)
+        except Exception as e:
+            print("[AVERTISSEMENT] Image non écrite (%s): %s" % (out_path, e))
+            return None
+
+    return out_path.replace("\\", "/")
+
+
+def _extract_images_from(element, owner_part, media_dir, stem):
+    """
+    Extrait toutes les images sous `element`, résolues via `owner_part`.
+
+    `owner_part` doit être la part qui PORTE les relations : doc.part pour le
+    corps, hf.part pour un en-tête ou un pied de page. Utiliser doc.part pour un
+    en-tête donnerait des rid valides mais pointant vers d'autres parts.
+    """
+    paths = []
+    related = getattr(owner_part, "related_parts", None)
+    if related is None:
+        return paths
+
+    for rid in _iter_image_rids(element):
+        try:
+            image_part = related[rid]
+        except Exception:
+            continue  # r:link externe, ou rid orphelin
+        saved = _save_image_part(image_part, media_dir, stem)
+        if saved:
+            paths.append(saved)
+    return paths
+
+
+def extract_docx_objects(docx_path, extract_images=True, media_dir=None):
     """
     Extract Word objects from a .docx, preserving document order.
     Returns a list of (locator, type, content) triples.
@@ -1494,12 +1641,22 @@ def extract_docx_objects(docx_path):
     Locator scheme (re-resolvable by apply_docx_edit):
       body:{i}                i-th child of the body (p / tbl / sdt), doc order
       body:{i}:textbox:{j}    j-th text box inside body child i
+      body:{i}:image:{k}      k-th image inside body child i
       section:{si}:{label}    header/footer variant of section si (owner section only)
+      section:{si}:{label}:image:{k}
       footnote:{id} / endnote:{id}
+
+    Les objets de type "image" portent le CHEMIN du fichier extrait dans le champ
+    `content`, pas des octets. Leur locator n'est pas résolvable par
+    _resolve_locator_to_paragraphs (qui renvoie []) : une édition ciblant une
+    image échoue proprement, elle n'écrit nulle part ailleurs.
     """
     try:
         doc = docx.Document(docx_path)
         objects = []  # (locator, type, content)
+
+        stem = _safe_stem(docx_path)
+        img_dir = _resolve_media_dir(docx_path, media_dir) if extract_images else None
 
         # 1. Headers & footers -- one entry per REAL definition (no dedup, skip inherited)
         hf_variants = [
@@ -1530,9 +1687,18 @@ def extract_docx_objects(docx_path):
                     # previous section's part, so only the owner section is surfaced.
                     if getattr(hf, "is_linked_to_previous", False):
                         continue
+
                     text = _extract_header_footer_text(hf).strip()
                     if text:
-                        objects.append((f"section:{si}:{label}", label, text))
+                        objects.append(("section:%d:%s" % (si, label), label, text))
+
+                    # Images d'en-tête / pied : relations portées par hf.part,
+                    # surtout pas par doc.part.
+                    if extract_images:
+                        for k, img in enumerate(_extract_images_from(
+                                hf._element, hf.part, img_dir, stem)):
+                            objects.append(
+                                ("section:%d:%s:image:%d" % (si, label, k), "image", img))
                 except Exception as e:
                     print(f"[AVERTISSEMENT] {label} section {si} ignoré dans '{docx_path}': {e}")
                     continue
@@ -1567,7 +1733,7 @@ def extract_docx_objects(docx_path):
         except Exception:
             pass
 
-        # 4. Body: paragraphs, tables, text boxes in document order
+        # 4. Body: paragraphs, tables, text boxes, images in document order
         table_elements = {t._element: t for t in doc.tables}
         para_elements = {p._element: p for p in doc.paragraphs}
 
@@ -1575,22 +1741,37 @@ def extract_docx_objects(docx_path):
             if not style_name:
                 return "paragraph"
             s = style_name.lower().strip()
-            if s.startswith("heading"):
-                try:
-                    level = int(style_name.split()[-1])
-                except ValueError:
-                    level = 1
-                return f"heading_{level}"
             if s == "title":
                 return "title"
             if s == "subtitle":
                 return "subtitle"
+            if s.startswith("heading"):
+                try:
+                    return "heading_%d" % int(style_name.split()[-1])
+                except ValueError:
+                    return "heading_1"
+            # Styles localisés ("Titre 2", "Überschrift 3"...) : python-docx ne
+            # traduit pas les noms de styles personnalisés.
+            m = _HEADING_NAME_RE.search(style_name)
+            if m:
+                try:
+                    return "heading_%d" % int(m.group(1))
+                except ValueError:
+                    return "heading_1"
             return "paragraph"
 
         # IMPORTANT: same iteration order is used by _resolve_locator_to_paragraphs
         for i, child in enumerate(doc.element.body.iterchildren()):
             tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
             try:
+                # Images : scannées pour TOUT type d'enfant (p, tbl, sdt), et émises
+                # AVANT le texte de l'élément. L'ancrage exact d'une image à
+                # l'intérieur d'un paragraphe n'est pas restitué.
+                if extract_images:
+                    for k, img in enumerate(_extract_images_from(
+                            child, doc.part, img_dir, stem)):
+                        objects.append(("body:%d:image:%d" % (i, k), "image", img))
+
                 if tag == "p":
                     # Inline text boxes, indexed within this paragraph
                     for j, txbx in enumerate(child.findall(".//" + qn("w:txbxContent"))):
@@ -1893,56 +2074,125 @@ def extract_pptx_slides(pptx_path):
                 for i, slide in enumerate(prs.slides)]
     except Exception as e:
         return [(1, f"ERROR: Extraction Error ({e})")]
-    
-def extract_text_from_docx(docx_path):
-    """
-    Extrait le texte d'un fichier DOCX en conservant l'ordre des éléments (paragraphes, tableaux et titres).
 
-    :param docx_path: Chemin vers le fichier DOCX.
-    :return: Texte extrait du document sous forme de chaîne.
+
+_HEADING_TYPE_RE = re.compile(r"^heading_(\d+)$")
+
+
+def _table_text_to_markdown(table_text):
+    """
+    Convertit la sortie tabulée de _extract_table_text en tableau Markdown.
+
+    _extract_table_text reste inchangée : la table `details` conserve donc
+    exactement son format actuel, seul le `content` agrégé passe en Markdown.
+    """
+    rows = [line.split("\t") for line in table_text.split("\n")]
+    rows = [r for r in rows if any(c.strip() for c in r)]
+    if not rows:
+        return ""
+
+    width = max(len(r) for r in rows)
+
+    def _cell(value):
+        return value.replace("|", "\\|").replace("\n", " ").strip()
+
+    def _line(cells):
+        padded = list(cells) + [""] * (width - len(cells))
+        return "| " + " | ".join(_cell(c) for c in padded) + " |"
+
+    out = [_line(rows[0]), "| " + " | ".join(["---"] * width) + " |"]
+    out.extend(_line(r) for r in rows[1:])
+    return "\n".join(out)
+
+
+def extract_text_from_docx(docx_path, extract_images=True, media_dir=None,
+                           include_headers_footers=True, include_notes=True):
+    """
+    Extrait le texte d'un DOCX en conservant l'ordre des éléments.
+
+    Reconstruit sur extract_docx_objects, ce qui récupère ce que le parcours
+    doc.paragraphs / doc.tables laissait tomber :
+      - les tableaux à LEUR PLACE dans le flux (ils étaient concaténés à la fin)
+        et rendus en Markdown plutôt qu'en tabulations ;
+      - les zones de texte (w:txbxContent) ;
+      - les paragraphes enveloppés dans un contrôle de contenu (w:sdt) ;
+      - les résultats de champs et les hyperliens, via _element_text ;
+      - les en-têtes, pieds de page, notes de bas de page et notes de fin ;
+      - les images, sous forme de marqueurs [IMAGE: <chemin>].
+
+    Les images sont écrites sur disque (voir _resolve_media_dir). Passer
+    extract_images=False pour retrouver un comportement sans effet de bord.
     """
     try:
-        doc = docx.Document(docx_path)
-        extracted_text = []
-        title_numbers = {}  # Dictionary to track numbering per heading level
-
-        for para in doc.paragraphs:
-            # Vérifie si c'est un titre
-            if para.style.name.startswith('Heading'):
-                heading_level = int(para.style.name.split()[-1])  # Niveau du titre (1, 2, 3, etc.)
-                heading_text = para.text.strip()
-
-                # Met à jour la numérotation des titres
-                if heading_level not in title_numbers:
-                    title_numbers[heading_level] = 1  # Nouveau niveau
-                else:
-                    title_numbers[heading_level] += 1  # Incrémente niveau actuel
-
-                # Réinitialise les niveaux inférieurs
-                for level in list(title_numbers.keys()):
-                    if level > heading_level:
-                        del title_numbers[level]
-
-                # Forme le numéro du titre (ex: "1", "1.1", "1.2.1")
-                full_title = ".".join(str(title_numbers[i]) for i in sorted(title_numbers.keys()))
-                extracted_text.append(f"\n{full_title} {heading_text}")  # Ajoute le titre formaté
-            else:
-                extracted_text.append(para.text.strip())  # Ajoute le paragraphe
-
-        # Parcourt les tableaux du document (lecture XML champ-consciente :
-        # capture des REF/renvois et pas de duplication des cellules fusionnées)
-        for table_idx, table in enumerate(doc.tables):
-            try:
-                extracted_text.append(_extract_table_text(table))
-            except Exception as e:
-                print(f"[AVERTISSEMENT] Tableau {table_idx + 1} ignoré dans '{docx_path}': {e}")
-                continue
-    
+        objects = extract_docx_objects(docx_path,
+                                       extract_images=extract_images,
+                                       media_dir=media_dir)
     except Exception as e:
         print(f"Erreur lors de l'extraction de texte depuis {docx_path}: {e}")
         return f"ERROR: Extraction Error ({e})"
 
-    return "\n".join(filter(None, extracted_text))  # Retourne le texte en filtrant les vides
+    # extract_docx_objects signale une erreur globale par un unique objet "document".
+    if len(objects) == 1 and objects[0][1] == "document":
+        return objects[0][2]
+
+    body, hf, notes = [], [], []
+    for locator, obj_type, content in objects:
+        if locator.startswith("section:"):
+            hf.append((locator, obj_type, content))
+        elif locator.startswith("footnote:") or locator.startswith("endnote:"):
+            notes.append((locator, obj_type, content))
+        else:
+            body.append((locator, obj_type, content))
+
+    parts = []
+    title_numbers = {}  # niveau de titre -> compteur
+
+    for _, obj_type, content in body:
+        if obj_type == "image":
+            parts.append(f"[IMAGE: {content}]")
+            continue
+
+        if obj_type == "table":
+            markdown = _table_text_to_markdown(content)
+            if markdown:
+                parts.append("\n" + markdown + "\n")
+            continue
+
+        if obj_type == "textbox":
+            parts.append(f"[ZONE DE TEXTE]\n{content.strip()}")
+            continue
+
+        match = _HEADING_TYPE_RE.match(obj_type)
+        if match:
+            # Numérotation hiérarchique : logique identique à la version d'origine.
+            heading_level = int(match.group(1))
+            if heading_level not in title_numbers:
+                title_numbers[heading_level] = 1
+            else:
+                title_numbers[heading_level] += 1
+            for level in list(title_numbers.keys()):
+                if level > heading_level:
+                    del title_numbers[level]
+            full_title = ".".join(str(title_numbers[i]) for i in sorted(title_numbers.keys()))
+            parts.append(f"\n{full_title} {content.strip()}")
+            continue
+
+        parts.append(content.strip())
+
+    if include_headers_footers and hf:
+        parts.append("\n---\n## En-têtes et pieds de page")
+        for locator, obj_type, content in hf:
+            if obj_type == "image":
+                parts.append(f"[IMAGE: {content}]")
+            else:
+                parts.append(f"[{obj_type}] {content.strip()}")
+
+    if include_notes and notes:
+        parts.append("\n---\n## Notes")
+        for locator, obj_type, content in notes:
+            parts.append(f"[{locator}] {content.strip()}")
+
+    return "\n".join(filter(None, parts))
 
 
 def extract_text_from_txt(filepath):

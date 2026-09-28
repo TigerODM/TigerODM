@@ -41,6 +41,7 @@ class OWTableMutator(widget.OWWidget):
     want_control_area = False
     strauto: str = Setting('False')
     operation_mode: str = Setting("")
+    stronlyconame: str = Setting('False')
 
     class Inputs:
         data = Input("In data", Orange.data.Table)
@@ -56,13 +57,14 @@ class OWTableMutator(widget.OWWidget):
         uic.loadUi(self.gui, self)
         self.data=None
         self.checkbox_interface = self.findChild(QCheckBox, 'checkBox')
+        self.checkBox_only_colname=self.findChild(QCheckBox, 'checkBox_only_colname')
         self.radio_transpose = self.findChild(QRadioButton, 'radioButton_transpose')
         self.radioButton_cast_numeric = self.findChild(QRadioButton, 'radioButton_cast_numeric')
         self.radioButton_cast_string=self.findChild(QRadioButton, 'radioButton_cast_string')
         self.radioButton_multiply_colname = self.findChild(QRadioButton, 'radioButton_multiply_colname')
         self.radioButton_add_colname = self.findChild(QRadioButton, 'radioButton_add_colname')
-
-
+        self.radioButton_impute_above = self.findChild(QRadioButton, 'radioButton_impute_above')
+        self.radioButton_reverse_line_order=self.findChild(QRadioButton, 'radioButton_reverse_line_order')
 
 
         self.push_button_run = self.findChild(QPushButton, 'pushButton')
@@ -70,6 +72,13 @@ class OWTableMutator(widget.OWWidget):
             self.checkbox_interface.setChecked(False)
         else:
             self.checkbox_interface.setChecked(True)
+
+
+        if self.stronlyconame!="True":
+            self.checkBox_only_colname.setChecked(False)
+        else:
+            self.checkBox_only_colname.setChecked(True)
+
 
         # Chargement radio depuis setting
         if self.operation_mode == "Transpose":
@@ -97,28 +106,42 @@ class OWTableMutator(widget.OWWidget):
         else:
             self.radioButton_add_colname.setChecked(False)
 
+        if self.operation_mode=="FFill":
+            self.radioButton_impute_above.setChecked(True)
+            self.checkBox_only_colname.setVisible(True)
+        else:
+            self.radioButton_impute_above.setChecked(False)
+            self.checkBox_only_colname.setVisible(False)
 
-
+        if self.operation_mode=="Reverse":
+            self.radioButton_reverse_line_order.setChecked(True)
+        else:
+            self.radioButton_reverse_line_order.setChecked(False)
 
         self.push_button_run.clicked.connect(self.run)
         self.checkbox_interface.toggled.connect(self.on_auto_toggled)
-
+        self.checkBox_only_colname.toggled.connect(self.on_checkBox_only_colname_toggled)
         self.radio_transpose.toggled.connect(self.on_radio_transpose_toggled)
         self.radioButton_cast_numeric.toggled.connect(self.on_radio_cast_nuemric_toggled)
         self.radioButton_cast_string.toggled.connect(self.on_radioButton_cast_string_toggled)
         self.radioButton_add_colname.toggled.connect(self.on_radioButton_add_colname_toggled)
         self.radioButton_multiply_colname.toggled.connect(self.on_radioButton_mul_colname_toggled)
-
-
-
+        self.radioButton_impute_above.toggled.connect(self.on_radioButton_impute_above_toggled)
+        self.radioButton_reverse_line_order.toggled.connect(self.on_radioButton_reverse_line_order)
         if self.strauto == 'True':
             self.run()
+
 
     def on_auto_toggled(self, checked):
         if checked:
             self.strauto = "True"
         else:
             self.strauto = "False"
+    def on_checkBox_only_colname_toggled(self, checked):
+        if checked:
+            self.stronlyconame = "True"
+        else:
+            self.stronlyconame = "False"
 
 
     def on_radio_cast_nuemric_toggled(self,checked):
@@ -142,6 +165,17 @@ class OWTableMutator(widget.OWWidget):
         if checked:
             self.operation_mode = "Mul"
 
+
+    def on_radioButton_impute_above_toggled(self,checked):
+        if checked:
+            self.operation_mode = "FFill"
+            self.checkBox_only_colname.setVisible(True)
+        else:
+            self.checkBox_only_colname.setVisible(False)
+
+    def on_radioButton_reverse_line_order(self,checked):
+        if checked:
+            self.operation_mode = "Reverse"
 
 
     @Inputs.data
@@ -177,8 +211,31 @@ class OWTableMutator(widget.OWWidget):
             except Exception as e:
                 self.error(str(e))
             return
+
+        if self.operation_mode == "FFill":
+            try:
+                self.run_ffill()
+            except Exception as e:
+                self.error(str(e))
+            return
+
+        if self.operation_mode == "Reverse":
+            try:
+                self.run_reverse()
+            except Exception as e:
+                self.error(str(e))
+            return
         self.error("please check an option")
         return
+
+    def run_reverse(self):
+        self.error("")
+        in_data = self.data
+        if in_data is None:
+            return
+
+        out_data = in_data[::-1]
+        self.Outputs.out_data.send(out_data)
 
     def run_translate(self):
         self.error("")
@@ -551,6 +608,167 @@ class OWTableMutator(widget.OWWidget):
         out_data = self.apply_colname_on_all_continuous_columns(in_data, col_name="ColName", operation="add")
         print("la")
         self.Outputs.out_data.send(out_data)
+
+    def run_ffill(self):
+        self.error("")
+        in_data = self.data
+        if in_data is None:
+            return
+
+        if self.stronlyconame != "False":
+            # Seulement ColName, quel que soit son type ou son rôle.
+            out_data = self.forward_fill_colname(in_data, col_name="ColName")
+        else:
+            # Comportement actuel : toutes les colonnes.
+            out_data = self.forward_fill_table(in_data)
+        self.Outputs.out_data.send(out_data)
+
+    def forward_fill_colname(
+            self,
+            table: Table,
+            col_name: str = "ColName"
+    ) -> Table:
+        """
+        Applique un forward fill uniquement sur la colonne `col_name`.
+
+        La colonne peut être une feature, une target ou une meta,
+        quel que soit son type : numérique, catégoriel, temporel ou chaîne.
+        """
+
+        def is_missing(value):
+            if value is None:
+                return True
+
+            if isinstance(value, (float, np.floating)) and np.isnan(value):
+                return True
+
+            if isinstance(value, str):
+                text = value.strip()
+                return (
+                        text == ""
+                        or text.lower() in {"nan", "none", "null", "?"}
+                )
+
+            return False
+
+        domain = table.domain
+        n = len(table)
+
+        if n == 0:
+            return table
+
+        X = (
+            np.array(table.X, copy=True)
+            if table.X.size
+            else np.empty((n, 0), dtype=float)
+        )
+
+        Y = (
+            np.array(table.Y, copy=True)
+            if table.Y.size
+            else np.empty((n, 0), dtype=float)
+        )
+
+        if Y.ndim == 1:
+            Y = Y.reshape(n, 1)
+
+        M = (
+            np.array(table.metas, copy=True)
+            if table.metas.size
+            else np.empty((n, 0), dtype=object)
+        )
+
+        attribute_names = [variable.name for variable in domain.attributes]
+        class_names = [variable.name for variable in domain.class_vars]
+        meta_names = [variable.name for variable in domain.metas]
+
+        if col_name in attribute_names:
+            values = X
+            column_index = attribute_names.index(col_name)
+
+        elif col_name in class_names:
+            values = Y
+            column_index = class_names.index(col_name)
+
+        elif col_name in meta_names:
+            values = M
+            column_index = meta_names.index(col_name)
+
+        else:
+            raise ValueError(f"Colonne '{col_name}' introuvable.")
+
+        last_valid = None
+        has_last_valid = False
+
+        for row in range(n):
+            value = values[row, column_index]
+
+            if is_missing(value):
+                if has_last_valid:
+                    values[row, column_index] = last_valid
+            else:
+                last_valid = value
+                has_last_valid = True
+
+        return Table.from_numpy(domain, X, Y, M)
+    def forward_fill_table(self, table: Table) -> Table:
+        """
+        Applique un forward fill (LOCF) sur toutes les colonnes de la table.
+
+        - remplit de 1 à X : la dernière valeur valide est reportée vers le bas
+        - traite toutes les features, toutes les targets et toutes les metas
+        - fonctionne avec les nombres, catégories, dates et chaînes
+        - conserve les cellules vides lorsqu'aucune valeur valide ne les précède
+        - le domaine et les types des variables ne sont pas modifiés
+        """
+
+        def is_missing(value):
+            if value is None:
+                return True
+            if isinstance(value, (float, np.floating)) and np.isnan(value):
+                return True
+            if isinstance(value, str):
+                text = value.strip()
+                return text == "" or text.lower() in {"nan", "none", "null", "?"}
+            return False
+
+        domain = table.domain
+        n = len(table)
+        if n == 0:
+            return table
+
+        X = np.array(table.X, copy=True) if table.X.size else np.empty((n, 0), dtype=float)
+        Y = np.array(table.Y, copy=True) if table.Y.size else np.empty((n, 0), dtype=float)
+        if Y.ndim == 1:
+            Y = Y.reshape(n, 1)
+        M = np.array(table.metas, copy=True) if table.metas.size else np.empty((n, 0), dtype=object)
+
+        def forward_fill_column(values, column_index):
+            last_valid = None
+            has_last_valid = False
+
+            for row in range(n):
+                value = values[row, column_index]
+                if is_missing(value):
+                    if has_last_valid:
+                        values[row, column_index] = last_valid
+                else:
+                    last_valid = value
+                    has_last_valid = True
+
+        # Toutes les features.
+        for column_index in range(X.shape[1]):
+            forward_fill_column(X, column_index)
+
+        # Toutes les targets.
+        for column_index in range(Y.shape[1]):
+            forward_fill_column(Y, column_index)
+
+        # Toutes les metas.
+        for column_index in range(M.shape[1]):
+            forward_fill_column(M, column_index)
+
+        return Table.from_numpy(domain, X, Y, M)
 
     def apply_colname_on_all_continuous_columns(self,table: Table, col_name: str = "ColName", operation: str = "add") -> Table:
         """

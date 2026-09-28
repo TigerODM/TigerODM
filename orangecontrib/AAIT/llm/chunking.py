@@ -6,10 +6,9 @@ from Orange.data import Domain, Table, StringVariable, ContinuousVariable
 from chonkie import TokenChunker, SentenceChunker, RecursiveChunker, LateChunker #, CodeChunker, SemanticChunker
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import wordchunker_deprecated
-    from Orange.widgets.orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
 else:
     from orangecontrib.AAIT.llm import wordchunker_deprecated
-    from orangecontrib.AAIT.utils.local_store_sync import get_path_or_retrieve
+
 
 
 def create_chunks(table, column_name, tokenizer="character", chunk_size=300, chunk_overlap=100, mode="tokens",

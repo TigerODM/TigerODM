@@ -15,11 +15,14 @@ if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).
                                                          SimpleDialogQt)
     from Orange.widgets.orangecontrib.AAIT.utils.MetManagement import GetFromRemote
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
+    from Orange.widgets.orangecontrib.IO4IT.toolViews import key_manager_ui
 else:
     from orangecontrib.AAIT.utils import (MetManagement,
                                          SimpleDialogQt)
     from orangecontrib.AAIT.utils.MetManagement import GetFromRemote
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
+    from orangecontrib.IO4IT.toolViews import key_manager_ui
+
 
 class RepositoryManager(QDialog):
     def __init__(self, parent=None):
@@ -181,14 +184,28 @@ class OWAAITResourcesManager(widget.OWWidget):
         self.requirements = []  # Changed to list to store multiple repositories' requirements
         self.current_repositories = []  # Store paths of selected repositories
         self.controlAreaVisible = False
+        self.resource_dialog = None  # dialogue principal (parent du key manager)
+        self._dialog_open = False
 
     # trigger if standard windows is opened
     def showEvent(self, event):
         super().showEvent(event)
+        # A show event arriving while the dialog is open or just after it was
+        # closed is a parasitic re-show: don't reopen, just hide the window again
+        if self._dialog_open:
+            QTimer.singleShot(0, self.close)
+            return
+        self._dialog_open = True
         self.show_dialog()
         # We cannot close the standard ui widget it is displayed
         # so it makes a little tinkles :(
         QTimer.singleShot(0, self.close)
+        # Keep the guard active a short moment after closing the dialog
+        QTimer.singleShot(500, self._release_dialog_guard)
+
+    def _release_dialog_guard(self):
+        self._dialog_open = False
+
     def open_explorer(self):
         path = MetManagement.get_local_store_path()
         if sys.platform.startswith("Darwin") or sys.platform.startswith("darwin"):
@@ -199,6 +216,11 @@ class OWAAITResourcesManager(widget.OWWidget):
             os.startfile(path)
             return
         # other platfoprm -> nothing
+
+    def open_key_manager(self):
+        """Ouvre l'interface key_manager_ui d'IO4IT"""
+        dialog = key_manager_ui.KeyManagerUI(self.resource_dialog)
+        dialog.exec()
 
     def show_dialog(self):
         # third-party code execution vs standard code execution
@@ -214,6 +236,8 @@ class OWAAITResourcesManager(widget.OWWidget):
             if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
                 stable_dependency = False
             dialog, model = prefix_show_dialog.prefix_dialog_function(self,stable_dependency)
+
+        self.resource_dialog = dialog
 
         # download section
         main_layout = QVBoxLayout()
@@ -261,6 +285,11 @@ class OWAAITResourcesManager(widget.OWWidget):
         self.open_button = QPushButton("open local store")
         self.open_button.clicked.connect(self.open_explorer)
         h_layout2.addWidget(self.open_button)
+
+        # Bouton "Key Manager"
+        self.key_manager_button = QPushButton("Key Manager")
+        self.key_manager_button.clicked.connect(self.open_key_manager)
+        h_layout2.addWidget(self.key_manager_button)
 
         # Label sélectionnable
         self.selectableLabel = QLabel(local_path)
@@ -497,4 +526,3 @@ if __name__ == '__main__':
         app.exec()
     else:
         app.exec_()
-

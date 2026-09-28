@@ -34,6 +34,12 @@ def is_a_thinking_model(model):
         # "o3",
         "phi-4-reasoning",
         "kimi-k2-thinking",
+        # Gemma 4 a partir du 12B : mode raisonnement actif par defaut.
+        # Le E2B et le E4B restent classes non-thinking ci-dessous.
+        "gemma-4-12b",
+        "gemma4-12b",
+        "gemma-4-26b",
+        "gemma-4-31b",
     ]
 
     # Models KNOWN to be NON-thinking
@@ -51,7 +57,6 @@ def is_a_thinking_model(model):
         "qwen2.5",
         "qwen2.5-instruct",
         "qwen3.5",
-        "qwen-3.5",
         # "qwen3",
         # "qwen3-instruct",
         "yi",
@@ -59,7 +64,7 @@ def is_a_thinking_model(model):
         "tinyllama",
         "openchat",
         "gemma-4-e2b",
-        # "solar",
+        "gemma-4-e4b",
     ]
 
     # =========================
@@ -594,39 +599,128 @@ def find_mmproj_path(model_path):
     # =============================================================================
 
     candidates.sort(reverse=True, key=lambda x: x[0])
+    return str(candidates[0][1])
 
-    # =============================================================================
-    # Meilleur candidat
-    # =============================================================================
 
-    best_score, best_file = candidates[0]
+def close_chat_handler(chat_handler):
+    """
+    Libere le projecteur multimodal detenu par un handler.
 
-    # =============================================================================
-    # Vérification finale
-    # =============================================================================
+    Le handler charge le mmproj sur le GPU quand use_gpu est vrai. Si le
+    chargement du modele echoue ensuite, cette VRAM reste prise tant que
+    l'objet n'est pas ferme : chaque nouvelle tentative demarre alors avec
+    moins de marge que la precedente. Cette fonction absorbe les differences
+    d'API entre versions de llama_cpp.
+    """
+    if chat_handler is None:
+        return
+    for method in ("close", "__del__", "_exit_stack"):
+        try:
+            attr = getattr(chat_handler, method, None)
+            if attr is None:
+                continue
+            if method == "_exit_stack":
+                attr.close()
+            else:
+                attr()
+            return
+        except Exception:
+            continue
 
-    if best_score <= 0:
-        return None
 
-    # =============================================================================
-    # Succès
-    # =============================================================================
-
-    return str(best_file)
-
-def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
-    reader = GGUFReader(model_path)
-    field = reader.get_field("tokenizer.chat_template")
-    if field is None:
-        return None
-    chat_template = field.contents()
-
+def get_generic_chat_handler(model_path, mmproj_path):
+    """
+    Handler générique (version en ligne) : utilise le chat template du GGUF.
+    Sert de repli pour les modèles sans handler dédié.
+    """
     try:
-        chat_handler = GenericMTMDChatHandler(
+        reader = GGUFReader(model_path)
+        field = reader.get_field("tokenizer.chat_template")
+        if field is None:
+            return None
+        chat_template = field.contents()
+        return GenericMTMDChatHandler(
             chat_format=chat_template,
             mmproj_path=mmproj_path
         )
-        return chat_handler
     except Exception as e:
         print("Unable to load chat handler:", e)
         return None
+
+
+def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
+
+    model_name = os.path.basename(model_path).lower()
+
+    if verbose:
+        try:
+            size_mb = os.path.getsize(mmproj_path) / (1024 ** 2)
+            target = "GPU" if use_gpu else "CPU"
+            print(f"Loading multimodal projector on {target}: "
+                  f"{os.path.basename(mmproj_path)} ({size_mb:.0f}MB)")
+        except Exception:
+            pass
+
+    # =============================================================================
+    # Qwen3-VL
+    # =============================================================================
+    if "qwen3-vl" in model_name or "qwen3_vl" in model_name:
+        try:
+            from llama_cpp.llama_chat_format import Qwen3VLChatHandler
+
+            return Qwen3VLChatHandler(
+                clip_model_path=mmproj_path,
+                force_reasoning=False,
+                verbose=verbose
+            )
+
+        except Exception as e:
+            print("Unable to load Qwen3VLChatHandler:", e)
+            return None
+
+    # =============================================================================
+    # Qwen 3.5
+    # =============================================================================
+    elif (
+        "qwen3.5" in model_name
+        or "qwen35" in model_name
+        or "qwen-3.5" in model_name
+    ):
+        try:
+            from llama_cpp.llama_chat_format import Qwen35ChatHandler
+
+            return Qwen35ChatHandler(
+                clip_model_path=mmproj_path,
+                verbose=verbose,
+                use_gpu=use_gpu
+            )
+
+        except Exception as e:
+            print("Unable to load Qwen35ChatHandler:", e)
+            return None
+
+    # =============================================================================
+    # Gemma 4
+    # =============================================================================
+    elif (
+            "gemma4" in model_name
+            or "gemma-4" in model_name
+            or "gemma_4" in model_name
+    ):
+        try:
+            from llama_cpp.llama_chat_format import Gemma4ChatHandler
+
+            return Gemma4ChatHandler(
+                clip_model_path=mmproj_path,
+                verbose=verbose,
+                use_gpu=use_gpu
+            )
+
+        except Exception as e:
+            print("Unable to load Gemma4ChatHandler:", e)
+            return None
+
+    # =============================================================================
+    # Autres modèles : handler générique
+    # =============================================================================
+    return get_generic_chat_handler(model_path, mmproj_path)

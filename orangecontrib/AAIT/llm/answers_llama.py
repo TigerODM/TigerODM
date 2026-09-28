@@ -1,6 +1,6 @@
 import copy
+import gc
 import os
-import re
 import numpy as np
 try:
     import GPUtil #sometimes errors occurs on gpu testing
@@ -25,35 +25,154 @@ else:
 
 
 
-supported_VLM = {
-    "Qwen3-VL-8B-Instruct-Q4_K_M.gguf": "mmproj-F16.gguf",
-    "Qwen3.5-9B-Q6_K.gguf": "mmproj-F16.gguf",
-    "Qwen3.5-4B-Q4_K_M.gguf": "mmproj-F16.gguf"
+# =============================================================================
+# Dimensionnement memoire
+# =============================================================================
+
+# Type GGML du cache KV. 0 = F32, 1 = F16, 8 = Q8_0.
+# ATTENTION : ne jamais passer 0 a llama_cpp en croyant "valeur par defaut",
+# cela force un cache KV en F32, soit le double de la F16.
+GGML_TYPE_F16 = 1
+GGML_TYPE_Q8_0 = 8
+
+# Reserve fixe (Mo) pour les buffers de calcul, le projecteur multimodal
+# et la VRAM deja prise par le canvas Orange.
+RUNTIME_VRAM_OVERHEAD_MB = 1800
+
+# Cout du cache KV en octets par token, par famille d'architecture.
+# Mesure sur les logs llama.cpp (K + V, couches non-glissantes, KV en F16).
+# Gemma 4 12B a des tetes d'attention en 512, d'ou un cout tres superieur
+# a la moyenne : c'est lui qui dimensionne le pire cas.
+KV_BYTES_PER_TOKEN = {
+    "gemma-4-12b": 16384,
+    "gemma4-12b": 16384,
+    "gemma-4-e4b": 4096,
+    "gemma-4-e2b": 2048,
+    "qwen3.5-9b": 3072,
+    "qwen3.5": 3072,
+    "qwen3-vl": 4096,
 }
 
+# Valeur par defaut, volontairement pessimiste, pour un modele inconnu.
+KV_BYTES_PER_TOKEN_DEFAULT = 16384
 
-
-# Information (useless in the code)
-format_for_messages = [
-    {"role": "system", "content": str},
-
-    {
-        "role": "user",
-        "content": [
-            {"type": "text", "text": str},
-            {"type": "image_url", "image_url": {"url": str}}
-        ]
-    },
-
-    {
-        "role": "assistant",
-        "content": [
-            {"type": "text", "text": str},
-            {"type": "image_url", "image_url": {"url": str}}
-        ]
-    }
+# Balises de raisonnement, par famille de modeles.
+# La detection se fait sur la balise de FERMETURE : c'est la seule fiable.
+# llama.cpp consomme frequemment la balise d'ouverture via le chat template,
+# et chat_completion_with_handler() en reinjecte une artificiellement pour
+# l'affichage. Chercher l'ouverture donnerait donc de faux negatifs.
+THINK_CLOSE_TAGS = [
+    "<channel|>",      # Gemma 4  (ouverture : <|channel>thought)
+    "</think>",        # Qwen 3.x, DeepSeek-R1
+    "<|/think|>",
+    "</thought>",
 ]
 
+# Balises d'ouverture a retirer du bloc de raisonnement extrait.
+THINK_OPEN_TAGS = [
+    "<|channel>thought",
+    "<|channel>",
+    "<think>",
+    "<|think|>",
+    "<thought>",
+]
+
+def kv_bytes_per_token_from_gguf(model_path, bytes_per_elem=2):
+    """Coût KV par token (K + V, F16) lu dans les métadonnées GGUF. None si illisible."""
+    try:
+        from gguf import GGUFReader
+        reader = GGUFReader(model_path)
+
+        def val(key):
+            field = reader.get_field(key)
+            return None if field is None else field.contents()
+
+        arch = val("general.architecture")
+        n_layer = val(f"{arch}.block_count")
+        n_head = val(f"{arch}.attention.head_count")
+        n_head_kv = val(f"{arch}.attention.head_count_kv") or n_head
+        n_embd = val(f"{arch}.embedding_length")
+        if not (arch and n_layer and n_head and n_embd):
+            return None
+
+        head_max = max(n_head) if isinstance(n_head, list) else n_head
+        k_len = val(f"{arch}.attention.key_length") or n_embd // head_max
+        v_len = val(f"{arch}.attention.value_length") or n_embd // head_max
+
+        # head_count_kv peut être une valeur unique ou une liste par couche
+        kv_heads_total = sum(n_head_kv) if isinstance(n_head_kv, list) else n_layer * n_head_kv
+        return int(kv_heads_total * (k_len + v_len) * bytes_per_elem)
+    except Exception as e:
+        print(f"Could not read KV size from GGUF: {e}")
+        return None
+
+def estimate_kv_bytes_per_token(model_path):
+    """
+    Estime le cout du cache KV en octets par token a partir du nom du fichier.
+
+    C'est une heuristique : le cout reel depend de n_embd_head_k, du nombre de
+    tetes KV et du nombre de couches, qui ne sont lisibles qu'apres chargement
+    du GGUF. Elle sert uniquement a decider CPU/GPU en amont ; le vrai garde-fou
+    est la degradation progressive de load_model_with_handler().
+    """
+    if not model_path:
+        return KV_BYTES_PER_TOKEN_DEFAULT
+    name = os.path.basename(str(model_path)).lower()
+    for key, value in KV_BYTES_PER_TOKEN.items():
+        if key in name:
+            return value
+    return kv_bytes_per_token_from_gguf(model_path) or KV_BYTES_PER_TOKEN_DEFAULT
+
+
+def get_free_vram_mb():
+    """VRAM libre du premier GPU en Mo, ou None si indisponible."""
+    try:
+        gpus = GPUtil.getGPUs()
+        if not gpus:
+            return None
+        return float(gpus[0].memoryFree)
+    except Exception as e:
+        print(f"Could not read free VRAM: {e}")
+        return None
+
+
+def fit_n_ctx_to_vram(model_path, n_ctx, use_gpu, min_n_ctx=4096):
+    """
+    Reduit n_ctx pour que poids + cache KV + marge tiennent dans la VRAM libre.
+
+    Retourne le n_ctx retenu. Ne descend jamais sous min_n_ctx : si meme cette
+    valeur ne tient pas, on renvoie min_n_ctx et c'est la degradation de
+    load_model_with_handler() qui basculera sur CPU.
+    """
+    if not use_gpu:
+        return n_ctx
+
+    free_vram = get_free_vram_mb()
+    if free_vram is None:
+        return n_ctx
+
+    try:
+        weights_mb = os.path.getsize(model_path) / (1024 ** 2)
+    except Exception:
+        weights_mb = 0.0
+
+    budget_mb = free_vram - weights_mb - RUNTIME_VRAM_OVERHEAD_MB
+    if budget_mb <= 0:
+        print(f"KV budget exhausted (free={free_vram:.0f}MB, weights={weights_mb:.0f}MB)")
+        return min_n_ctx
+
+    per_token = estimate_kv_bytes_per_token(model_path)
+    max_n_ctx = int((budget_mb * (1024 ** 2)) / per_token)
+    # Aligne sur 1024 pour rester propre vis-a-vis du batching.
+    max_n_ctx = max(min_n_ctx, (max_n_ctx // 1024) * 1024)
+
+    if max_n_ctx < n_ctx:
+        print(f"n_ctx reduced {n_ctx} -> {max_n_ctx} "
+              f"(free VRAM {free_vram:.0f}MB, weights {weights_mb:.0f}MB, "
+              f"{per_token} B/token)")
+        return max_n_ctx
+
+    return n_ctx
 
 
 def check_gpu(model_path, argself, mmproj_path=None, n_ctx=0):
@@ -101,10 +220,15 @@ def check_gpu(model_path, argself, mmproj_path=None, n_ctx=0):
         print(f"mmproj size: {mmproj_size/1000:.2f}GB")
         model_size += mmproj_size
 
-    kv_cache_mb = (n_ctx * 150_000) / (1024 ** 2)
+    kv_cache_mb = (n_ctx * estimate_kv_bytes_per_token(model_path)) / (1024 ** 2)
     model_size += kv_cache_mb
 
+    # Marge pour les buffers de calcul, le projecteur multimodal et la VRAM
+    # deja consommee par le canvas Orange (Qt6 + WebEngine + widgets charges).
+    model_size += RUNTIME_VRAM_OVERHEAD_MB
+
     print(f"KV cache estimate: {kv_cache_mb/1000:.2f}GB")
+    print(f"Runtime overhead reserve: {RUNTIME_VRAM_OVERHEAD_MB/1000:.2f}GB")
     print(f"Required memory total: {model_size/1000:.2f}GB")
     # If there is no GPU, set use_gpu to False
     if len(GPUtil.getGPUs()) == 0:
@@ -179,7 +303,7 @@ def count_tokens(model, message, image_token_cost=1968, overhead_size=4):
     return total_tokens
 
 
-def load_model(model_path, use_gpu, n_ctx=10000, k_cache=0, v_cache=0, verbose=False, error_callback=None):
+def load_model(model_path, use_gpu, n_ctx=10000, k_cache=None, v_cache=None, verbose=False, error_callback=None):
     """
     Charge un modèle GGUF avec llama_cpp.Llama.
 
@@ -206,6 +330,9 @@ def load_model(model_path, use_gpu, n_ctx=10000, k_cache=0, v_cache=0, verbose=F
         # n_threads : par défaut tous les cœurs logiques dispo moins 1 (pour avoir l'interface graphique qui ne freeze pas)
         n_threads = max(1, (os.cpu_count()-1 or 1))
 
+        # Ajuste le contexte a la VRAM reellement disponible avant de charger.
+        n_ctx = fit_n_ctx_to_vram(model_path, n_ctx, use_gpu)
+
         # NOTE : llama_cpp utilise n_ctx pour la taille de contexte
         model = Llama(
             model_path=model_path,
@@ -217,6 +344,10 @@ def load_model(model_path, use_gpu, n_ctx=10000, k_cache=0, v_cache=0, verbose=F
             use_mlock=False,
             embedding=False,
             verbose=verbose,
+            # Cache glissant dimensionne a la fenetre reelle et non a n_ctx.
+            # Indispensable pour Gemma 4 (fenetre 1024 sur 40 de ses 48 couches),
+            # sans effet sur les architectures sans attention glissante.
+            swa_full=False,
             type_k=k_cache,
             type_v=v_cache
         )
@@ -260,14 +391,22 @@ def generate_answers(table, model_path, use_gpu=False, n_ctx=4096, query_paramet
     if query_parameters is None:
         query_parameters = {"max_tokens": 4096, "temperature": 0.4, "top_p": 0.4, "top_k": 40, "repeat_penalty": 1.15}
 
-    # Génération sur la colonne "prompt", fonctionnement ligne à ligne
 
+    # Génération sur la colonne "prompt", fonctionnement ligne à ligne
     rows = []
     for i, row in enumerate(data):
         features = list(data[i])
         metas = list(data.metas[i])
         prompt = row["prompt"].value
-
+        model.reset()
+        _ctx = model._ctx
+        if hasattr(_ctx, "memory_clear"):
+            _ctx.memory_clear(True)
+        elif hasattr(_ctx, "kv_cache_clear"):
+            _ctx.kv_cache_clear()
+        else:
+            import llama_cpp
+            llama_cpp.llama_memory_clear(llama_cpp.llama_get_memory(_ctx.ctx), True)
         system_prompt = row["system prompt"].value if "system prompt" in data.domain else ""
         assistant_prompt = row["assistant prompt"].value if "assistant prompt" in data.domain else ""
 
@@ -404,9 +543,7 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
 
     answer = ""
 
-    # IMPORTANT :
-    # - On utilise create_completion (prompt-style) pour rester compatible avec ton templating actuel.
-    # - Le générateur renvoie des chunks contenant choices[0].text.
+    # Le générateur renvoie des chunks contenant choices[0].text.
     try:
         stream = model(prompt=prompt, **gen_kwargs)
 
@@ -419,7 +556,7 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
             # Callback d'arrêt custom (on simule token_id=None)
             if not callback_instance(None, token):
                 # On stoppe proprement le flux (consommation du générateur non nécessaire)
-                answer += token  # on peut inclure le dernier token si souhaité
+                answer += token
                 break
 
             answer += token
@@ -427,6 +564,7 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
             # print(token, end="")
 
             if progress_callback is not None:
+                # Renvoie des tokens vers l'interface PyQt
                 progress_callback(("assistant", token))
 
             if argself is not None and getattr(argself, "stop", False):
@@ -448,21 +586,57 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
     return answer
 
 
+
+
+def strip_think_open_tags(text: str) -> str:
+    """Retire les balises d'ouverture de raisonnement d'un fragment de texte."""
+    for tag in THINK_OPEN_TAGS:
+        text = text.replace(tag, "")
+    return text
+
+
+def find_think_close(text: str):
+    """
+    Localise la premiere balise de fermeture de raisonnement presente.
+
+    Retourne (position, balise) ou (-1, None) si aucune n'est trouvee.
+    """
+    best_index = -1
+    best_tag = None
+    for tag in THINK_CLOSE_TAGS:
+        idx = text.find(tag)
+        if idx != -1 and (best_index == -1 or idx < best_index):
+            best_index = idx
+            best_tag = tag
+    return best_index, best_tag
+
+
 def split_think(answer: str):
-    # Any supported end delimiter
-    end_delimiters = [
-        r"</think>",
-        r"<channel\|>",
-    ]
+    """
+    Separe le raisonnement de la reponse finale.
 
-    pattern = rf"(.*?)({'|'.join(end_delimiters)})"
+    Gere indifferemment les conventions Gemma 4 (<|channel>thought ... <channel|>)
+    et Qwen / DeepSeek (<think> ... </think>), y compris quand la balise
+    d'ouverture est absente ou orpheline.
 
-    # Extract think content (if any)
-    think_match = re.search(pattern, answer, flags=re.DOTALL)
-    think_text = think_match.group(1).strip() if think_match else ""
+    Retourne (raisonnement, reponse). Le raisonnement est une chaine vide si le
+    modele n'en a pas produit.
+    """
+    if not answer:
+        return "", ""
 
-    # Remove think block from the final answer
-    final_answer = re.sub(pattern, "", answer, count=1, flags=re.DOTALL).strip()
+    idx, tag = find_think_close(answer)
+
+    if idx == -1:
+        # Aucune fermeture : soit le modele ne raisonne pas, soit la generation
+        # a ete coupee en plein raisonnement (max_tokens atteint, arret manuel).
+        # Dans les deux cas on ne peut pas isoler de reponse fiable, donc on
+        # renvoie le texte nettoye de ses balises d'ouverture orphelines.
+        return "", strip_think_open_tags(answer).strip()
+
+    think_text = strip_think_open_tags(answer[:idx]).strip()
+    final_answer = answer[idx + len(tag):]
+    final_answer = strip_think_open_tags(final_answer).strip()
 
     return think_text, final_answer
 
@@ -498,6 +672,10 @@ def handle_context_length(prompt, model, n_ctx, method="truncate", margin=0, pro
                         f"pour ne pas tronquer l'entrée."
                     )
                 progress_callback(("warning", warning))
+        return prompt
+    elif method == "summarize":
+        pass
+    else:
         return prompt
 
 
@@ -659,7 +837,8 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
     if not messages:
         if progress_callback is not None:
             progress_callback(("error", "Could not build a conversation from the input data (empty or invalid role/type/content rows)."))
-        return
+        return data
+    messages = handle_long_messages(messages, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
 
     ### GENERATE ANSWER
     if with_handler:
@@ -670,8 +849,6 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
                                               progress_callback=progress_callback,
                                               argself=argself)
     else:
-        messages = handle_long_messages(messages, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
-
         try:
             print("Trying native prompt formating...")
             chat_template = model.metadata["tokenizer.chat_template"]
@@ -721,8 +898,7 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
     return out_data
 
 
-# Should replace load_Qwen3VL (more generic)
-def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True, error_callback=None):
+def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True, min_n_ctx=4096, error_callback=None):
     """
     Loads a multimodal (vision-language) model using a dedicated chat handler and GGUF backend.
 
@@ -757,23 +933,89 @@ def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True,
         print(f"Couldn't find the projector for this model: {mmproj_path}")
         return None
 
-    n_gpu_layers = -1 if use_gpu else 0
-    try:
-        chat_handler = handler_llama.get_chat_handler(model_path, mmproj_path, verbose=verbose, use_gpu=use_gpu)
-        model = Llama(model_path=model_path,
-                      chat_handler=chat_handler,
-                      n_ctx=n_ctx,
-                      n_gpu_layers=n_gpu_layers,
-                      verbose=verbose)
-        return model
-    except Exception as e:
-        # Non-fatal: generate_answers() falls back to load_model() when this
-        # returns None, so this is only a "warning" - not necessarily the
-        # final failure the user needs to see as an error.
-        print("Failed to load model with handler (llama_cpp):", e)
-        if error_callback is not None:
-            error_callback(("warning", f"Multimodal loading failed, falling back to standard mode: {e}"))
-        return None
+    n_threads = max(1, (os.cpu_count() - 1 or 1))
+
+    # Le contexte demande est d'abord ramene a ce que la VRAM libre peut tenir.
+    # C'est une estimation ; la boucle de dégradation ci-dessous rattrape les cas
+    # ou elle est trop optimiste (VRAM prise entre-temps, architecture inconnue).
+    requested_n_ctx = int(n_ctx)
+    n_ctx = fit_n_ctx_to_vram(model_path, requested_n_ctx, use_gpu, min_n_ctx=min_n_ctx)
+
+    # Echelle de repli, de la configuration la plus confortable a la plus sobre.
+    # Chaque etape est (n_ctx, sur_gpu, type_cache_kv).
+    attempts = []
+    seen = set()
+
+    def add_attempt(ctx, on_gpu, kv_type):
+        ctx = max(int(ctx), min_n_ctx)
+        key = (ctx, on_gpu, kv_type)
+        if key not in seen:
+            seen.add(key)
+            attempts.append(key)
+
+    if use_gpu:
+        add_attempt(n_ctx, True, GGML_TYPE_F16)
+        add_attempt(n_ctx, True, GGML_TYPE_Q8_0)
+        add_attempt(n_ctx // 2, True, GGML_TYPE_Q8_0)
+        add_attempt(n_ctx // 4, True, GGML_TYPE_Q8_0)
+        add_attempt(min_n_ctx, True, GGML_TYPE_Q8_0)
+    # Dernier recours : CPU, ou la contrainte n'est plus la VRAM mais la RAM.
+    add_attempt(requested_n_ctx, False, GGML_TYPE_F16)
+
+    last_error = None
+
+    for attempt_n_ctx, on_gpu, kv_type in attempts:
+        chat_handler = None
+        try:
+            # Le handler charge le projecteur multimodal, et le charge sur le GPU
+            # quand use_gpu est vrai : il consomme de la VRAM avant meme que
+            # Llama() n'alloue son cache KV. Il est donc recree a chaque essai,
+            # et libere explicitement en cas d'echec.
+            chat_handler = handler_llama.get_chat_handler(
+                model_path, mmproj_path, verbose=verbose, use_gpu=on_gpu
+            )
+
+            print(f"Loading model (n_ctx={attempt_n_ctx}, gpu={on_gpu}, "
+                  f"kv_type={'Q8_0' if kv_type == GGML_TYPE_Q8_0 else 'F16'})")
+
+            model = Llama(model_path=model_path,
+                          chat_handler=chat_handler,
+                          n_ctx=attempt_n_ctx,
+                          n_gpu_layers=-1 if on_gpu else 0,
+                          n_threads=n_threads,
+                          # Cache glissant dimensionne a la fenetre reelle du
+                          # modele et non a n_ctx. Sur Gemma 4 12B a 128k, cela
+                          # fait passer le cache glissant de ~40 Go a ~0,5 Go.
+                          # Sans effet sur les modeles sans attention glissante.
+                          swa_full=False,
+                          type_k=kv_type,
+                          type_v=kv_type,
+                          verbose=verbose)
+
+            if attempt_n_ctx < requested_n_ctx:
+                print(f"WARNING: context reduced from {requested_n_ctx} to "
+                      f"{attempt_n_ctx} to fit available memory")
+            if not on_gpu and use_gpu:
+                print("WARNING: fell back to CPU, generation will be slow")
+
+            return model
+
+        except Exception as e:
+            last_error = e
+            print(f"Load failed (n_ctx={attempt_n_ctx}, gpu={on_gpu}): {e}")
+            # Libere le projecteur avant l'essai suivant, sinon sa VRAM reste
+            # prise et chaque tentative demarre avec moins de marge que la
+            # precedente.
+            handler_llama.close_chat_handler(chat_handler)
+            del chat_handler
+            gc.collect()
+
+    print(f"Could not load model after {len(attempts)} attempts. "
+          f"Last error: {last_error}")
+    # Non bloquant : l'appelant se replie sur load_model(), d'où un simple warning.
+    if error_callback is not None:
+        error_callback(("warning", f"Multimodal loading failed, falling back to standard mode: {last_error}"))
+    return None
 
 
 def run_Qwen3VL_query(query, image_paths, image_prompts, model, system_prompt=" ", workflow_id="", progress_callback=None):
@@ -816,7 +1058,6 @@ def run_Qwen3VL_query(query, image_paths, image_prompts, model, system_prompt=" 
     return full_response
 
 
-# Should replace run_Qwen3VL_query (more generic)
 def chat_completion_with_handler(messages, model, parameters, workflow_id="", progress_callback=None, argself=None):
     """
     Generates a streaming chat completion using a multimodal-capable Llama model handler.
@@ -867,6 +1108,22 @@ def chat_completion_with_handler(messages, model, parameters, workflow_id="", pr
     )
 
     full_response = ""
+
+    # Une balise de fermeture peut etre coupee en deux tokens ("<chan" puis
+    # "nel|>"). On retient donc en tampon la fin du flux tant qu'elle pourrait
+    # constituer le debut d'une balise, et on n'emet que ce qui est certain.
+    max_tag_len = max(len(t) for t in THINK_CLOSE_TAGS)
+    pending = ""
+    close_seen = False
+
+    def emit(text):
+        """Ecrit un fragment vers le fichier de log et l'UI."""
+        if not text:
+            return
+        write_tokens_to_file(text, workflow_id)
+        if progress_callback is not None:
+            progress_callback(("assistant", text))
+
     try:
         generator = model.create_chat_completion(
             messages=messages,
@@ -880,23 +1137,56 @@ def chat_completion_with_handler(messages, model, parameters, workflow_id="", pr
         for chunk in generator:
             for choice in chunk.get("choices", []):
                 delta = choice.get("delta", {})
+
+                # Certaines versions de llama_cpp exposent deja le raisonnement
+                # separement. Quand c'est le cas, il n'y a rien a parser.
+                reasoning = delta.get("reasoning_content")
+                if reasoning:
+                    if not think_token_added:
+                        full_response += "<think>\n"
+                        emit("<think>\n")
+                        think_token_added = True
+                    full_response += reasoning
+                    emit(reasoning)
+
                 token = delta.get("content")
 
                 if thinks and not think_token_added:
                     thinking_token = "<think>\n"
                     full_response += thinking_token
-                    write_tokens_to_file(thinking_token, workflow_id)
-                    if progress_callback is not None:
-                        progress_callback(("assistant", thinking_token))
+                    emit(thinking_token)
                     think_token_added = True
 
                 if token:
                     full_response += token
-                    write_tokens_to_file(token, workflow_id)
-                    if progress_callback is not None:
-                        progress_callback(("assistant", token))
+
+                    if close_seen:
+                        # Raisonnement termine : plus rien a surveiller.
+                        emit(token)
+                    else:
+                        pending += token
+                        idx, tag = find_think_close(pending)
+                        if idx != -1:
+                            # Balise complete reconstituee : on emet tout jusqu'a la
+                            # fin de la balise incluse, puis on passe en mode direct.
+                            cut = idx + len(tag)
+                            emit(pending[:cut])
+                            pending = pending[cut:]
+                            emit(pending)
+                            pending = ""
+                            close_seen = True
+                        else:
+                            # On garde en tampon de quoi reconstituer une balise a
+                            # cheval sur deux tokens, et on emet le reste.
+                            keep = max_tag_len - 1
+                            if len(pending) > keep:
+                                emit(pending[:-keep])
+                                pending = pending[-keep:]
+
                     if argself is not None and getattr(argself, "stop", False):
+                        emit(pending)
                         return full_response
+
     except Exception as e:
         # Filet défensif : si le vrai coût en tokens de l'image dépasse notre
         # estimation et que le contexte déborde en cours de génération, on
@@ -905,60 +1195,10 @@ def chat_completion_with_handler(messages, model, parameters, workflow_id="", pr
         if progress_callback is not None:
             progress_callback(("warning", f"Génération interrompue tôt : {e}"))
 
+    # Fin de generation : vider le tampon residuel.
+    emit(pending)
     return full_response
 
-def count_messages_tokens(model, messages, image_token_cost=1968, overhead_size=4):
-    """Somme des tokens estimés sur toute une liste de messages VLM (texte + images)."""
-    total = 0
-    for msg in messages:
-        total += count_tokens(model=model, message=msg["content"],
-                              image_token_cost=image_token_cost, overhead_size=overhead_size)
-    return total
-
-
-def fit_messages_to_context(messages, model, requested_max_tokens,
-                            n_ctx=None, min_generation=64, safety=16,
-                            progress_callback=None):
-    """
-    Garantit que (prompt + images) laisse de la place pour la génération dans n_ctx.
-
-    Retourne (messages, effective_max_tokens) :
-      - messages : tronqués si besoin (system prompt + messages récents conservés)
-      - effective_max_tokens : borné pour que prompt_tokens + max_tokens <= n_ctx - safety,
-        ce qui empêche llama_cpp de lever une erreur de dépassement de contexte.
-
-    requested_max_tokens == 0 est traité comme "utilise tout le contexte restant".
-    """
-    if n_ctx is None:
-        try:
-            n_ctx = model.n_ctx()
-        except Exception:
-            n_ctx = 4096
-
-    # Marge qu'on réserve pour la réponse pendant qu'on tronque l'entrée
-    margin = requested_max_tokens if requested_max_tokens and requested_max_tokens > 0 else min_generation
-
-    # 1) Tronque les vieux messages si l'entrée seule est déjà trop grosse
-    messages = handle_long_messages(messages, model, n_ctx, method="truncate",
-                                margin=margin, progress_callback=progress_callback,
-                                mode="single")
-
-    # 2) Borne max_tokens à ce qui reste réellement après le prompt (tronqué)
-    prompt_tokens = count_messages_tokens(model, messages)
-    available = max(1, n_ctx - prompt_tokens - safety)
-
-    if requested_max_tokens and requested_max_tokens > 0:
-        effective_max_tokens = min(requested_max_tokens, available)
-    else:
-        effective_max_tokens = available  # illimité demandé → tout ce qui rentre
-
-    if progress_callback is not None and requested_max_tokens and effective_max_tokens < requested_max_tokens:
-        progress_callback(("warning",
-            f"Réponse limitée à {effective_max_tokens} tokens (au lieu de {requested_max_tokens}) "
-            f"pour tenir dans le contexte : Context Length {n_ctx}, entrée ~= {prompt_tokens} tokens "
-            f"(images estimées).\n"
-            f"-> Augmentez Context Length ou baissez Max tokens pour une réponse plus longue."))
-    return messages, effective_max_tokens
 
 
 def table_to_messages(data):
@@ -1090,9 +1330,6 @@ def convert_to_uri(
 
 
 
-
-
-
 # 2 functions to assure compatibility between LLM and VLM
 def is_multimodal_template(chat_template: str) -> bool:
     """
@@ -1177,3 +1414,143 @@ def flatten_multimodal_messages(messages, drop_images=True):
                     raise ValueError("Image found in dict content")
 
     return flat_messages
+
+
+def count_messages_tokens(model, messages, image_token_cost=1968, overhead_size=4):
+    """Somme des tokens estimés sur toute une liste de messages VLM (texte + images)."""
+    total = 0
+    for msg in messages:
+        total += count_tokens(model=model, message=msg["content"],
+                              image_token_cost=image_token_cost, overhead_size=overhead_size)
+    return total
+
+
+def fit_messages_to_context(messages, model, requested_max_tokens,
+                            n_ctx=None, min_generation=64, safety=16,
+                            progress_callback=None):
+    """
+    Garantit que (prompt + images) laisse de la place pour la génération dans n_ctx.
+
+    Retourne (messages, effective_max_tokens) :
+      - messages : tronqués si besoin (system prompt + messages récents conservés)
+      - effective_max_tokens : borné pour que prompt_tokens + max_tokens <= n_ctx - safety,
+        ce qui empêche llama_cpp de lever une erreur de dépassement de contexte.
+
+    requested_max_tokens == 0 est traité comme "utilise tout le contexte restant".
+    """
+    if n_ctx is None:
+        try:
+            n_ctx = model.n_ctx()
+        except Exception:
+            n_ctx = 4096
+
+    # Marge qu'on réserve pour la réponse pendant qu'on tronque l'entrée
+    margin = requested_max_tokens if requested_max_tokens and requested_max_tokens > 0 else min_generation
+
+    # 1) Tronque les vieux messages si l'entrée seule est déjà trop grosse
+    messages = handle_long_messages(messages, model, n_ctx, method="truncate",
+                                    margin=margin, progress_callback=progress_callback,
+                                    mode="single")
+
+    # 2) Borne max_tokens à ce qui reste réellement après le prompt (tronqué)
+    prompt_tokens = count_messages_tokens(model, messages)
+    available = max(1, n_ctx - prompt_tokens - safety)
+
+    if requested_max_tokens and requested_max_tokens > 0:
+        effective_max_tokens = min(requested_max_tokens, available)
+    else:
+        effective_max_tokens = available  # illimité demandé -> tout ce qui rentre
+
+    if progress_callback is not None and requested_max_tokens and effective_max_tokens < requested_max_tokens:
+        progress_callback(("warning",
+            f"Réponse limitée à {effective_max_tokens} tokens (au lieu de {requested_max_tokens}) "
+            f"pour tenir dans le contexte : Context Length {n_ctx}, entrée ~= {prompt_tokens} tokens "
+            f"(images estimées).\n"
+            f"-> Augmentez Context Length ou baissez Max tokens pour une réponse plus longue."))
+    return messages, effective_max_tokens
+
+
+def identify_table_type(table):
+    domain = table.domain
+
+    # Vérifie uniquement les StringVariable
+    string_vars = [
+        var.name
+        for var in list(domain.attributes) + list(domain.class_vars) + list(domain.metas)
+        if isinstance(var, StringVariable)
+    ]
+
+    has_role = "role" in string_vars
+    has_type = "type" in string_vars
+    has_content = "content" in string_vars
+    has_prompt = "prompt" in string_vars
+
+    # Cas erreur : les 4 colonnes présentes
+    if has_role and has_type and has_content and has_prompt:
+        return "multiple"
+
+    # Mode conversation
+    elif has_role and has_type and has_content:
+        return "conversation"
+
+    # Mode prompt
+    elif has_prompt:
+        return "batch"
+
+    return "error"
+
+
+
+def prompt_to_messages(prompt, system_prompt="You are a helpful assistant.", image_paths=None):
+    """
+    Converts a prompt and optional images into a chat-formatted message list.
+
+    Includes a system message when provided and supports multimodal user content with
+    text and image attachments.
+
+    Parameters:
+    ----------
+    prompt : str
+        The user's prompt.
+    system_prompt : str, optional
+        The system instruction.
+    image_paths : list[str], optional
+        Image paths to attach to the user message.
+
+    Returns:
+    -------
+    list
+        Chat-formatted message dictionaries.
+    """
+    messages = []
+
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+    if image_paths:
+        content = []
+        for image_path in image_paths:
+            image_path = image_path.strip().strip("'").strip('"')
+
+            if not image_path:
+                continue
+
+            if not os.path.exists(image_path):
+                content.append({"type": "text", "text": f"[ERROR] Image not found: {image_path}"})
+                continue
+
+            try:
+                content.append({"type": "image_url", "image_url": {"url": convert_to_uri(image_path)}})
+            except Exception as e:
+                content.append({"type": "text", "text": f"[ERROR] Unable to read image {image_path}: {e}"})
+
+        content.append({"type": "text","text": str(prompt)})
+    else:
+        content = str(prompt)
+
+    messages.append({"role": "user", "content": content})
+    return messages
+
+
+def conv_to_messages(table):
+    return table_to_messages(table)

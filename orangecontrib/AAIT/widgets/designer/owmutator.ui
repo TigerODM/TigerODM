@@ -106,7 +106,20 @@
      <string>Multiply by selected ColName to All Numeric Column</string>
     </property>
    </widget>
-   <widget class="QRadioButton" name="radioButton_ffill">
+   <widget class="QRadioButton" name="radioButton_impute_above">
+    <property name="geometry">
+     <rect>
+      <x>30</x>
+      <y>140</y>
+      <width>381</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Impute using the first available value in the rows above.</string>
+    </property>
+   </widget>
+   <widget class="QRadioButton" name="radioButton_reverse_line_order">
     <property name="geometry">
      <rect>
       <x>30</x>
@@ -116,7 +129,23 @@
      </rect>
     </property>
     <property name="text">
-     <string>Impute the last value until next value</string>
+     <string>Reverse line order</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_only_colname">
+    <property name="geometry">
+     <rect>
+      <x>50</x>
+      <y>160</y>
+      <width>181</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Only on ColName column</string>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
     </property>
    </widget>
   </widget>

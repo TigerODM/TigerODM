@@ -175,32 +175,18 @@ class OWQEdgeLLM(widget.OWWidget):
             self.Outputs.data.send(None)
             return
 
-        domain = self.data.domain
-
-        # Vérifie uniquement les StringVariable
-        string_vars = [
-            var.name
-            for var in list(domain.attributes) + list(domain.class_vars) + list(domain.metas)
-            if isinstance(var, Orange.data.StringVariable)
-        ]
-
-        has_role = "role" in string_vars
-        has_type = "type" in string_vars
-        has_content = "content" in string_vars
-        has_prompt = "prompt" in string_vars
-
-        # Cas erreur : les 4 colonnes présentes
-        if has_role and has_type and has_content and has_prompt:
+        table_type = answers_llama.identify_table_type(self.data)
+        # Double mode détecté
+        if table_type == "multiple":
             self.error("Cannot have role/type/content and prompt simultaneously.")
-
+            self.Outputs.data.send(None)
+            return
         # Mode conversation
-        elif has_role and has_type and has_content:
+        elif table_type == "conversation":
             self.mode_convers = True
-
-        # Mode prompt
-        elif has_prompt:
+        # Mode batch
+        elif table_type == "batch":
             self.mode_convers = False
-
         # Aucun cas valide
         else:
             self.error(
