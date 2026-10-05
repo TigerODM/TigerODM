@@ -37,6 +37,25 @@ AJOUT (sans refactor, uniquement des ajouts):
        invcross : centre NOIR,  bras BLANCS (rayon=3)
        Tronquée aux bords (clamp).
 
+AJOUT (sans refactor, uniquement des ajouts):
+- Crop en pourcentage des dimensions de l'image:
+    Crop | line(%) = 10 | col(%) = 20 | delta_line(%) = 50 | delta_col(%) = 60
+    => line/delta_line en % de la hauteur, col/delta_col en % de la largeur
+       (décimales acceptées, ex. 12.5). Recalculé pour chaque image en batch,
+       donc la même spec s'adapte à des images de tailles différentes.
+       Utilisable seul ou dans une chaîne (Transform | ... Crop | ...).
+- Crop center avec taille en pourcentage (centres toujours en pixels):
+    Crop | col = 38 88 | line = 31 31 | delta_line(%) = 10 | delta_col(%) = 15 | type = center
+    => fenêtre de 10% de la hauteur x 15% de la largeur autour de chaque centre.
+       On peut mélanger : delta_line = 64 | delta_col(%) = 15
+- Write avec position / taille en pourcentage:
+    Write | text = OK | col(%) = 5 | line(%) = 90 | size(%) = 4 | value = 255
+    => col(%) en % de la largeur, line(%) en % de la hauteur,
+       size(%) = hauteur du texte en % de la hauteur de l'image.
+       Chaque clé peut rester en pixels (col = 10 | line(%) = 90 ...).
+  Dans une chaîne, les % portent toujours sur l'image COURANTE
+  (ex. après un Crop, sur l'image recadrée).
+
 Le champ de texte en bas affiche une spec complète "Transform | ..." réutilisable en batch.
 
 Dépendances: AnyQt, numpy, tifffile, scipy
@@ -120,7 +139,12 @@ def save_image_any(arr: np.ndarray, path: str) -> None:
     """
     ext = os.path.splitext(str(path))[1].lower()
     if ext in (".tif", ".tiff"):
-        photometric = "minisblack" if arr.ndim == 2 else "rgb"
+        if arr.ndim == 2:
+            photometric = "minisblack"
+        elif arr.ndim == 3 and arr.shape[2] in (3, 4):
+            photometric = "rgb"
+        else:
+            photometric = None
         tiff.imwrite(path, arr, photometric=photometric)
         return
     try:
@@ -212,6 +236,25 @@ def draw_text_on_image(arr: np.ndarray, text: str, x: int, y: int, size: int, va
         curr_x += char_w + spacing
 
 
+def _resolve_write_geometry(raw: str, H: int, W: int, col: int, line: int, size: int) -> Tuple[int, int, int]:
+    """AJOUT : remplace col / line / size par leur version en % si présente.
+    - col(%)  : % de la largeur W
+    - line(%) : % de la hauteur H
+    - size(%) : hauteur du texte en % de H (police 8x8 => size = hauteur_px / 8)"""
+    col_p = _get_pct_value(raw, "col")
+    line_p = _get_pct_value(raw, "line")
+    size_p = _get_pct_value(raw, "size")
+    if col_p is not None:
+        col = _pct_to_px(col_p, W, "Write col(%)")
+    if line_p is not None:
+        line = _pct_to_px(line_p, H, "Write line(%)")
+    if size_p is not None:
+        if size_p <= 0:
+            raise ValueError(f"Write size(%) = {size_p} doit être > 0.")
+        size = max(1, int(np.round(_pct_to_px(size_p, H, "Write size(%)") / 8.0)))
+    return col, line, size
+
+
 def write_text_by_spec(src_path: str, dst_path: str, write_spec: str) -> Dict[str, Any]:
     """
     Parse et applique plusieurs écritures si présentes.
@@ -247,6 +290,7 @@ def write_text_by_spec(src_path: str, dst_path: str, write_spec: str) -> Dict[st
         line = get_int("line", 0)
         size = get_int("size", 1)
         val = get_int("value", 255)  # 255 pour 8bits, 65535 pour 16bits
+        col, line, size = _resolve_write_geometry(raw, out.shape[0], out.shape[1], col, line, size)
 
         # Application du texte sur l'image en cours
         draw_text_on_image(out, text, col, line, size, val)
@@ -283,11 +327,11 @@ def _parse_convert_spec(spec: str) -> Dict[str, Any]:
 
     Exemples supportés:
       - "Convert | out = dcm"
-      - "Convert | out = png | pdf_zoom = 2.0 | pdf_page_index = 0"
-      - "Convert | out = jpg | jpeg_quality = 95"
+      - "Convert | out = tif | invert = 1"
+      - "Convert | out = png | pdf_zoom = 2.0 | invert = 0"
     """
     if not isinstance(spec, str):
-        return {"out": None, "pdf_page_index": 0, "pdf_zoom": 2.0, "jpeg_quality": 95}
+        return {"out": None, "pdf_page_index": 0, "pdf_zoom": 2.0, "jpeg_quality": 95, "invert_color": False}
 
     raw = spec.strip().replace('"', " ")
     out = None
@@ -314,11 +358,18 @@ def _parse_convert_spec(spec: str) -> Dict[str, Any]:
         except Exception:
             return float(default)
 
+    # Extraction de invert = 1 (ou 0 / true / false)
+    invert_color = False
+    m_inv = re.search(r"\binvert\s*=\s*(1|0|true|false)\b", raw, flags=re.I)
+    if m_inv:
+        invert_color = m_inv.group(1).lower() in ("1", "true")
+
     return {
         "out": out,
         "pdf_page_index": _get_int("pdf_page_index", 0),
         "pdf_zoom": _get_float("pdf_zoom", 2.0),
         "jpeg_quality": _get_int("jpeg_quality", 95),
+        "invert_color": invert_color,
     }
 
 
@@ -1757,15 +1808,6 @@ class Tiff16Viewer(QtWidgets.QWidget):
                 high_threshold=high,
             )
             return (edges.astype(np.uint8) * 255)
-        if mode == "highpass":
-            y = apply_high_pass_filter(t, float(self.hp_sigma_spin.value()))
-            return np.clip(y * 255.0, 0.0, 255.0).astype(np.uint8)
-
-        if mode == "sharpen":
-            y = apply_sharpen_filter(t,
-                                     amount=float(self.sh_amt_spin.value()),
-                                     radius=float(self.sh_rad_spin.value()))
-            return np.clip(y * 255.0, 0.0, 255.0).astype(np.uint8)
 
         y = self.apply_curve_pointwise(t, mode)
         return np.clip(y * 255.0, 0.0, 255.0).astype(np.uint8)
@@ -1958,6 +2000,10 @@ def _normalize_mode_name(s: str) -> str:
     }
     return aliases.get(s0, s0)
 
+_KNOWN_TRANSFORM_MODES = {
+    "linear", "gamma05", "gamma20", "sigmoid", "log", "invlog", "exp", "sqrt", "cbrt",
+    "he", "clahe", "wallis", "canny", "gradx", "grady", "sobel", "highpass", "sharpen",
+}
 
 def _parse_transform_spec(spec: str) -> Dict[str, Any]:
     """
@@ -1984,6 +2030,9 @@ def _parse_transform_spec(spec: str) -> Dict[str, Any]:
         raise ValueError("Chaîne invalide : impossible d'extraire Mode.")
     mode_human = m_mode.group(1).strip()
     mode = _normalize_mode_name(mode_human)
+
+    if mode not in _KNOWN_TRANSFORM_MODES:
+        raise ValueError(f"Transform : mode inconnu '{mode_human}'.")
 
     m_min_i16 = re.search(r"Min\s*\(I16\)\s*=\s*(\d+)", raw, re.I)
     m_max_i16 = re.search(r"Max\s*\(I16\)\s*=\s*(\d+)", raw, re.I)
@@ -2078,7 +2127,6 @@ def _parse_transform_spec(spec: str) -> Dict[str, Any]:
         "sharpen_amt": sharpen_amt,
         "sharpen_rad": sharpen_rad,
     }
-
 
 
 
@@ -2319,6 +2367,8 @@ def _which_op(spec: str) -> str:
         return "draw"
     if head.startswith("write"):
         return "write"
+    if head.startswith("resize"):
+        return "resize"
     raise ValueError(f"Unknown operation type in spec header: '{head}'.")
 
 
@@ -2341,6 +2391,7 @@ def _execute_write_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
     line = get_val("line", 0)
     size = get_val("size", 1)
     val = get_val("value", 255)
+    col, line, size = _resolve_write_geometry(params, arr.shape[0], arr.shape[1], col, line, size)
 
     draw_text_on_image(arr, text, col, line, size, val)
     return arr
@@ -2364,6 +2415,14 @@ def _execute_draw_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
     w = int(m_w.group(1)) if m_w else 10
     h = int(m_h.group(1)) if m_h else 10
 
+    if d_type not in ("cross", "invcross", "rectangle"):
+        raise ValueError(f"type inconnu '{d_type}' (cross, invcross, rectangle).")
+    if not m_line or not m_col:
+        raise ValueError("champs 'line' et 'col' requis.")
+    if len(lines) != len(cols):
+        raise ValueError(f"'col' ({len(cols)} valeurs) et 'line' ({len(lines)} valeurs) "
+                         f"doivent avoir le même nombre de valeurs.")
+
     for x, y in zip(cols, lines):
         if d_type == "rectangle":
             _draw_white_rectangle_inplace(arr, x, y, w, h)
@@ -2374,9 +2433,93 @@ def _execute_draw_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
     return arr
 
 
-def _execute_crop_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
-    """Applique un Crop sur un array numpy en mémoire."""
+def _get_pct_value(raw: str, key: str) -> Optional[float]:
+    """Lit 'key(%) = v' (v décimal accepté). Retourne None si absent."""
+    m = re.search(rf"\b{key}\s*\(\s*%\s*\)\s*=\s*(-?[0-9]*\.?[0-9]+)", str(raw), flags=re.I)
+    return float(m.group(1)) if m else None
 
+
+def _pct_to_px(pct: float, ref: int, name: str, min_px: int = 0) -> int:
+    """Convertit un pourcentage de 'ref' pixels en pixels, avec contrôle [0, 100]."""
+    if not (0.0 <= pct <= 100.0):
+        raise ValueError(f"{name} = {pct} hors de l'intervalle [0, 100].")
+    return max(int(min_px), int(np.round(pct * ref / 100.0)))
+
+
+def _is_percent_crop(params: str) -> bool:
+    """Vrai si la spec Crop utilise la syntaxe en pourcentage : line(%) / col(%) / ..."""
+    if re.search(r"\btype\s*=\s*center\b", str(params), flags=re.I):
+        return False  # le crop center gère ses propres % (deltas uniquement)
+    return bool(re.search(r"\b(?:delta[_\s]*)?(?:line|col)\s*\(\s*%\s*\)\s*=", str(params), flags=re.I))
+
+
+def _compute_percent_crop_window(H: int, W: int, params: str) -> Tuple[int, int, int, int]:
+    """
+    Crop | line(%) = 10 | col(%) = 20 | delta_line(%) = 50 | delta_col(%) = 60
+    - line(%), delta_line(%) : en % de la hauteur H
+    - col(%),  delta_col(%)  : en % de la largeur W
+    Retourne (x0, y0, x1, y1) en pixels, clampés aux bornes de l'image.
+    """
+    def get_pct(key: str) -> Optional[float]:
+        m = re.search(rf"\b{key}\s*\(\s*%\s*\)\s*=\s*(-?[0-9]*\.?[0-9]+)", params, flags=re.I)
+        return float(m.group(1)) if m else None
+
+    line_p = get_pct(r"line")
+    col_p = get_pct(r"col")
+    dline_p = get_pct(r"delta[_\s]*line")
+    dcol_p = get_pct(r"delta[_\s]*col")
+
+    if None in (line_p, col_p, dline_p, dcol_p):
+        raise ValueError("Crop (%) : line(%), col(%), delta_line(%) et delta_col(%) sont requis.")
+    for name, v in (("line(%)", line_p), ("col(%)", col_p),
+                    ("delta_line(%)", dline_p), ("delta_col(%)", dcol_p)):
+        if not (0.0 <= v <= 100.0):
+            raise ValueError(f"Crop (%) : {name} = {v} hors de l'intervalle [0, 100].")
+    if dline_p <= 0 or dcol_p <= 0:
+        raise ValueError("Crop (%) : delta_line(%) et delta_col(%) doivent être > 0.")
+
+    y0 = int(np.round(line_p * H / 100.0))
+    x0 = int(np.round(col_p * W / 100.0))
+    y1 = int(np.round((line_p + dline_p) * H / 100.0))
+    x1 = int(np.round((col_p + dcol_p) * W / 100.0))
+
+    y0, x0 = max(0, min(y0, H)), max(0, min(x0, W))
+    y1, x1 = max(0, min(y1, H)), max(0, min(x1, W))
+    # Garantit au moins 1 pixel si le pourcentage est très petit
+    if y1 <= y0 and y0 < H:
+        y1 = y0 + 1
+    if x1 <= x0 and x0 < W:
+        x1 = x0 + 1
+    if y1 <= y0 or x1 <= x0:
+        raise ValueError(f"Crop (%) : zone vide après clamp (image {W}x{H}).")
+    return x0, y0, x1, y1
+
+
+def _execute_crop_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
+    """Applique un Crop sur un array numpy en mémoire (legacy ou center à 1 centre)."""
+
+    # --- Crop centré (un seul centre possible dans une chaîne) ---
+    if re.search(r"\btype\s*=\s*center\b", params, flags=re.I):
+        cfg = _parse_crop_spec("Crop | " + params)
+        if len(cfg["cols"]) != 1:
+            raise ValueError("Crop center dans une chaîne : un seul centre autorisé "
+                             "(plusieurs centres => utiliser Crop seul).")
+        H, W = arr.shape[:2]
+        dline_px, dcol_px = _resolve_center_crop_deltas(cfg, H, W)
+        x0, y0, x1, y1 = _compute_center_crop_window(
+            H=H, W=W,
+            center_col=cfg["cols"][0], center_line=cfg["lines"][0],
+            delta_col=dcol_px, delta_line=dline_px,
+        )
+        return np.ascontiguousarray(arr[y0:y1, x0:x1, ...])
+
+    # --- Crop en pourcentage des dimensions de l'image ---
+    if _is_percent_crop(params):
+        H, W = arr.shape[:2]
+        x0, y0, x1, y1 = _compute_percent_crop_window(H, W, params)
+        return np.ascontiguousarray(arr[y0:y1, x0:x1, ...])
+
+    # --- Crop legacy (inchangé) ---
     def get_int(pattern):
         m = re.search(pattern, params, flags=re.I)
         return int(m.group(1)) if m else None
@@ -2386,23 +2529,82 @@ def _execute_crop_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
     dline = get_int(r"\bdelta[_\s]*line\s*=\s*(\d+)")
     dcol = get_int(r"\bdelta[_\s]*col\s*=\s*(\d+)")
 
-    if None not in (line, col, dline, dcol):
-        H, W = arr.shape[:2]
-        y0, x0 = max(0, line), max(0, col)
-        y1, x1 = min(H, y0 + dline), min(W, x0 + dcol)
-        return np.ascontiguousarray(arr[y0:y1, x0:x1, ...])
-    return arr
+    if None in (line, col, dline, dcol):
+        raise ValueError("line, col, delta_line et delta_col sont requis.")
+    H, W = arr.shape[:2]
+    y0, x0 = max(0, line), max(0, col)
+    y1, x1 = min(H, y0 + dline), min(W, x0 + dcol)
+    if y1 <= y0 or x1 <= x0:
+        raise ValueError(f"zone vide après clamp (image {W}x{H}).")
+    return np.ascontiguousarray(arr[y0:y1, x0:x1, ...])
 
+def _apply_ops_chain(arr: np.ndarray, ops_spec: str) -> Tuple[np.ndarray, int]:
+    """Applique séquentiellement Write/Draw/Crop/Resize sur un array en mémoire.
+    Retourne (image_resultat, nombre_operations). Lève une erreur explicite sinon."""
+    working_image = np.array(arr, copy=True)
+    tokens = re.split(r'(?i)\b(Write|Draw|Crop|Resize)\s*\|', ops_spec)
+
+    leading = tokens[0].strip()
+    if leading:
+        raise ValueError(f"Opération non reconnue : '{leading[:60]}' "
+                         f"(attendu : Transform, Convert, Write, Draw, Crop, Resize).")
+    if len(tokens) == 1:
+        raise ValueError("Aucune opération reconnue dans la spec.")
+
+    operations_count = 0
+    for i in range(1, len(tokens), 2):
+        cmd_type = tokens[i].strip().lower()
+        cmd_params = tokens[i + 1].strip() if (i + 1) < len(tokens) else ""
+        label = f"{cmd_type.capitalize()} (sous-opération {operations_count + 1})"
+
+        if not cmd_params:
+            raise ValueError(f"{label} : paramètres manquants.")
+
+        print(f"[PROCESS] Applique {label}")
+        try:
+            if cmd_type == "write":
+                working_image = _execute_write_on_arr(working_image, cmd_params)
+            elif cmd_type == "draw":
+                working_image = _execute_draw_on_arr(working_image, cmd_params)
+            elif cmd_type == "crop":
+                working_image = _execute_crop_on_arr(working_image, cmd_params)
+            elif cmd_type == "resize":
+                working_image = _execute_resize_on_arr(working_image, cmd_params)
+        except Exception as e:
+            raise ValueError(f"{label} : {e}") from e
+
+        operations_count += 1
+
+    return working_image, operations_count
+
+
+def _photometric_for(arr: np.ndarray) -> Optional[str]:
+    if arr.ndim == 2:
+        return "minisblack"
+    if arr.ndim == 3 and arr.shape[2] in (3, 4):
+        return "rgb"
+    return None
 
 def process_tiff_spec(src_path: str, dst_path: str, spec: str,
                       default_he_bins: int = 256, default_clahe_clip: float = 0.01) -> Dict[str, Any]:
+    print(f"\n[PROCESS] Traitement du fichier : {src_path}")
+    print(f"[PROCESS] Destination : {dst_path}")
+    print(f"[PROCESS] Spec reçue : {spec}")
+
+    spec = str(spec or "").strip().strip('"').strip()
+    if not spec:
+        raise ValueError("Spec vide.")
+
     if _is_Rt_spec(spec):
+        print("[PROCESS] Spec identifiée comme matrice de recalage R/t")
         return apply_transform_to_image_file(src_path, dst_path, spec)
 
     op_head = spec.strip().split("|", 1)[0].strip().lower()
+    print(f"[PROCESS] Opération principale : '{op_head}'")
 
-    # 1. Traitement spécifique isolé : Convert
+    # 1. Traitement spécifique : Convert
     if op_head.startswith("convert"):
+        print("[PROCESS] Exécution du module Convert...")
         cfg = _parse_convert_spec(spec)
         out_ext = cfg.get("out")
         dst_eff = dst_path
@@ -2417,52 +2619,60 @@ def process_tiff_spec(src_path: str, dst_path: str, spec: str,
             pdf_page_index=int(cfg.get("pdf_page_index", 0)),
             pdf_zoom=float(cfg.get("pdf_zoom", 2.0)),
             jpeg_quality=int(cfg.get("jpeg_quality", 95)),
+            invert_color=bool(cfg.get("invert_color", False)),
         )
         res["operation"] = "convert"
         res["dst"] = dst_eff
         return res
 
-    # 2. Traitement spécifique isolé : Transform (S'il est seul)
-    if op_head.startswith("transform") and "write" not in spec.lower() and "draw" not in spec.lower():
-        res = transform_tiff16_to_tiff8(src_path, dst_path, spec, default_he_bins, default_clahe_clip)
-        res["operation"] = "transform"
+    # 1b. Crop centré seul (plusieurs centres => plusieurs fichiers _0001, _0002...)
+    n_ops = len(re.findall(r'(?i)\b(Write|Draw|Crop|Resize)\s*\|', spec))
+    if (op_head.startswith("crop") and n_ops == 1
+            and re.search(r"\btype\s*=\s*center\b", spec, flags=re.I)):
+        print("[PROCESS] Exécution du module Crop center...")
+        res = crop_image_by_spec(src_path, dst_path, spec)
+        res["operation"] = "crop_center"
         return res
 
-    # 3. Logique MULTI-OPÉRATIONS (Chaînes mixtes de Write, Draw, Crop)
-    arr = tiff.imread(src_path)
+    # 2. Transform (16b->8b), éventuellement suivi d'opérations Write/Draw/Crop/Resize
+    if op_head.startswith("transform"):
+        m_post = re.search(r'(?i)\b(Write|Draw|Crop|Resize)\s*\|', spec)
+        transform_part = spec[:m_post.start()] if m_post else spec
+
+        print("[PROCESS] Exécution du module Transform 16b->8b...")
+        res = transform_tiff16_to_tiff8(src_path, dst_path, transform_part,
+                                        default_he_bins, default_clahe_clip)
+        res["operation"] = "transform"
+
+        if m_post is None:
+            return res
+
+        # Opérations suivantes appliquées sur l'image 8 bits produite
+        post_spec = spec[m_post.start():]
+        print(f"[PROCESS] Post-opérations après Transform : {post_spec}")
+        arr8 = tiff.imread(dst_path)
+        out, n_ops = _apply_ops_chain(arr8, post_spec)
+        tiff.imwrite(dst_path, out, photometric=_photometric_for(out))
+
+        res.update({
+            "operation": "transform+chain",
+            "post_ops_count": n_ops,
+            "height": int(out.shape[0]),
+            "width": int(out.shape[1]),
+        })
+        return res
+
+    # 3. Logique MULTI-OPÉRATIONS (Chaînes mixtes)
+    print("[PROCESS] Exécution d'une chaîne séquentielle d'opérations (Write/Draw/Crop/Resize)...")
+    arr = load_image_any(src_path)          # tif, jpg, png, bmp
     if arr.ndim == 3 and arr.shape[-1] == 1:
         arr = arr[..., 0]
+    print(f"[PROCESS] Image chargée : shape={arr.shape}, dtype={arr.dtype}")
 
-    working_image = np.array(arr, copy=True)
+    working_image, operations_count = _apply_ops_chain(arr, spec)
 
-    # On découpe la chaîne par les mots clés principaux
-    tokens = re.split(r'(?i)\b(Write|Draw|Crop)\s*\|', spec)
-    operations_count = 0
-
-    # tokens = ['', 'Write', ' line=... ', 'Draw', ' line=... ']
-    for i in range(1, len(tokens), 2):
-        cmd_type = tokens[i].strip().lower()
-        cmd_params = tokens[i + 1].strip() if (i + 1) < len(tokens) else ""
-
-        if not cmd_params: continue
-
-        if cmd_type == "write":
-            working_image = _execute_write_on_arr(working_image, cmd_params)
-        elif cmd_type == "draw":
-            working_image = _execute_draw_on_arr(working_image, cmd_params)
-        elif cmd_type == "crop":
-            working_image = _execute_crop_on_arr(working_image, cmd_params)
-
-        operations_count += 1
-
-    # Sauvegarde finale de l'image contenant toutes les annotations/crops
-    photometric = None
-    if working_image.ndim == 2:
-        photometric = "minisblack"
-    elif working_image.ndim == 3 and working_image.shape[2] in (3, 4):
-        photometric = "rgb"
-
-    tiff.imwrite(dst_path, working_image, photometric=photometric)
+    print(f"[PROCESS] Sauvegarde de l'image finale : {dst_path}")
+    save_image_any(working_image, dst_path)  # format déduit de l'extension de path_out
 
     return {
         "src": src_path,
@@ -2736,7 +2946,8 @@ def batch_process_tiff_files(
             processed += 1
         except Exception as e:
             print("error batch_process_tiff_files", e)
-            results.append({"src": src, "dst": dst, "ok": False, "error": str(e)})
+            results.append({"src": src, "dst": dst, "ok": False,
+                            "error": f"{os.path.basename(str(src))} : {e}"})
             failed += 1
 
     return {
@@ -2755,11 +2966,8 @@ def convert_file_to_image_best_effort(
     pdf_page_index: int = 0,
     pdf_zoom: float = 2.0,
     jpeg_quality: int = 95,
+    invert_color: bool = False,
 ) -> dict:
-    import os
-    import numpy as np
-    import tifffile as tiff
-
     src_path = src_path.replace("\\", "/")
     dst_path = dst_path.replace("\\", "/")
 
@@ -2767,17 +2975,18 @@ def convert_file_to_image_best_effort(
     out_path = os.path.abspath(dst_path)
 
     if not os.path.isfile(in_path):
-        raise FileNotFoundError(in_path)
+        raise FileNotFoundError(f"Fichier d'entrée introuvable : {in_path}")
 
     if Path(out_path).exists():
-        raise FileExistsError(f"Output already exists, not overwriting: {out_path}")
+        os.remove(out_path)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
     ext_in = os.path.splitext(in_path)[1].lower()
     ext_out = os.path.splitext(out_path)[1].lower().lstrip(".")
+
     if ext_out not in ("png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp", "dcm"):
-        raise ValueError(f"Extension de sortie non supportée: .{ext_out}")
+        raise ValueError(f"Extension de sortie non supportée : .{ext_out}")
 
     # ---------- PDF -> image ----------
     if ext_in == ".pdf":
@@ -2785,8 +2994,9 @@ def convert_file_to_image_best_effort(
         doc = fitz.open(in_path)
         try:
             page_count = doc.page_count
+            print(f"[CONVERT PDF] Nombre de pages : {page_count}")
             if page_count != 1:
-                raise ValueError(f"PDF multi-pages ({page_count} pages) non supporté (attendu: 1 page).")
+                raise ValueError(f"PDF multi-pages ({page_count} pages) non supporté (attendu : 1 page).")
 
             page = doc.load_page(int(pdf_page_index))
             mat = fitz.Matrix(float(pdf_zoom), float(pdf_zoom))
@@ -2794,6 +3004,7 @@ def convert_file_to_image_best_effort(
 
             w, h = pix.width, pix.height
             n = pix.n
+            print(f"[CONVERT PDF] Rendement page : {w}x{h}, canaux : {n}")
             arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape((h, w, n))
 
             if n == 4:
@@ -2806,6 +3017,11 @@ def convert_file_to_image_best_effort(
             else:
                 im_l = Image.fromarray(arr[..., 0], mode="L")
                 im = im_l.convert("RGB")
+
+            if invert_color:
+                print("[CONVERT PDF] Application de l'inversion de couleurs (invert = 1)")
+                arr_im = np.array(im)
+                im = Image.fromarray(255 - arr_im)
 
             if ext_out in ("jpg", "jpeg"):
                 im.save(out_path, format="JPEG", quality=int(jpeg_quality), optimize=True)
@@ -2831,19 +3047,22 @@ def convert_file_to_image_best_effort(
 
     # ---------- TIFF -> DICOM (.dcm) ----------
     if ext_in in (".tif", ".tiff") and ext_out == "dcm":
+        print("[CONVERT] Conversion TIFF vers DICOM (.dcm)...")
         try:
             from pydicom.dataset import Dataset, FileMetaDataset
             from pydicom.uid import ExplicitVRLittleEndian, SecondaryCaptureImageStorage, generate_uid
         except Exception as e_imp:
-            raise RuntimeError(f"Sortie .dcm demandée, mais pydicom indisponible: {e_imp}") from e_imp
+            raise RuntimeError(f"Sortie .dcm demandée, mais pydicom indisponible : {e_imp}") from e_imp
 
         arr = tiff.imread(in_path)
+        print(f"[CONVERT TIFF->DCM] Matrice chargée : shape={arr.shape}, dtype={arr.dtype}")
         if arr.ndim == 3:
             arr = arr[..., 0]
         if arr.ndim != 2:
-            raise RuntimeError(f"TIFF->DCM: forme non supportée (attendu 2D): {arr.shape}")
+            raise RuntimeError(f"TIFF->DCM : forme non supportée (attendu 2D) : {arr.shape}")
 
         if arr.dtype != np.uint16:
+            print("[CONVERT TIFF->DCM] Conversion du dtype vers uint16...")
             if np.issubdtype(arr.dtype, np.floating):
                 a = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
                 mn = float(a.min()) if a.size else 0.0
@@ -2854,6 +3073,10 @@ def convert_file_to_image_best_effort(
                 arr = np.clip(a, 0.0, 65535.0).astype(np.uint16)
             else:
                 arr = arr.astype(np.uint16, copy=False)
+
+        if invert_color:
+            print("[CONVERT TIFF->DCM] Application de l'inversion de couleurs (invert = 1)")
+            arr = 65535 - arr
 
         arr = np.ascontiguousarray(arr)
 
@@ -2879,7 +3102,7 @@ def convert_file_to_image_best_effort(
         ds.Rows = int(arr.shape[0])
         ds.Columns = int(arr.shape[1])
         ds.SamplesPerPixel = 1
-        ds.PhotometricInterpretation = "MONOCHROME1"
+        ds.PhotometricInterpretation = "MONOCHROME2"
         ds.PixelRepresentation = 0
 
         ds.BitsAllocated = 16
@@ -2891,6 +3114,7 @@ def convert_file_to_image_best_effort(
         ds.is_implicit_VR = False
         ds.PixelData = arr.tobytes()
 
+        print(f"[CONVERT TIFF->DCM] Enregistrement du DICOM : {out_path}")
         ds.save_as(out_path, write_like_original=False)
 
         return {
@@ -2905,26 +3129,30 @@ def convert_file_to_image_best_effort(
             "via": "tifffile->pydicom",
         }
 
-    # ---------- DICOM (.dcm) -> image (CORRECTEMENT DÉSINDENTÉ) ----------
+    # ---------- DICOM (.dcm) -> image ----------
     if ext_in in (".dcm", ".dicom"):
-
+        print("[CONVERT] Lecture du fichier DICOM d'entrée...")
         ds = pydicom.dcmread(in_path, force=True)
 
         try:
             arr = ds.pixel_array
+            print(f"[CONVERT DCM] PixelData extraits : shape={arr.shape}, dtype={arr.dtype}, min={arr.min()}, max={arr.max()}")
         except Exception as e_px:
             raise RuntimeError(
-                f"Lecture DICOM OK, mais impossible de décoder PixelData (codec manquant?) : {e_px}"
+                f"Lecture DICOM OK, mais impossible de décoder PixelData (codec manquant ?) : {e_px}"
             ) from e_px
 
         if arr.ndim == 3:
+            print("[CONVERT DCM] Sélecteur 3D : prise de la première tranche (index 0).")
             arr = arr[0]
         elif arr.ndim != 2:
-            raise RuntimeError(f"DICOM: forme non supportée: {arr.shape}")
+            raise RuntimeError(f"DICOM : forme non supportée : {arr.shape}")
 
-        photo = str(getattr(ds, "PhotometricInterpretation", "")).upper()
+        photo = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2")).strip().upper()
+        print(f"[CONVERT DCM] PhotometricInterpretation d'origine : '{photo}'")
 
         if ext_out == "dcm":
+            print("[CONVERT DCM->DCM] Réécriture du DICOM...")
             ds2 = ds.copy()
 
             if arr.dtype == np.int16:
@@ -2967,17 +3195,30 @@ def convert_file_to_image_best_effort(
             }
 
         if ext_out not in ("tif", "tiff"):
-            raise RuntimeError("Écriture autorisée depuis dcm : seulement le tif!")
+            raise RuntimeError("Écriture autorisée depuis DCM : seulement le TIFF !")
 
-        if np.issubdtype(arr.dtype, np.integer):
-            info = np.iinfo(arr.dtype)
-            arr = info.max - arr
+        # Par défaut, MONOCHROME1 est inversé pour repasser en 0=Noir.
+        # Si invert_color=True (invert = 1 dans la spec), on bascule l'état de l'inversion.
+        should_invert = (photo == "MONOCHROME1")
+        if invert_color:
+            should_invert = not should_invert
+            print(f"[CONVERT DCM->TIFF] Option 'invert = 1' détectée -> Bascule de polarité (should_invert = {should_invert})")
+
+        if should_invert:
+            print("[CONVERT DCM->TIFF] Inversion des pixels appliquée.")
+            if np.issubdtype(arr.dtype, np.integer):
+                info = np.iinfo(arr.dtype)
+                arr = info.max - arr
+            else:
+                arr = arr.max() - arr
         else:
-            arr = arr.max() - arr
+            print("[CONVERT DCM->TIFF] Conservation de la polarité d'origine.")
 
         if arr.dtype != np.uint16 and arr.dtype != np.int16:
+            print(f"[CONVERT DCM->TIFF] Cast de {arr.dtype} vers uint16")
             arr = arr.astype(np.uint16)
 
+        print(f"[CONVERT DCM->TIFF] Écriture du fichier TIFF final : {out_path} (min={arr.min()}, max={arr.max()})")
         tiff.imwrite(out_path, arr)
 
         return {
@@ -2991,10 +3232,10 @@ def convert_file_to_image_best_effort(
             "dtype": str(arr.dtype),
             "photometric_in": photo or None,
             "via": "pydicom->tifffile",
-            "note": "TIFF 16 bits inverse (blanc <-> noir).",
         }
 
     # ---------- Autres images -> image (Pillow) ----------
+    print("[CONVERT] Ouverture d'image standard via Pillow/Tifffile...")
     try:
         import pillow_heif
         try:
@@ -3013,6 +3254,12 @@ def convert_file_to_image_best_effort(
             except Exception:
                 pass
 
+            print(f"[CONVERT PIL] Image chargée : mode={im.mode}, size={im.size}")
+            if invert_color:
+                print("[CONVERT PIL] Inversion de couleurs appliquée (invert = 1)")
+                arr_im = np.array(im)
+                im = Image.fromarray(255 - arr_im)
+
             if ext_out in ("jpg", "jpeg"):
                 im2 = im.convert("RGB")
                 im2.save(out_path, format="JPEG", quality=int(jpeg_quality), optimize=True)
@@ -3021,6 +3268,7 @@ def convert_file_to_image_best_effort(
                 im.save(out_path)
                 out_im = im
 
+            print(f"[CONVERT PIL] Image enregistrée : {out_path}")
             return {
                 "ok": True,
                 "input": in_path,
@@ -3035,16 +3283,26 @@ def convert_file_to_image_best_effort(
             }
 
     except Exception as e_pil:
+        print(f"[CONVERT PIL WARNING] Pillow a échoué ({e_pil}), bascule sur tifffile...")
         if ext_in not in (".tif", ".tiff"):
-            raise RuntimeError(f"Impossible d'ouvrir l'image via Pillow: {e_pil}") from e_pil
+            raise RuntimeError(f"Impossible d'ouvrir l'image via Pillow : {e_pil}") from e_pil
 
         arr = tiff.imread(in_path)
+        print(f"[CONVERT FALLBACK] Matrice TIFF : shape={arr.shape}, dtype={arr.dtype}")
 
         if arr.ndim >= 3 and arr.shape[0] in (3, 4) and arr.dtype == np.uint8:
             arr = np.moveaxis(arr, 0, -1)
 
         if arr.ndim == 3 and arr.shape[-1] not in (3, 4):
             arr = arr[..., 0]
+
+        if invert_color:
+            print("[CONVERT FALLBACK] Inversion de couleurs appliquée (invert = 1)")
+            if np.issubdtype(arr.dtype, np.integer):
+                info = np.iinfo(arr.dtype)
+                arr = info.max - arr
+            else:
+                arr = arr.max() - arr
 
         if arr.dtype == np.uint16:
             mn = int(arr.min())
@@ -3064,7 +3322,7 @@ def convert_file_to_image_best_effort(
         elif arr.ndim == 3 and arr.shape[-1] == 4:
             im = Image.fromarray(arr, mode="RGBA")
         else:
-            raise RuntimeError(f"TIFF fallback: forme non supportée: {arr.shape}, dtype={arr.dtype}")
+            raise RuntimeError(f"TIFF fallback : forme non supportée : {arr.shape}, dtype={arr.dtype}")
 
         if ext_out in ("jpg", "jpeg"):
             im = im.convert("RGB")
@@ -3072,6 +3330,7 @@ def convert_file_to_image_best_effort(
         else:
             im.save(out_path)
 
+        print(f"[CONVERT FALLBACK] Image enregistrée : {out_path}")
         return {
             "ok": True,
             "input": in_path,
@@ -3176,11 +3435,19 @@ def _parse_crop_spec(spec: str) -> Dict[str, Any]:
     dline = get_int(r"\bdelta[_\s]*line\s*=\s*(\d+)")
     dcol = get_int(r"\bdelta[_\s]*col\s*=\s*(\d+)")
 
-    if dline is None or dcol is None:
-        raise ValueError("Invalid crop spec: delta_line and delta_col are required.")
+    # AJOUT : en mode center, les deltas peuvent être donnés en % (résolus plus tard avec H, W)
+    dline_pct = _get_pct_value(raw, r"delta[_\s]*line") if crop_type == "center" else None
+    dcol_pct = _get_pct_value(raw, r"delta[_\s]*col") if crop_type == "center" else None
 
-    if dline <= 0 or dcol <= 0:
+    if (dline is None and dline_pct is None) or (dcol is None and dcol_pct is None):
+        raise ValueError("Invalid crop spec: delta_line and delta_col are required "
+                         "(en pixels, ou en % pour type = center).")
+
+    if (dline is not None and dline <= 0) or (dcol is not None and dcol <= 0):
         raise ValueError("delta_line and delta_col must be positive integers.")
+    for name, v in (("delta_line(%)", dline_pct), ("delta_col(%)", dcol_pct)):
+        if v is not None and not (0.0 < v <= 100.0):
+            raise ValueError(f"Crop center : {name} = {v} doit être dans ]0, 100].")
 
     if crop_type == "center":
         cols_f = _extract_number_list_from_spec(raw, "col")
@@ -3199,8 +3466,10 @@ def _parse_crop_spec(spec: str) -> Dict[str, Any]:
             "type": "center",
             "cols": cols,
             "lines": lines,
-            "delta_line": int(dline),
-            "delta_col": int(dcol),
+            "delta_line": int(dline) if dline is not None else None,
+            "delta_col": int(dcol) if dcol is not None else None,
+            "delta_line_pct": dline_pct,
+            "delta_col_pct": dcol_pct,
         }
 
     line = get_int(r"\bline\s*=\s*(-?\d+)")
@@ -3218,6 +3487,20 @@ def _parse_crop_spec(spec: str) -> Dict[str, Any]:
         "delta_line": int(dline),
         "delta_col": int(dcol),
     }
+
+
+def _resolve_center_crop_deltas(cfg: Dict[str, Any], H: int, W: int) -> Tuple[int, int]:
+    """Retourne (delta_line, delta_col) en pixels pour un crop center,
+    en convertissant les éventuels pourcentages selon la taille de l'image."""
+    if cfg.get("delta_line_pct") is not None:
+        dline = _pct_to_px(cfg["delta_line_pct"], H, "delta_line(%)", min_px=1)
+    else:
+        dline = int(cfg["delta_line"])
+    if cfg.get("delta_col_pct") is not None:
+        dcol = _pct_to_px(cfg["delta_col_pct"], W, "delta_col(%)", min_px=1)
+    else:
+        dcol = int(cfg["delta_col"])
+    return dline, dcol
 
 
 def crop_tiff_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str, Any]:
@@ -3291,8 +3574,7 @@ def crop_tiff_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str,
     # -------------------------------------------------
     # Nouveau mode center
     # -------------------------------------------------
-    dline = int(cfg["delta_line"])
-    dcol = int(cfg["delta_col"])
+    dline, dcol = _resolve_center_crop_deltas(cfg, H, W)
     cols = cfg["cols"]
     lines = cfg["lines"]
 
@@ -3356,6 +3638,23 @@ def crop_image_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str
     - autres (jpg, png, ...) : lecture/écriture via load_image_any/save_image_any
       (mode legacy uniquement — celui produit par la sélection souris du viewer)
     """
+    # Crop en pourcentage (tous formats, tif inclus)
+    if _is_percent_crop(crop_spec):
+        arr = load_image_any(src_path)
+        H, W = arr.shape[:2]
+        x0, y0, x1, y1 = _compute_percent_crop_window(H, W, str(crop_spec).replace('"', " "))
+        roi = np.ascontiguousarray(arr[y0:y1, x0:x1, ...])
+        save_image_any(roi, dst_path)
+        return {
+            "src": src_path,
+            "dst": dst_path,
+            "input_shape": tuple(arr.shape),
+            "output_shape": tuple(roi.shape),
+            "dtype": str(roi.dtype),
+            "crop_type": "percent",
+            "crop_effective": {"y0": int(y0), "x0": int(x0), "y1": int(y1), "x1": int(x1)},
+        }
+
     ext = os.path.splitext(str(src_path))[1].lower()
     if ext in (".tif", ".tiff"):
         return crop_tiff_by_spec(src_path, dst_path, crop_spec)
@@ -3394,49 +3693,221 @@ def crop_image_by_spec(src_path: str, dst_path: str, crop_spec: str) -> Dict[str
     }
 
 
-def convert_pdfs_to_png_fitz(input_folder, output_folder, zoom=2):
+def convert_pdfs_to_png_fitz(input_folder, output_folder, zoom=2,
+                             progress_callback=None, argself=None, **kwargs):
     """
-    Convertit tous les PDF d'un dossier en PNG en utilisant PyMuPDF (fitz).
-    zoom=2 permet d'avoir une bonne qualité (double la résolution standard).
-    """
-    for i in range(len(output_folder)):
-        if not os.path.exists(output_folder[i]):
-            os.makedirs(output_folder[i])
+    Convertit tous les PDF de chaque dossier input_folder[i] en PNG dans output_folder[i]
+    (PyMuPDF). zoom=2 double la résolution standard.
 
-    # Matrice de transformation pour la résolution
-    # zoom_x et zoom_y à 2.0 augmentent la qualité (DPI)
+    Ne lève jamais d'exception : toutes les erreurs sont retournées.
+    Retourne une liste de dicts (un par PDF, ou un par dossier en erreur) :
+      succès : {"row", "path" (nom du PDF), "pdf", "pages": [png...], "ok": True}
+      échec  : {"row", "path", "pdf" ou "folder", "pages": [], "ok": False, "error": "..."}
+    "row" = index de la ligne d'entrée (dossier) concernée.
+    """
+    results = []
+    n = len(input_folder)
+
+    if len(output_folder) != n:
+        msg = f"'path' et 'path_out' n'ont pas la même longueur ({n} / {len(output_folder)})."
+        return [{"row": i, "path": "", "folder": str(input_folder[i]), "pages": [],
+                 "ok": False, "error": msg} for i in range(n)]
+
     mat = fitz.Matrix(zoom, zoom)
-    output_pdfs = []
-    for i in range(len(input_folder)):
-        for filename in os.listdir(input_folder[i]):
-            if filename.lower().endswith(".pdf"):
-                pdf_path = os.path.join(input_folder[i], filename)
-                pdf_path = pdf_path.replace("\\", "/")
-                print(pdf_path)
-                base_name = os.path.splitext(filename)[0]
 
-                try:
-                    # Ouvrir le document
-                    doc = fitz.open(pdf_path)
-                    pdf_page = []
-                    for page_index in range(len(doc)):
-                        page = doc.load_page(page_index)
+    for i in range(n):
+        if progress_callback is not None:
+            progress_callback(float(100 * i / max(1, n)))
+        if argself is not None and getattr(argself, "stop", False):
+            break
 
-                        # Générer le pixmap (l'image de la page)
-                        pix = page.get_pixmap(matrix=mat)
+        in_dir = str(input_folder[i] or "").strip().replace("\\", "/")
+        out_dir = str(output_folder[i] or "").strip().replace("\\", "/")
 
-                        # Nom du fichier de sortie
-                        output_filename = f"{base_name}_p{page_index + 1}.png"
-                        output_path = os.path.join(output_folder[i], output_filename)
+        def _folder_error(msg):
+            results.append({"row": i, "path": "", "folder": in_dir, "pages": [], "ok": False,
+                            "error": f"{in_dir or '(path vide)'} : {msg}"})
 
-                        # Sauvegarder
-                        pix.save(output_path)
-                        pdf_page.append(output_path.replace("\\", "/"))
-                    doc.close()
-                    output_pdfs.append({"path": filename.replace("\\", "/"), "pages": pdf_page})
-                except Exception as e:
-                    print(f"Erreur sur {filename} : {e}")
-    return output_pdfs
+        # --- Contrôles du dossier (erreurs au niveau de la ligne) ---
+        if not in_dir:
+            _folder_error("chemin 'path' vide.")
+            continue
+        if not os.path.isdir(in_dir):
+            _folder_error("dossier introuvable.")
+            continue
+        if not out_dir:
+            _folder_error("chemin 'path_out' vide.")
+            continue
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            pdf_names = sorted(f for f in os.listdir(in_dir) if f.lower().endswith(".pdf"))
+        except Exception as e:
+            _folder_error(f"accès impossible ({e}).")
+            continue
+        if not pdf_names:
+            _folder_error("aucun fichier PDF trouvé.")
+            continue
+
+        # --- Conversion PDF par PDF (erreurs au niveau du fichier) ---
+        for filename in pdf_names:
+            pdf_path = os.path.join(in_dir, filename).replace("\\", "/")
+            base_name = os.path.splitext(filename)[0]
+            print(pdf_path)
+            doc = None
+            try:
+                doc = fitz.open(pdf_path)
+                if doc.needs_pass:
+                    raise ValueError("PDF protégé par mot de passe.")
+                if doc.page_count == 0:
+                    raise ValueError("PDF sans page.")
+
+                pages = []
+                for page_index in range(doc.page_count):
+                    pix = doc.load_page(page_index).get_pixmap(matrix=mat)
+                    out_path = os.path.join(out_dir, f"{base_name}_p{page_index + 1}.png").replace("\\", "/")
+                    pix.save(out_path)
+                    pages.append(out_path)
+
+                results.append({"row": i, "path": filename, "pdf": pdf_path,
+                                "pages": pages, "ok": True})
+            except Exception as e:
+                print(f"Erreur sur {filename} : {e}")
+                results.append({"row": i, "path": filename, "pdf": pdf_path, "pages": [],
+                                "ok": False, "error": f"{filename} : {e}"})
+            finally:
+                if doc is not None:
+                    try:
+                        doc.close()
+                    except Exception:
+                        pass
+
+    if progress_callback is not None:
+        progress_callback(100.0)
+    return results
+
+# ============================================================
+# AJOUT UNIQUEMENT : support Resize
+#   Resize | width = 512 | height = 256
+#   Resize | width = 512 | height = 256 | interpolation = bicubic
+#   Resize | width = 512                  (height déduite, ratio conservé)
+#   Resize | height = 256                 (width déduite, ratio conservé)
+#   Resize | scale = 0.5                  (même facteur sur les deux axes)
+# Interpolation : nearest, bilinear (défaut), bicubic
+# Utilisable seul (tous formats) ou dans une chaîne :
+#   Crop | line = 10 | col = 20 | delta_line = 300 | delta_col = 400 Resize | width = 200
+# Le dtype est conservé (uint8, uint16, float...), niveaux de gris ou couleur.
+# ============================================================
+from scipy.ndimage import affine_transform
+
+_RESIZE_ORDERS = {"nearest": 0, "bilinear": 1, "linear": 1, "bicubic": 3, "cubic": 3}
+
+
+def _parse_resize_spec(spec: str) -> Dict[str, Any]:
+    if not isinstance(spec, str):
+        raise ValueError("resize_spec must be a string.")
+    raw = spec.strip().replace('"', " ")
+
+    def get_num(key):
+        m = re.search(rf"\b{key}\s*=\s*([0-9]*\.?[0-9]+)", raw, flags=re.I)
+        return float(m.group(1)) if m else None
+
+    width = get_num("width")
+    height = get_num("height")
+    scale = get_num("scale")
+
+    m_interp = re.search(r"\binterp(?:olation)?\s*=\s*([a-zA-Z]+)", raw, flags=re.I)
+    interp = m_interp.group(1).strip().lower() if m_interp else "bilinear"
+    if interp not in _RESIZE_ORDERS:
+        raise ValueError(f"Resize: interpolation inconnue '{interp}' "
+                         f"(nearest, bilinear, bicubic).")
+
+    width = int(round(width)) if width else 0
+    height = int(round(height)) if height else 0
+    if width <= 0 and height <= 0 and (scale is None or scale <= 0):
+        raise ValueError("Resize: préciser width et/ou height (ou scale > 0).")
+
+    return {"width": width, "height": height, "scale": scale, "interpolation": interp}
+
+
+def _resize_target_shape(H: int, W: int, cfg: Dict[str, Any]) -> Tuple[int, int]:
+    """Retourne (out_h, out_w). Si une seule dimension est donnée, conserve le ratio."""
+    w, h = int(cfg["width"]), int(cfg["height"])
+    if w > 0 and h > 0:
+        return h, w
+    if w > 0:
+        return max(1, int(round(H * w / float(W)))), w
+    if h > 0:
+        return h, max(1, int(round(W * h / float(H))))
+    s = float(cfg["scale"])
+    return max(1, int(round(H * s))), max(1, int(round(W * s)))
+
+
+def _resize_array(arr: np.ndarray, out_h: int, out_w: int,
+                  interpolation: str = "bilinear", antialias: bool = True) -> np.ndarray:
+    """Redimensionne un array 2D (gris) ou 3D (H, W, C) en conservant le dtype."""
+    H, W = arr.shape[:2]
+    if (out_h, out_w) == (H, W):
+        return np.array(arr, copy=True)
+
+    order = _RESIZE_ORDERS[interpolation]
+    sy, sx = H / float(out_h), W / float(out_w)
+    # alignement sur les centres de pixels : in = (out + 0.5) * s - 0.5
+    offset = (0.5 * sy - 0.5, 0.5 * sx - 0.5)
+
+    def _one(ch: np.ndarray) -> np.ndarray:
+        f = ch.astype(np.float32)
+        # anti-aliasing en réduction (évite le moiré)
+        if antialias and order > 0 and (sy > 1.0 or sx > 1.0):
+            f = gaussian_filter(f, sigma=(max(0.0, (sy - 1.0) / 2.0),
+                                          max(0.0, (sx - 1.0) / 2.0)))
+        return affine_transform(f, np.array([sy, sx]), offset=offset,
+                                output_shape=(out_h, out_w), order=order, mode="nearest")
+
+    if arr.ndim == 2:
+        out = _one(arr)
+    else:
+        out = np.stack([_one(arr[..., c]) for c in range(arr.shape[2])], axis=-1)
+
+    if arr.dtype == bool:
+        out = out >= 0.5
+    elif np.issubdtype(arr.dtype, np.integer):
+        info = np.iinfo(arr.dtype)
+        out = np.clip(np.rint(out), info.min, info.max)
+    return np.ascontiguousarray(out.astype(arr.dtype, copy=False))
+
+
+def _execute_resize_on_arr(arr: np.ndarray, params: str) -> np.ndarray:
+    """Applique un Resize sur un array numpy en mémoire (chaînes d'opérations)."""
+    cfg = _parse_resize_spec("Resize | " + params)
+    out_h, out_w = _resize_target_shape(arr.shape[0], arr.shape[1], cfg)
+    return _resize_array(arr, out_h, out_w, cfg["interpolation"])
+
+
+def resize_image_by_spec(src_path: str, dst_path: str, resize_spec: str) -> Dict[str, Any]:
+    """Resize seul, tous formats (tif via tifffile, jpg/png/bmp via PIL)."""
+    cfg = _parse_resize_spec(resize_spec)
+    arr = load_image_any(src_path)
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
+
+    H, W = arr.shape[:2]
+    out_h, out_w = _resize_target_shape(H, W, cfg)
+    out = _resize_array(arr, out_h, out_w, cfg["interpolation"])
+
+    os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
+    save_image_any(out, dst_path)
+
+    return {
+        "src": src_path,
+        "dst": dst_path,
+        "operation": "resize",
+        "interpolation": cfg["interpolation"],
+        "input_shape": tuple(arr.shape),
+        "output_shape": tuple(out.shape),
+        "dtype": str(out.dtype),
+        "width": int(out_w),
+        "height": int(out_h),
+    }
 
 # ------------------
 # Exemples:

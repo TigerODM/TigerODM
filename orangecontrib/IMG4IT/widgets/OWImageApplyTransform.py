@@ -1,6 +1,6 @@
-
 from Orange.widgets.widget import OWWidget, Input,Output
 from Orange.widgets.settings import Setting
+from Orange.data import Domain, StringVariable, Table
 from AnyQt.QtWidgets import QApplication
 import os
 import Orange
@@ -44,8 +44,8 @@ class OWImageApplyTransform(OWWidget):
 
         uic.loadUi(self.gui, self)
         # Qt Management
-        self.setFixedWidth(478)
-        self.setFixedHeight(451)
+        self.setFixedWidth(678)
+        self.setFixedHeight(651)
 
         self.checkBox_overwrite.setChecked(self.overwrite_existing)
         self.checkBox_overwrite.toggled.connect(self.on_overwrite_changed)
@@ -56,6 +56,7 @@ class OWImageApplyTransform(OWWidget):
     @Inputs.data
     def set_data(self, in_data):
         self.error("")
+        self.warning("")
         if in_data is None:
             self.Outputs.data.send(None)
             self.Outputs.data_error.send(create_trigger_table())
@@ -102,10 +103,6 @@ class OWImageApplyTransform(OWWidget):
         for element in in_data.get_column("path_out"):
             self.path_out.append(element)
         return 0
-
-
-
-
 
     def load_list_image_domaine(self,in_data):
         if 0==self.load_list_image_domaine_image(in_data):
@@ -158,6 +155,13 @@ class OWImageApplyTransform(OWWidget):
 
     def run(self):
         self.error("")
+        self.warning("")
+        if len(self.transform_image) == 0:
+            self.warning("Input table is empty: nothing to process.")
+            self.Outputs.data.send(self.input_data)   # table vide transmise telle quelle
+            self.Outputs.data_error.send(None)
+            return
+    
         # Si l'utilisateur autorise l'écrasement, on retire d'abord les sorties existantes
         if self.overwrite_existing:
             self.remove_existing_outputs()
@@ -177,53 +181,70 @@ class OWImageApplyTransform(OWWidget):
     def handle_result(self, result):
         if self.transform_image[0] != "list_pdf":
             try:
-                ok_idx = [i for i, r in enumerate(result["results"]) if r.get("ok") is True]
-                not_ok_idx = [i for i, r in enumerate(result["results"]) if r.get("ok") is False]
+                results = result["results"]
+                ok_idx = [i for i, r in enumerate(results) if r.get("ok") is True]
+                not_ok_idx = [i for i, r in enumerate(results) if r.get("ok") is False]
+
                 if len(not_ok_idx) == 0:
                     self.Outputs.data.send(self.input_data)
                     self.Outputs.data_error.send(None)
                     return
+
+                errors = [str(results[i].get("error", "unknown error")) for i in not_ok_idx]
+                msg = f"{len(not_ok_idx)}/{len(results)} ligne(s) en erreur :\n" + "\n".join(errors[:10])
+                if len(errors) > 10:
+                    msg += f"\n... (+{len(errors) - 10} autres)"
+                self.error(msg)
+
                 if len(ok_idx) == 0:
-                    try:
-                        errors = [r.get("error", "unknown error") for r in result["results"] if not r.get("ok")]
-                        msg = "\n".join(errors)
-                        self.error(msg)
-                    except Exception:
-                        self.error("error occurs")
                     self.Outputs.data.send(None)
                     self.Outputs.data_error.send(self.input_data)
                     return
 
-                subset = [self.input_data[i] for i in ok_idx]
-
-                # Crée une nouvelle table avec le même domaine
-                new_table = Orange.data.Table.from_list(self.input_data.domain, subset)
-                subset_error = [self.input_data[i] for i in not_ok_idx]
-
-                # Crée une nouvelle table avec le même domaine
-                new_table_error = Orange.data.Table.from_list(self.input_data.domain, subset_error)
-                self.error("error occurs")
+                new_table = Orange.data.Table.from_list(self.input_data.domain,
+                                                        [self.input_data[i] for i in ok_idx])
+                new_table_error = Orange.data.Table.from_list(self.input_data.domain,
+                                                              [self.input_data[i] for i in not_ok_idx])
                 self.Outputs.data.send(new_table)
                 self.Outputs.data_error.send(new_table_error)
             except Exception as e:
-                print("An error occurred when sending out_data:", e)
+                self.error(f"Erreur lors de l'envoi des résultats : {e}")
                 self.Outputs.data.send(None)
-                return
+                self.Outputs.data_error.send(self.input_data)
         else:
             try:
+                ok_pdfs = [r for r in result if r.get("ok") is True]
+                failed = [r for r in result if r.get("ok") is not True]
+
+                # Sortie Data : même format qu'avant (un PDF converti par ligne)
                 domain = Domain([], metas=[
                     StringVariable("path"),
                     StringVariable("image paths")
                 ])
-                table_data = [
-                    [r["path"], "; ".join(r["pages"])]
-                    for r in result
-                ]
+                table_data = [[r["path"], "; ".join(r["pages"])] for r in ok_pdfs]
                 self.Outputs.data.send(Table.from_list(domain, table_data))
+
+                if not failed:
+                    self.Outputs.data_error.send(None)
+                    return
+
+                # Sortie Error : lignes d'entrée (dossiers) ayant au moins une erreur
+                err_rows = sorted({int(r["row"]) for r in failed if "row" in r})
+                self.Outputs.data_error.send(
+                    Orange.data.Table.from_list(self.input_data.domain,
+                                                [self.input_data[i] for i in err_rows])
+                    if err_rows else self.input_data
+                )
+
+                errors = [str(r.get("error", "unknown error")) for r in failed]
+                msg = f"{len(failed)} PDF/folder error(s):\n" + "\n".join(errors[:10])
+                if len(errors) > 10:
+                    msg += f"\n... (+{len(errors) - 10} more)"
+                self.error(msg)
             except Exception as e:
-                print("An error occurred when sending out_data:", e)
+                self.error(f"Error while sending PDF results: {e}")
                 self.Outputs.data.send(None)
-                return
+                self.Outputs.data_error.send(create_trigger_table())
 
     def handle_finish(self):
         print("Transformation finished")

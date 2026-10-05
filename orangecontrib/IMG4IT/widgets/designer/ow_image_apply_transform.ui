@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>478</width>
-    <height>451</height>
+    <width>678</width>
+    <height>651</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -17,9 +17,9 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>25</y>
-     <width>431</width>
-     <height>185</height>
+     <y>20</y>
+     <width>638</width>
+     <height>125</height>
     </rect>
    </property>
    <property name="title">
@@ -30,12 +30,12 @@
      <rect>
       <x>10</x>
       <y>25</y>
-      <width>411</width>
-      <height>45</height>
+      <width>618</width>
+      <height>30</height>
      </rect>
     </property>
     <property name="text">
-     <string>Values parsed from the input 'transform' column. Supports Filters, Crop, and Rigid Registration.</string>
+     <string>Values parsed from the input 'transform' column. Supports Filters, Crop, Resize and Rigid Registration.</string>
     </property>
     <property name="alignment">
      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
@@ -48,13 +48,51 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>75</y>
-      <width>411</width>
-      <height>105</height>
+      <y>60</y>
+      <width>618</width>
+      <height>55</height>
      </rect>
     </property>
     <property name="text">
-     <string>You can also convert a PDF to an image. To do this, specify the folder(s) containing the PDF(s) to be converted. You must pass the following parameters: a “convert” column set to “list_pdf,” the ‘path’ to the PDF folder, and “path_out,” which is the folder where the images will be stored.</string>
+     <string>Convert PDFs to PNG: set 'transform' to 'list_pdf' (read from the first row only, so every row is then treated as a PDF folder), 'path' to a folder containing PDF(s) and 'path_out' to the output folder. Each page is saved as name_p1.png, name_p2.png...</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="groupBox_columns">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>155</y>
+     <width>638</width>
+     <height>115</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Input columns (text variables, can be metas)</string>
+   </property>
+   <widget class="QLabel" name="Description_columns">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>22</y>
+      <width>618</width>
+      <height>88</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>• image : file name from the Import Images widget (its 'origin' folder is used)
+   or path : full path of the input file (used only if 'image' is absent)
+- transform : operation to apply (see examples below)
+- path_out : full path of the output file (for list_pdf: 'path' and 'path_out' are folders)</string>
+    </property>
+    <property name="textFormat">
+     <enum>Qt::PlainText</enum>
     </property>
     <property name="alignment">
      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
@@ -68,9 +106,9 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>218</y>
-     <width>431</width>
-     <height>171</height>
+     <y>280</y>
+     <width>638</width>
+     <height>315</height>
     </rect>
    </property>
    <property name="title">
@@ -81,20 +119,56 @@
      <rect>
       <x>10</x>
       <y>25</y>
-      <width>411</width>
-      <height>141</height>
+      <width>618</width>
+      <height>280</height>
      </rect>
     </property>
+    <property name="lineWrapMode">
+     <enum>QPlainTextEdit::NoWrap</enum>
+    </property>
+    <property name="readOnly">
+     <bool>true</bool>
+    </property>
     <property name="plainText">
-     <string>convert
+     <string># --- PDF vers PNG : transform = list_pdf, path = dossier des PDF, path_out = dossier de sortie
 list_pdf
-transform ou Crop | (xf xray viewer)
-Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = cross
-Draw | col = 50.0 49.0 | line= 59.0 15.0 | type = invcross
-Draw | line = 238 | col = 65 | delta_line = 512 | delta_col = 188| type = rectangle  Draw | line = 237 | col = 245 | delta_line = 512 | delta_col = 188| type = rectangle (utile avec concatenate !!)
-Crop | col = 38 89  | line = 33 33 | delta_line = 30 | delta_col = 30 | type = center (crop des rectangles autour des centres)
+
+# --- Conversion de format
+Convert | out = png
+Convert | out = dcm
+Convert | out = tif | invert = 1
+
+# --- Contraste 16 vers 8 bits (spec générée par le viewer xf xray)
+Transform | Min(%) = 2 | Max(%) = 98 | Mode = Sigmoide
+Transform | Min (I16) = 59221 | Max (I16) = 65535 | Mode = CLAHE | HE bins = 256 | CLAHE clip = 0.010
+
+# --- Recadrage (zone à partir d'un coin haut-gauche)
+Crop | line = 10 | col = 20 | delta_line = 300 | delta_col = 400
+# En % : line/delta_line en % de la hauteur, col/delta_col en % de la largeur (décimales OK)
+Crop | line(%) = 10 | col(%) = 20 | delta_line(%) = 50 | delta_col(%) = 60
+# Recadrage centré : un fichier par centre (sortie_0001, sortie_0002...)
+Crop | col = 38 89 | line = 33 33 | delta_line = 30 | delta_col = 30 | type = center
+# Taille en % possible (centres toujours en pixels, px et % mélangeables)
+Crop | col = 38 89 | line = 33 33 | delta_line(%) = 10 | delta_col(%) = 15 | type = center
+
+# --- Redimensionnement (width seul ou height seul : ratio conservé)
+Resize | width = 512 | height = 256 | interpolation = bilinear
+Resize | width = 512
+Resize | scale = 0.5
+
+# --- Annotations (value = 255 en 8 bits, 65535 en 16 bits)
+Draw | col = 50 49 | line = 59 15 | type = cross
+Draw | col = 50 49 | line = 59 15 | type = invcross
+Draw | line = 238 | col = 65 | delta_line = 512 | delta_col = 188 | type = rectangle
 Write | col = 50 | line = 100 | text = HELLO 123 | size = 2 | value = 255
-</string>
+# Write en % : col(%) de la largeur, line(%) de la hauteur, size(%) = hauteur du texte
+Write | col(%) = 5 | line(%) = 90 | text = OK | size(%) = 4 | value = 255
+
+# --- Chaînes : appliquées de gauche à droite, Transform toujours en premier
+# Les valeurs en % portent sur l'image courante (ex. après un Crop : l'image recadrée)
+Crop | line = 10 | col = 20 | delta_line = 300 | delta_col = 400 | Resize | width = 200
+Draw | line = 238 | col = 65 | delta_line = 512 | delta_col = 188 | type = rectangle | Draw | line = 237 | col = 245 | delta_line = 512 | delta_col = 188 | type = rectangle
+Transform | Min(%) = 2 | Max(%) = 98 | Mode = Sigmoide | Resize | scale = 0.5 | Write | col = 5 | line = 5 | text = TEST | value = 255</string>
     </property>
    </widget>
   </widget>
@@ -102,7 +176,7 @@ Write | col = 50 | line = 100 | text = HELLO 123 | size = 2 | value = 255
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>390</y>
+     <y>607</y>
      <width>331</width>
      <height>22</height>
     </rect>
@@ -113,6 +187,7 @@ Write | col = 50 | line = 100 | text = HELLO 123 | size = 2 | value = 255
   </widget>
   <zorder>groupBox_4</zorder>
   <zorder>groupBox_3</zorder>
+  <zorder>groupBox_columns</zorder>
   <zorder>checkBox_overwrite</zorder>
  </widget>
  <resources/>

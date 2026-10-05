@@ -5,17 +5,16 @@ from Orange.widgets.utils.signals import Input, Output
 from Orange.widgets.settings import Setting
 from AnyQt.QtWidgets import QLineEdit, QComboBox, QApplication
 
-# Adapte ces imports selon ton arborescence locale
-try:
-    from orangecontrib.AAIT.utils import thread_management, base_widget
-    from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
-except ImportError:
-    pass
-
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
+    from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
+    from Orange.widgets.orangecontrib.AAIT.utils import thread_management, base_widget
     from Orange.widgets.orangecontrib.IMG4IT.utils.image_detection_methods import run_detection_thread, DETECTORS
 else:
+    from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
+    from orangecontrib.AAIT.utils import thread_management, base_widget
     from orangecontrib.IMG4IT.utils.image_detection_methods import run_detection_thread, DETECTORS
+
+
 
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OWShapeDetector(base_widget.BaseListWidget):

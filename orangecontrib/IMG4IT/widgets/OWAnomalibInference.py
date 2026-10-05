@@ -214,17 +214,7 @@ class OWAnomalibInference(base_widget.BaseListWidget):
             return
 
         col_name = self.selected_path_column
-        try:
-            attr = self.images_data.domain[col_name]
-        except (KeyError, ValueError):
-            self.error(f"Colonne d'image '{col_name}' introuvable.")
-            return
 
-        try:
-            attr_model = self.model_data.domain["path"]
-        except (KeyError, ValueError):
-            self.error("Colonne 'path' introuvable dans la table du modèle.")
-            return
 
         self.progressBarInit()
         if self.pushButton_send is not None:
@@ -254,7 +244,7 @@ class OWAnomalibInference(base_widget.BaseListWidget):
             else:
                 self.result = result_table
                 self.Outputs.result_data.send(result_table)
-        except Exception as e:
+        except:
             self.Outputs.result_data.send(None)
             return
 
