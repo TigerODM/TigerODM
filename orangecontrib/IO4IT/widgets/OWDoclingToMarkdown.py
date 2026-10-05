@@ -1,4 +1,4 @@
-import os, time, sys
+import os, time, sys, re
 from pathlib import Path
 from concurrent.futures import as_completed
 
@@ -14,6 +14,7 @@ from openpyxl import Workbook
 # --- Docling (unique lib utilisée pour la conversion) ---
 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
 from docling.document_converter import (
     DocumentConverter,
     PdfFormatOption,
@@ -29,6 +30,45 @@ if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).
 else:
     from orangecontrib.AAIT.utils.thread_management import Thread
     from orangecontrib.AAIT.utils.import_uic import uic
+
+
+# --------- helpers Docling ----------
+def _build_converter(force_ocr: bool = False):
+    """Construit le DocumentConverter.
+    force_ocr=False : configuration d'origine (options PDF par défaut).
+    force_ocr=True  : OCR RapidOCR forcé sur toute la page (PDF image).
+    """
+    pdf_format = PdfFormatOption(
+        pipeline_cls=StandardPdfPipeline,
+        backend=PyPdfiumDocumentBackend
+    )
+    if force_ocr:
+        pdf_options = PdfPipelineOptions()
+        pdf_options.do_ocr = True
+        pdf_options.ocr_options = RapidOcrOptions(force_full_page_ocr=True)
+        pdf_format = PdfFormatOption(
+            pipeline_cls=StandardPdfPipeline,
+            backend=PyPdfiumDocumentBackend,
+            pipeline_options=pdf_options,
+        )
+
+    # Docling minimal config (inspiré du snippet)
+    return DocumentConverter(
+        allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.PPTX],
+        format_options={
+            InputFormat.PDF: pdf_format,
+            InputFormat.DOCX: WordFormatOption(
+                pipeline_cls=SimplePipeline
+            ),
+            # PPTX: pas d'option spécifique; géré par défaut
+        },
+    )
+
+
+def _has_text(md: str, min_chars: int = 20) -> bool:
+    """True si le Markdown contient du vrai texte (hors commentaires <!-- image -->)."""
+    cleaned = re.sub(r"<!--.*?-->", "", md, flags=re.DOTALL)
+    return sum(c.isalnum() for c in cleaned) >= min_chars
 
 
 # --------- worker stateless : convertit 1 fichier avec Docling ----------
@@ -67,7 +107,18 @@ def _convert_one_file(file_path_str: str):
             },
         )
         doc = doc_converter.convert(str(src)).document
+        md = doc.export_to_markdown(page_break_placeholder="<-!-- page-break --!->")
+        # 1er passage : comportement d'origine
+        doc = _build_converter().convert(str(src)).document
         md = doc.export_to_markdown()
+        message = ""
+
+        # Repli : PDF sans texte exploitable (PDF image) -> OCR pleine page
+        if src.suffix.lower() == ".pdf" and not _has_text(md):
+            doc = _build_converter(force_ocr=True).convert(str(src)).document
+            md = doc.export_to_markdown()
+            message = "ocr pleine page (pdf sans texte natif)"
+
         out_md.write_text(md, encoding="utf-8")
         status, message = "ok", ""
     except Exception as e:

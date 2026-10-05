@@ -12,12 +12,16 @@ from AnyQt.QtWidgets import (
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.IO4IT.utils import custom_api
-    from Orange.widgets.orangecontrib.AAIT.utils import thread_management
+    from Orange.widgets.orangecontrib.IO4IT.utils import keys_manager
+    from Orange.widgets.orangecontrib.AAIT.utils import thread_management, MetManagement
+    from Orange.widgets.orangecontrib.AAIT.llm.answers_llama import identify_table_type
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 else:
     from orangecontrib.IO4IT.utils import custom_api
-    from orangecontrib.AAIT.utils import thread_management
+    from orangecontrib.IO4IT.utils import keys_manager
+    from orangecontrib.AAIT.utils import thread_management, MetManagement
+    from orangecontrib.AAIT.llm.answers_llama import identify_table_type
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 
@@ -45,10 +49,11 @@ class OWCustomLLMApi(widget.OWWidget):
         data = Output("Data", Orange.data.Table)
 
     base_url = Setting("")
-    route = Setting("/v1/chat/completions")
+    route = Setting("/chat/completions")
     header_name = Setting("Authorization")
     auth_scheme = Setting("Bearer")
     api_key = Setting("")
+    key_service = Setting("")
     cert_path = Setting("")
     cert_is_ca = Setting(False)
     use_proxy = Setting(False)
@@ -56,6 +61,7 @@ class OWCustomLLMApi(widget.OWWidget):
     model = Setting("")
     max_tokens = Setting(4096)
     temperature = Setting(0.4)
+    workflow_id = Setting("")
 
     @Inputs.data
     def set_data(self, in_data):
@@ -77,7 +83,7 @@ class OWCustomLLMApi(widget.OWWidget):
     def __init__(self):
         super().__init__()
         self.setFixedWidth(700)
-        self.setFixedHeight(695)
+        self.setFixedHeight(809)
         uic.loadUi(self.gui, self)
 
         self.label_description = self.findChild(QLabel, 'Description')
@@ -101,6 +107,10 @@ class OWCustomLLMApi(widget.OWWidget):
         self.line_api_key = self.findChild(QLineEdit, 'lineApiKey')
         self.line_api_key.setText(self.api_key)
         self.line_api_key.editingFinished.connect(self.update_parameters)
+
+        self.line_key_service = self.findChild(QLineEdit, 'lineKeyService')
+        self.line_key_service.setText(self.key_service)
+        self.line_key_service.editingFinished.connect(self.update_parameters)
 
         self.line_cert_path = self.findChild(QLineEdit, 'lineCertPath')
         self.line_cert_path.setText(self.cert_path)
@@ -133,8 +143,15 @@ class OWCustomLLMApi(widget.OWWidget):
         self.box_temperature.setValue(self.temperature)
         self.box_temperature.editingFinished.connect(self.update_parameters)
 
+        self.line_workflow_id = self.findChild(QLineEdit, 'lineWorkflowId')
+        self.line_workflow_id.setText(self.workflow_id)
+        self.line_workflow_id.editingFinished.connect(self.update_parameters)
+
         self.push_button_run = self.findChild(QPushButton, 'pushButtonRun')
         self.push_button_run.clicked.connect(self.run)
+
+        self.button_list_models = self.findChild(QPushButton, 'buttonListModels')
+        self.button_list_models.clicked.connect(self.list_models)
 
         self.textBrowser = self.findChild(QTextBrowser, 'textBrowser')
 
@@ -142,15 +159,17 @@ class OWCustomLLMApi(widget.OWWidget):
         self.thread = None
         self.can_run = True
         self.result = None
+        self._resolved_api_key = None
 
         self.post_initialized()
 
     def update_parameters(self):
         self.base_url = self.line_base_url.text().strip()
-        self.route = self.line_route.text().strip() or "/v1/chat/completions"
+        self.route = self.line_route.text().strip() or "/chat/completions"
         self.header_name = self.line_header_name.text().strip() or "Authorization"
         self.auth_scheme = self.line_auth_scheme.text().strip()
         self.api_key = self.line_api_key.text()
+        self.key_service = self.line_key_service.text().strip()
         self.cert_path = self.line_cert_path.text().strip()
         self.cert_is_ca = self.check_cert_is_ca.isChecked()
         self.use_proxy = self.check_use_proxy.isChecked()
@@ -158,6 +177,7 @@ class OWCustomLLMApi(widget.OWWidget):
         self.model = self.line_model.text().strip()
         self.max_tokens = self.box_max_tokens.value()
         self.temperature = self.box_temperature.value()
+        self.workflow_id = self.line_workflow_id.text().strip()
 
     def browse_cert(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select a .pem file", "", "PEM files (*.pem);;All files (*)")
@@ -165,13 +185,53 @@ class OWCustomLLMApi(widget.OWWidget):
             self.line_cert_path.setText(path)
             self.update_parameters()
 
-    def build_config(self):
+    def resolve_api_key(self):
+        """
+        Resolve the API key to actually use. A "Key manager service" name
+        takes priority: the real key is fetched from the secure key store
+        (Key Manager tool) and never persisted in the workflow file. Falls
+        back to the plain-text "API key" field (stored in the .ows file)
+        for legacy workflows that don't use the key store.
+        """
+        if self.key_service:
+            cfg = keys_manager.lire_config_api(self.key_service)
+            if not cfg or not cfg.get("api_key"):
+                self.error(
+                    f"No API key found for service '{self.key_service}' in the Key Manager. "
+                    f"Register it there (Create / overwrite api key), or clear this field to "
+                    f"use the 'API key' field instead."
+                )
+                return None
+            return cfg["api_key"]
+        if not self.api_key:
+            self.error("API key is required (either via 'Key manager service' or the 'API key' field).")
+            return None
+        return self.api_key
+
+    def get_optional_api_key(self):
+        """
+        Best-effort API key resolution for diagnostic calls (e.g. List models):
+        unlike resolve_api_key(), does not fail when no key is configured at
+        all, since some local servers (llama-server without --api-key) don't
+        require one. Returns (api_key_or_None, error_message_or_None).
+        """
+        if self.key_service:
+            cfg = keys_manager.lire_config_api(self.key_service)
+            if not cfg or not cfg.get("api_key"):
+                return None, (
+                    f"No API key found for service '{self.key_service}' in the Key Manager. "
+                    f"Register it there, or clear this field."
+                )
+            return cfg["api_key"], None
+        return (self.api_key or None), None
+
+    def build_config(self, api_key=None):
         return {
             "base_url": self.base_url,
             "route": self.route,
             "header_name": self.header_name,
             "auth_scheme": self.auth_scheme,
-            "api_key": self.api_key,
+            "api_key": api_key if api_key is not None else self._resolved_api_key,
             "cert_path": self.cert_path,
             "cert_is_ca": self.cert_is_ca,
             "use_proxy": self.use_proxy,
@@ -179,7 +239,29 @@ class OWCustomLLMApi(widget.OWWidget):
             "model": self.model,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
+            "workflow_id": self.workflow_id,
         }
+
+    def list_models(self):
+        self.error("")
+        self.warning("")
+
+        if not self.base_url:
+            self.error("Base URL is required.")
+            return
+
+        api_key, err = self.get_optional_api_key()
+        if err:
+            self.error(err)
+            return
+
+        try:
+            models = custom_api.list_models(self.build_config(api_key=api_key))
+        except Exception as e:
+            self.error(f"Unable to list models: {e}")
+            return
+
+        self.textBrowser.setText("\n".join(models) if models else "No model returned by the server.")
 
     def run(self):
         self.error("")
@@ -192,8 +274,14 @@ class OWCustomLLMApi(widget.OWWidget):
         if self.data is None:
             self.Outputs.data.send(None)
             return
-        if "prompt" not in self.data.domain:
-            self.error("Input table needs a 'prompt' column.")
+
+        table_type = identify_table_type(self.data)
+        if table_type == "error":
+            self.error("The table must contain either (StringVariable):\n- role + type + content\nor:\n- prompt (image paths)")
+            self.Outputs.data.send(None)
+            return
+        elif table_type == "multiple":
+            self.error("Cannot have role/type/content and prompt simultaneously.")
             self.Outputs.data.send(None)
             return
 
@@ -202,8 +290,8 @@ class OWCustomLLMApi(widget.OWWidget):
             self.Outputs.data.send(None)
             return
 
-        if not self.api_key:
-            self.error("API key is required.")
+        self._resolved_api_key = self.resolve_api_key()
+        if self._resolved_api_key is None:
             self.Outputs.data.send(None)
             return
 
@@ -213,7 +301,15 @@ class OWCustomLLMApi(widget.OWWidget):
         self.progressBarInit()
         self.textBrowser.setText("")
 
-        self.thread = thread_management.Thread(custom_api.generate_answers, self.data, self.build_config())
+        if self.workflow_id:
+            chemin_dossier = MetManagement.get_api_local_folder(workflow_id=self.workflow_id)
+            if os.path.exists(chemin_dossier):
+                MetManagement.write_file_time(chemin_dossier + "time.txt")
+
+        if table_type == "batch":
+            self.thread = thread_management.Thread(custom_api.generate_answers, self.data, self.build_config())
+        elif table_type == "conversation":
+            self.thread = thread_management.Thread(custom_api.continue_conversation, self.data, self.build_config())
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)

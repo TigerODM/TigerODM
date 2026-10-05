@@ -1,6 +1,7 @@
 import os
 import sys
 from AnyQt.QtWidgets import QSpinBox, QLabel, QPushButton, QGroupBox, QCheckBox
+from AnyQt.QtCore import QTimer
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Output
 from Orange.widgets.settings import Setting
@@ -8,9 +9,11 @@ from Orange.widgets.settings import Setting
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.IO4IT.utils import pool_exec_utils
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
+    from Orange.widgets.orangecontrib.AAIT.utils import help_management
 else:
     from orangecontrib.IO4IT.utils import pool_exec_utils
     from orangecontrib.AAIT.utils.import_uic import uic
+    from orangecontrib.AAIT.utils import help_management
 
 
 class OWProcessPoolExecutor(widget.OWWidget):
@@ -24,7 +27,8 @@ class OWProcessPoolExecutor(widget.OWWidget):
     want_control_area = False
     priority = 900
 
-    auto_send = Setting(False)
+    str_workers: str = Setting("4")
+    str_autosend: str = Setting("False")
 
     class Outputs:
         executor = Output("ProcessPoolExecutor", object)
@@ -41,51 +45,70 @@ class OWProcessPoolExecutor(widget.OWWidget):
 
         self.cpu_label = self.findChild(QLabel, "cpu_label")
         self.spin_workers = self.findChild(QSpinBox, "spin_workers")
-        self.btn_create = self.findChild(QPushButton, "btn_create")
         self.info_label = self.findChild(QLabel, "info_label")
         self.group_box = self.findChild(QGroupBox, "groupBox")
         self.checkBox_send = self.findChild(QCheckBox, "checkBox_send")
+        self.pushButton_send = self.findChild(QPushButton, "pushButton_send")
 
+        # Initialisation de la vue du nombre de CPU et SpinBox
+        max_cpus = max(1, pool_exec_utils.available_cpus())
         if self.cpu_label:
             self.cpu_label.setText(pool_exec_utils.cpu_label_text())
 
         if self.spin_workers:
             self.spin_workers.setMinimum(1)
-            max_cpus = max(1, pool_exec_utils.available_cpus())
             self.spin_workers.setMaximum(max_cpus)
-            self.spin_workers.setValue(min(4, max_cpus))
+
+            # Restauration du nombre de workers depuis les Settings
+            try:
+                val = int(self.str_workers)
+            except ValueError:
+                val = min(4, max_cpus)
+            self.spin_workers.setValue(min(max(1, val), max_cpus))
             self.spin_workers.valueChanged.connect(self._on_workers_changed)
 
+        # Restauration de l'état Auto Send
         if self.checkBox_send:
-            self.checkBox_send.setChecked(self.auto_send)
-            self.checkBox_send.toggled.connect(self._on_autorun_toggled)
+            self.checkBox_send.setChecked(self.str_autosend == "True")
+            self.checkBox_send.clicked.connect(self._on_autorun_toggled)
 
-        if self.btn_create:
-            self.btn_create.setEnabled(not self.auto_send)
-            self.btn_create.clicked.connect(self.create_or_update_clicked)
+        # Bouton d'exécution manuelle
+        if self.pushButton_send:
+            self.pushButton_send.setEnabled(self.str_autosend != "True")
+            self.pushButton_send.clicked.connect(self.create_or_update_clicked)
 
         self.error("")
         self.warning("")
         self.post_initialized()
 
-        # Lancement automatique initial si coché
-        if self.auto_send:
+        QTimer.singleShot(0, lambda: help_management.override_help_action(self))
+
+        # Lancement automatique initial si activé dans les Settings
+        if self.str_autosend == "True":
             self.create_or_update_clicked()
 
     # ------------------------------------------------------------------
-    # Slots UI
+    # Settings & UI Synchronization
     # ------------------------------------------------------------------
-    def _on_autorun_toggled(self, checked: bool):
-        self.auto_send = checked
-        if self.btn_create:
-            self.btn_create.setEnabled(not self.auto_send)
-        # On relance automatiquement s'il vient d'être activé
-        if self.auto_send:
+    def update_setting_from_qt_view(self):
+        """Met à jour les attributs de Setting à partir des composants Qt."""
+        if self.spin_workers:
+            self.str_workers = str(self.spin_workers.value())
+
+        if self.checkBox_send:
+            self.str_autosend = "True" if self.checkBox_send.isChecked() else "False"
+
+        if self.pushButton_send and self.checkBox_send:
+            self.pushButton_send.setEnabled(not self.checkBox_send.isChecked())
+
+    def _on_autorun_toggled(self):
+        self.update_setting_from_qt_view()
+        if self.str_autosend == "True":
             self.create_or_update_clicked()
 
     def _on_workers_changed(self):
-        """Déclenche la mise à jour si le nombre de workers change et que auto_send est actif."""
-        if self.auto_send:
+        self.update_setting_from_qt_view()
+        if self.str_autosend == "True":
             self.create_or_update_clicked()
 
     # ------------------------------------------------------------------

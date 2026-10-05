@@ -265,8 +265,8 @@ class OWExportMarkdown(widget.OWWidget):
                     )
                     self.ajouter_entete_pied_pptx(
                         pptx_out,
-                        "Orange AI – Présentation",
-                        "Page générée automatiquement"
+                        "TigerODM – Présentation",
+                        "Page générée automatiquement par IA"
                     )
                     produced_pptx = pptx_out if os.path.isfile(pptx_out) else ""
 

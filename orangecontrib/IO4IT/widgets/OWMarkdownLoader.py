@@ -1,7 +1,7 @@
 import os, sys
 from pathlib import Path
 import numpy as np
-
+import re
 from Orange.widgets import widget
 from Orange.widgets.utils.signals import Input, Output
 from Orange.data import Domain, StringVariable, Table
@@ -9,10 +9,10 @@ from AnyQt.QtWidgets import QCheckBox, QApplication
 from Orange.widgets.settings import Setting
 
 
-try:
+if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.IO4IT.utils import utils_md
-except ImportError:
+else:
     from orangecontrib.IO4IT.utils import utils_md
     from orangecontrib.AAIT.utils.import_uic import uic
 
