@@ -26,7 +26,7 @@ else:
 @apply_modification_from_python_file(filepath_original_widget=__file__)
 class OW_M_RetrieveChunks(widget.OWWidget):
     name = "RAG - Retrieve Chunks"
-    description = "Identify the skills used by a language model (service, code, data extraction...)."
+    description = "Retrieve relevant chunks for a list of questions."
     category = "AAIT - META WIDGETS"
     icon = "icons/ow_m_retrievechunks.svg"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):

@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>470</width>
-    <height>300</height>
+    <height>330</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,7 +19,7 @@
      <x>20</x>
      <y>50</y>
      <width>431</width>
-     <height>161</height>
+     <height>191</height>
     </rect>
    </property>
    <property name="title">
@@ -89,6 +89,22 @@
      <string>Per-page loading (one row per page for pdf, per slide for pptx)</string>
     </property>
    </widget>
+   <widget class="QCheckBox" name="checkBox_text">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>160</y>
+      <width>411</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Every file that can be opened as plain text (xml, cihx, csv, log, ini, yaml...) is loaded as raw text. pdf, docx, pptx and xlsx keep their usual extraction.</string>
+    </property>
+    <property name="text">
+     <string>Load documents as text (any plain-text file: xml, cihx, csv...)</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QPushButton" name="pushButton_send">
    <property name="enabled">
@@ -97,7 +113,7 @@
    <property name="geometry">
     <rect>
      <x>160</x>
-     <y>234</y>
+     <y>264</y>
      <width>291</width>
      <height>31</height>
     </rect>
@@ -113,7 +129,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>240</y>
+     <y>270</y>
      <width>121</width>
      <height>20</height>
     </rect>

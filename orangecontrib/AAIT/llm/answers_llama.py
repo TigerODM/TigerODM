@@ -528,7 +528,7 @@ def run_query(prompt, model, max_tokens=4096, temperature=0.4, top_p=0.8, top_k=
 
 
     # Séquences d'arrêt à filtrer du résultat final
-    stop_sequences = ["<|endoftext|>", "### User", "<|im_end|>", "<|im_start|>", "<|im_end>", "<im_end|>", "<im_end>"]
+    stop_sequences = ["<|endoftext|>", "### User", "<|im_end|>", "<|im_start|>", "<|im_end>", "<im_end|>", "<im_end>", "<turn|>", "<|turn>"]
     callback_instance = StopCallback(stop_sequences, argself)
 
     # Paramètres de sampling mappés vers llama_cpp
@@ -1132,6 +1132,7 @@ def chat_completion_with_handler(messages, model, parameters, workflow_id="", pr
             top_k=parameters["top_k"],
             repeat_penalty=parameters["repeat_penalty"],
             max_tokens=effective_max_tokens,
+            stop=["<turn|>", "<|turn>"],
             stream=True,
         )
         for chunk in generator:

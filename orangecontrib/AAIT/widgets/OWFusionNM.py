@@ -4,11 +4,10 @@ from typing import Optional, Dict, List, Tuple
 from collections import defaultdict
 
 import numpy as np
-from Orange.data import Table, Domain, Variable, DiscreteVariable
 from Orange.widgets import widget
 from Orange.widgets.settings import Setting
 from Orange.widgets.utils.signals import Input, Output
-from Orange.data import Table, Domain, Variable, DiscreteVariable, TimeVariable, ContinuousVariable
+from Orange.data import Table, Domain, Variable, DiscreteVariable
 
 from AnyQt.QtWidgets import (
     QApplication,

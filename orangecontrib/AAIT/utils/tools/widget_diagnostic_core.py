@@ -13,8 +13,8 @@
 #   default_output_name(include_packages=True, ext=".csv") -> str
 # ---------------------------------------------------------------------------
 
-import re
 import os
+import re
 import sys
 import ast
 import csv
@@ -256,14 +256,17 @@ def iter_widget_modules(pkg_name):
 # _columns_for ET build_summary s'y réfèrent, pour qu'un renommage ici se
 # répercute partout sans casser le récapitulatif.
 COLUMN_LABELS = {
-    "name": "Widget_Orange_Name",
-    "widget": "Widget",
+    "name": "Widget",
+    "widget": "Fichier .py",
     "category": "Catégorie",
     "package": "Package pip",
     "pkg_status": "Version lib (réf → actuelle)",
     "statut": "Statut",
-    "file_status": ".py modifié ?",
+    "file_status": "Modifié vs réf.",
     "launch": "Lancer le widget",
+    "widget_key": "Identifiant widget",
+    "coverage": "Couvert par (workflows)",
+    "variant": "Version",
 }
 
 
@@ -272,9 +275,11 @@ def _col(key):
     return (COLUMN_LABELS[key], key)
 
 
-def _columns_for(include_packages, compare=False):
+def _columns_for(include_packages, compare=False, coverage=False, variant=False):
     """Retourne la liste ordonnée (en-tête, clé_interne) des colonnes."""
     cols = [_col("name"), _col("widget"), _col("category")]
+    if variant:
+        cols.append(_col("variant"))
     if include_packages:
         cols.append(_col("package"))
         if compare:
@@ -282,6 +287,9 @@ def _columns_for(include_packages, compare=False):
     cols.append(_col("statut"))
     if compare:
         cols.append(_col("file_status"))
+    if coverage:
+        cols.append(_col("coverage"))
+        cols.append(_col("widget_key"))
     cols.append(_col("launch"))
     return cols
 
@@ -295,7 +303,8 @@ def launch_command(file_path):
 
 
 def _make_record(name, widget_label, category, statut, file_path,
-                 package="", file_status="", pkg_status=""):
+                 package="", file_status="", pkg_status="",
+                 widget_key_="", coverage="", variant=""):
     """Construit un enregistrement complet (dict) pour un widget."""
     if file_path is not None:
         widget = file_path.name
@@ -312,6 +321,9 @@ def _make_record(name, widget_label, category, statut, file_path,
         "launch": launch,
         "file_status": file_status,
         "pkg_status": pkg_status,
+        "widget_key": widget_key_,
+        "coverage": coverage,
+        "variant": variant,
     }
 
 
@@ -325,11 +337,69 @@ def _sort_records(records):
     return sorted(records, key=lambda r: 0 if (r.get("statut", "") != "OK") else 1)
 
 
+# ── Versions prod / dev des widgets ─────────────────────────────────────────
+#
+# Sur les machines de dev, un même widget peut exister en deux exemplaires :
+#   - prod : site-packages/orangecontrib/<ADDON>/widgets/<fichier>.py
+#   - dev  : site-packages/Orange/widgets/orangecontrib/<ADDON>/widgets/<fichier>.py
+# Seul l'emplacement Orange/widgets/orangecontrib identifie une version dev ;
+# le nom de l'add-on n'est pas pris en compte. Ils partagent nom affiché et catégorie : sans distinction, le
+# récapitulatif les fusionnait en un seul widget et ne gardait le statut .py
+# que du premier rencontré. Les tutoriels couvrent les widgets de PROD.
+
+DEV_IGNORE = "ignore"       # les versions dev sont exclues du diagnostic
+DEV_SEPARATE = "separate"   # prod et dev sont listées séparément (colonne Version)
+
+_RE_DEV_PATH = re.compile(r"(^|[\\/])orange[\\/]widgets[\\/]orangecontrib[\\/]", re.IGNORECASE)
+
+
+def dev_widgets_dir():
+    """Dossier où vivent les versions dev : <site-packages>/Orange/widgets/orangecontrib.
+    Localisé via le package Orange, sans l'importer. None si introuvable."""
+    try:
+        spec = importlib.util.find_spec("Orange")
+    except Exception:
+        return None
+    if spec is None or not spec.origin:
+        return None
+    return Path(spec.origin).parent / "widgets" / "orangecontrib"
+
+
+def has_dev_widgets():
+    """True si au moins un add-on de dev contient des widgets, c.-à-d. un
+    fichier .py (hors __init__) dans Orange/widgets/orangecontrib/<ADDON>/widgets.
+    Vérification rapide sur le disque, sans import ni scan du registry."""
+    d = dev_widgets_dir()
+    try:
+        if d is None or not d.is_dir():
+            return False
+        for addon in d.iterdir():
+            w = addon / "widgets"
+            if addon.is_dir() and w.is_dir():
+                if any(f.name != "__init__.py" for f in w.glob("*.py")):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def widget_variant(qualified=None, file_path=None):
+    """'dev' ou 'prod' d'après le chemin du .py (prioritaire) ou le nom qualifié."""
+    if file_path:
+        sp = str(file_path)
+        return "dev" if _RE_DEV_PATH.search(sp) else "prod"
+    q = str(qualified or "")
+    if q.startswith("Orange.widgets.orangecontrib."):
+        return "dev"
+    return "prod"
+
+
 # ── Scan principal (paramétrable) ───────────────────────────────────────────
 
 def run_diagnostic(selected_categories=None, include_packages=True,
                    reference=None,
-                   progress_callback=None, should_cancel=None):
+                   progress_callback=None, should_cancel=None,
+                   coverage=None, dev_mode=DEV_SEPARATE):
     """
     Lance le diagnostic.
 
@@ -349,6 +419,14 @@ def run_diagnostic(selected_categories=None, include_packages=True,
         Appelé régulièrement pour suivre l'avancement.
     should_cancel : callable() -> bool | None
         Si renvoie True, le scan s'arrête proprement et retourne le partiel.
+    coverage : dict | None
+        Résultat de load_coverage(). Si fourni, ajoute les colonnes
+        "Couvert par (workflows)" et "Identifiant widget" (via tested_widgets).
+        Seules les versions PROD sont rattachées aux tutoriels.
+    dev_mode : DEV_IGNORE | DEV_SEPARATE
+        DEV_IGNORE : les versions dev (Orange.widgets.orangecontrib…) sont
+        exclues. DEV_SEPARATE : elles sont gardées, avec une colonne "Version"
+        (prod/dev) pour les distinguer.
 
     Retourne
     --------
@@ -358,7 +436,10 @@ def run_diagnostic(selected_categories=None, include_packages=True,
         "<python.exe>" "<chemin_du_widget.py>" à coller dans un cmd.
     """
     compare = reference is not None
-    cols = _columns_for(include_packages, compare=compare)
+    with_cov = coverage is not None
+    separate = dev_mode == DEV_SEPARATE
+    cols = _columns_for(include_packages, compare=compare, coverage=with_cov,
+                        variant=separate)
     headers = [h for h, _ in cols]
     records = []
 
@@ -368,13 +449,22 @@ def run_diagnostic(selected_categories=None, include_packages=True,
         statut = w["statut"]
         src = w["file_path"]
         qualified = w["qualified"]
+        variant = widget_variant(qualified, src)
+        if variant == "dev" and not separate:
+            continue
 
         file_status = compare_file(qualified, src, reference) if compare else ""
+        wkey, cov = "", ""
+        if with_cov:
+            wkey = widget_key(qualified, src) or ""
+            if variant == "prod":          # les tutos couvrent la prod
+                cov = COVERAGE_SEP.join(coverage_for(coverage, wkey))
+        extra = {"widget_key_": wkey, "coverage": cov, "variant": variant}
 
         if src is None:
             records.append(_make_record(
                 name, "(fichier introuvable)", category, statut, None,
-                file_status=file_status))
+                file_status=file_status, **extra))
             continue
 
         if include_packages:
@@ -384,11 +474,11 @@ def run_diagnostic(selected_categories=None, include_packages=True,
                 records.append(_make_record(
                     name, None, category, statut, src,
                     package=pkg,
-                    file_status=file_status, pkg_status=pkg_status))
+                    file_status=file_status, pkg_status=pkg_status, **extra))
         else:
             records.append(_make_record(
                 name, None, category, statut, src,
-                file_status=file_status))
+                file_status=file_status, **extra))
 
     records = _sort_records(records)
     return headers, _project(records, cols)
@@ -618,6 +708,17 @@ def save_reference_default(ref):
     return save_reference(reference_path(create=True), ref)
 
 
+def reference_info():
+    """(créée_le, machine, nb_fichiers) de la référence, ou None si absente/illisible."""
+    try:
+        if not reference_exists():
+            return None
+        ref = load_reference_default()
+        return (ref.get("created", "?"), ref.get("machine", "?"), len(ref.get("files", {})))
+    except Exception:
+        return None
+
+
 def load_reference_default():
     return load_reference(reference_path())
 
@@ -678,7 +779,17 @@ def compare_package(pip_name_, reference):
 TUTORIAL_SUBDIR = "linkHTMLWorkflow"
 TUTORIAL_FILENAME = "tutorial.json"
 
-TUTORIAL_HEADERS = ["Tutoriel", "Description", "Fichier OWS", "Résultat", "Détail"]
+WORKFLOW_HEADERS_TAIL = ["Description", "Fichier OWS", "Résultat", "Détail", "Durée (s)",
+                         "Widgets testés", "À relancer (widget modifié)"]
+
+
+def workflow_headers(is_tutorial=True):
+    """En-têtes de la table / de l'export : 'Tutoriel' pour tutorial.json,
+    'Nom' pour les autres batchs (qui ne sont pas des tutoriels)."""
+    return ["Tutoriel" if is_tutorial else "Nom"] + list(WORKFLOW_HEADERS_TAIL)
+
+
+TUTORIAL_HEADERS = workflow_headers(True)
 
 
 def tutorials_dir():
@@ -696,15 +807,53 @@ def tutorial_exists():
         return False
 
 
-def load_tutorials():
-    """Charge la liste des tutoriels depuis tutorial.json.
-    Tolère un objet unique ou une liste."""
-    p = tutorial_json_path()
+def load_tutorials(path=None):
+    """Charge la liste des workflows depuis un fichier JSON de batch.
+    Par défaut : tutorial.json. Tolère un objet unique ou une liste."""
+    p = Path(path) if path else tutorial_json_path()
     with open(p, "r", encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict):
         data = [data]
     return [e for e in data if isinstance(e, dict)]
+
+
+def _is_workflow_batch(entries):
+    """True si la liste ressemble à un batch de workflows exploitable par
+    run_tutorial (au moins une entrée avec 'name' ou 'key_name')."""
+    return any(e.get("name") or e.get("key_name") for e in entries)
+
+
+def list_workflow_batches(include_tutorial=False):
+    """Liste les autres fichiers JSON de batch présents à côté de tutorial.json.
+
+    Renvoie (batches, skipped) :
+      - batches : liste de dicts {path: Path, label: str, count: int}, triée
+        par nom de fichier (tutorial.json exclu sauf include_tutorial=True) ;
+      - skipped : liste de (nom_fichier, raison) pour les JSON ignorés
+        (illisibles ou sans entrée 'name'/'key_name')."""
+    batches, skipped = [], []
+    try:
+        d = tutorials_dir()
+    except Exception:
+        return batches, skipped
+    if not d.is_dir():
+        return batches, skipped
+    for p in sorted(d.glob("*.json"), key=lambda x: x.name.lower()):
+        if not p.is_file():
+            continue
+        if p.name.lower() == TUTORIAL_FILENAME.lower() and not include_tutorial:
+            continue
+        try:
+            entries = load_tutorials(p)
+        except Exception as e:
+            skipped.append((p.name, f"illisible : {e}"))
+            continue
+        if not _is_workflow_batch(entries):
+            skipped.append((p.name, "aucune entrée 'name'/'key_name'"))
+            continue
+        batches.append({"path": p, "label": p.stem, "count": len(entries)})
+    return batches, skipped
 
 
 def _hlit_modules():
@@ -855,9 +1004,26 @@ def _purge_workflow_state(mws, key_name):
 
 
 def run_tutorial(entry, ip_port="127.0.0.1:8000", poll_sleep=0.3):
-    """Exécute UN tutoriel en mode serveur (comme agentIA : API + daemonizer),
-    puis compare la sortie à l'attendu. Renvoie toujours un dict, jamais
-    d'exception : {name, description, ows_file, status: OK|NOK|ERREUR, detail}."""
+    """Exécute UN workflow (tutoriel ou batch) et mesure sa durée.
+    Renvoie toujours un dict, jamais d'exception :
+    {name, description, ows_file, status: OK|NOK|ERREUR, detail, duration_s, …}."""
+    import time
+    t0 = time.monotonic()
+    try:
+        res = _run_tutorial_impl(entry, ip_port=ip_port, poll_sleep=poll_sleep)
+    except Exception as e:   # filet de sécurité : jamais d'exception vers l'UI
+        res = {"name": entry.get("key_name") or entry.get("name") or "",
+               "description": entry.get("description", ""),
+               "ows_file": entry.get("ows_file", ""), "status": "ERREUR",
+               "detail": f"exception inattendue : {e}",
+               "tested_widgets": ", ".join(declared_widgets(entry))}
+    res["duration_s"] = round(time.monotonic() - t0, 1)
+    return res
+
+
+def _run_tutorial_impl(entry, ip_port="127.0.0.1:8000", poll_sleep=0.3):
+    """Exécute UN workflow en mode serveur (comme agentIA : API + daemonizer),
+    puis compare la sortie à l'attendu."""
     key_name = entry.get("key_name") or entry.get("name") or ""
     result = {
         "name": key_name,
@@ -865,6 +1031,7 @@ def run_tutorial(entry, ip_port="127.0.0.1:8000", poll_sleep=0.3):
         "ows_file": entry.get("ows_file", ""),
         "status": "ERREUR",
         "detail": "",
+        "tested_widgets": ", ".join(declared_widgets(entry)),
     }
     if not key_name:
         result["detail"] = "champ 'name'/'key_name' absent"
@@ -971,16 +1138,375 @@ def run_all_tutorials(entries, progress_callback=None, should_cancel=None, on_re
     return results
 
 
-def tutorial_results_to_rows(results):
+def tutorial_results_to_rows(results, is_tutorial=True):
     """(headers, rows) exportables (CSV/XLSX) à partir des résultats."""
     rows = [[r.get("name", ""), r.get("description", ""), r.get("ows_file", ""),
-             r.get("status", ""), r.get("detail", "")] for r in results]
-    return list(TUTORIAL_HEADERS), rows
+             r.get("status", ""), r.get("detail", ""), r.get("duration_s", ""),
+             r.get("tested_widgets", ""), r.get("rerun", "")] for r in results]
+    return workflow_headers(is_tutorial), rows
 
 
-def default_tutorial_output_name(ext=".xlsx"):
+def resolve_ows_path(entry):
+    """Chemin absolu du .ows d'une entrée, ou (None, [chemins essayés]).
+    'ows_file' est relatif (ex. 'Tutorial/x.ows') : on essaie les dossiers
+    plausibles du store AAIT."""
+    rel = str(entry.get("ows_file") or "").strip()
+    if not rel:
+        return None, []
+    p = Path(rel)
+    if p.is_absolute():
+        return (p if p.is_file() else None), [p]
+    tried = []
+    bases = []
+    try:
+        bases += [tutorials_dir(), aait_store_dir() / "Parameters", aait_store_dir()]
+    except Exception:
+        pass
+    for b in bases:
+        c = b / rel
+        tried.append(c)
+        if c.is_file():
+            return c, tried
+    return None, tried
+
+
+def default_tutorial_output_name(ext=".xlsx", prefix="tutoriels"):
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"tutoriels_resultats_{stamp}{ext}"
+    prefix = re.sub(r"[^\w\-]+", "_", str(prefix or "tutoriels")).strip("_") or "tutoriels"
+    return f"{prefix}_resultats_{stamp}{ext}"
+
+
+# ── Couverture des widgets par les tutoriels (champ tested_widgets) ─────────
+#
+# Chaque entrée d'un JSON de batch peut déclarer :
+#   "tested_widgets": ["orangecontrib.IO4IT.widgets.OWExportMarkdown", ...]
+# (liste ou chaîne seule). Formats acceptés pour un identifiant :
+#   - module    : orangecontrib.<ADDON>.widgets.<fichier>
+#   - qualifié  : orangecontrib.<ADDON>.widgets.<fichier>.<Classe>
+#   - préfixé   : Orange.widgets.orangecontrib.<ADDON>.widgets.<fichier>[.<Classe>]
+# Tous sont ramenés à une clé normalisée "<ADDON>.<fichier>". Le nom de
+# l'add-on est conservé tel quel (HLIT et HLIT_dev sont deux add-ons distincts).
+
+TESTED_FIELD = "tested_widgets"
+
+_RE_KEY_DOTTED = re.compile(
+    r"(?:^|\.)orangecontrib\.([A-Za-z0-9_]+?)\.widgets\.([A-Za-z0-9_\-]+)")
+_RE_KEY_PATH = re.compile(
+    r"orangecontrib[\\/]([^\\/]+?)[\\/]widgets[\\/]([^\\/]+)\.py$",
+    re.IGNORECASE)
+
+
+def widget_key(qualified=None, file_path=None):
+    """Clé normalisée '<ADDON>.<fichier>' d'un widget, ou None.
+    Le chemin du .py est prioritaire (indépendant du nom de classe)."""
+    if file_path:
+        m = _RE_KEY_PATH.search(str(file_path))
+        if m:
+            return f"{m.group(1)}.{m.group(2)}"
+    if qualified:
+        m = _RE_KEY_DOTTED.search(str(qualified).strip())
+        if m:
+            return f"{m.group(1)}.{m.group(2)}"
+    return None
+
+
+def declared_widgets(entry):
+    """Identifiants bruts déclarés par une entrée (liste ou chaîne tolérée)."""
+    v = entry.get(TESTED_FIELD) if isinstance(entry, dict) else None
+    if v is None:
+        return []
+    if isinstance(v, str):
+        v = [v]
+    if not isinstance(v, (list, tuple)):
+        return []
+    return [str(x).strip() for x in v if str(x).strip()]
+
+
+def load_coverage(include_batches=False):
+    """Construit la table de couverture à partir de tutorial.json
+    (+ des autres batchs si include_batches).
+
+    Retourne un dict :
+      sources     : [nom_fichier, ...] effectivement lus
+      errors      : [(nom_fichier, message), ...]
+      by_widget   : {clé_minuscule: [libellé_tuto, ...]}
+      declared    : [{label, source, tuto, raw, key}, ...]  (une ligne / id)
+      without     : [libellé_tuto, ...]  entrées sans tested_widgets
+      invalid     : [(libellé_tuto, raw), ...] identifiants non reconnus
+      n_entries   : nombre d'entrées lues
+    Libellé = "Tutoriel : <nom>" pour tutorial.json, "Batch <fichier> : <nom>"
+    pour les autres batchs (les batchs ne sont pas des tutoriels)."""
+    cov = {"sources": [], "errors": [], "by_widget": {}, "declared": [],
+           "without": [], "invalid": [], "n_entries": 0}
+
+    files = []
+    try:
+        if tutorial_exists():
+            files.append((tutorial_json_path(), True))
+    except Exception:
+        pass
+    if include_batches:
+        try:
+            batches, _ = list_workflow_batches()
+            files += [(b["path"], False) for b in batches]
+        except Exception as e:
+            cov["errors"].append(("(autres batchs)", str(e)))
+
+    for path, is_tuto in files:
+        try:
+            entries = load_tutorials(path)
+        except Exception as e:
+            cov["errors"].append((Path(path).name, str(e)))
+            continue
+        cov["sources"].append(Path(path).name)
+        for e in entries:
+            name = str(e.get("key_name") or e.get("name") or "").strip()
+            if not name:
+                continue
+            cov["n_entries"] += 1
+            label = workflow_label(name, None if is_tuto else Path(path).stem)
+            ids = declared_widgets(e)
+            if not ids:
+                cov["without"].append(label)
+                continue
+            for raw in ids:
+                k = widget_key(raw)
+                cov["declared"].append({"label": label, "source": Path(path).name,
+                                        "tuto": name, "raw": raw, "key": k or ""})
+                if not k:
+                    cov["invalid"].append((label, raw))
+                    continue
+                lst = cov["by_widget"].setdefault(k.lower(), [])
+                if label not in lst:
+                    lst.append(label)
+    return cov
+
+
+COVERAGE_SEP = " ; "
+
+# Texte affiché partout où une information dépend de la comparaison à la
+# référence (colonne « Modifié vs réf. », workflows à relancer…).
+RERUN_UNAVAILABLE = "non calculé — comparaison à la référence inactive"
+
+
+def workflow_label(name, batch_stem=None):
+    """Libellé affiché d'un workflow : tutoriel ou batch."""
+    return f"Tutoriel : {name}" if batch_stem is None else f"Batch {batch_stem} : {name}"
+
+
+def coverage_for(coverage, key):
+    """Libellés des tutos couvrant le widget de clé `key`."""
+    if not coverage or not key:
+        return []
+    return list(coverage.get("by_widget", {}).get(key.lower(), []))
+
+
+def coverage_report(headers, rows, coverage=None, filtered=False):
+    """Statistiques de couverture à partir des lignes du diagnostic.
+
+    Retourne un dict ou None si les colonnes de couverture sont absentes :
+      total, covered, uncovered (listes de (nom, catégorie)),
+      covered_not_ok [(nom, statut, tutos)], multi [(nom, tutos)],
+      by_category {cat: [couverts, total]}, to_rerun [(tuto, [widgets])],
+      orphans [(libellé, raw)], invalid, without, sources, filtered."""
+    lab = COLUMN_LABELS
+    if lab["coverage"] not in headers or lab["widget_key"] not in headers:
+        return None
+    ix = {k: (headers.index(lab[k]) if lab[k] in headers else None)
+          for k in ("name", "category", "statut", "file_status", "coverage", "widget_key",
+                    "variant")}
+
+    def cell(row, k):
+        i = ix[k]
+        return "" if i is None or i >= len(row) or row[i] is None else str(row[i]).strip()
+
+    # Dédoublonnage par clé widget (grain fin = plusieurs lignes / widget).
+    # Seules les versions PROD comptent : les tutos couvrent la prod.
+    units = {}
+    for i, row in enumerate(rows):
+        if cell(row, "variant") == "dev":
+            continue
+        k = cell(row, "widget_key").lower() or f"#row{i}"
+        u = units.setdefault(k, {"name": cell(row, "name"), "cat": cell(row, "category"),
+                                 "status": cell(row, "statut"), "file": cell(row, "file_status"),
+                                 "tutos": cell(row, "coverage")})
+        if u["status"].upper() != "OK" and cell(row, "statut").upper() == "OK":
+            u["status"] = "OK"   # au moins une installation saine
+        if not u["file"]:
+            u["file"] = cell(row, "file_status")
+
+    def tutos(u):
+        return [t.strip() for t in u["tutos"].split(COVERAGE_SEP.strip()) if t.strip()]
+
+    rep_ = {"total": len(units), "covered": [], "uncovered": [], "covered_not_ok": [],
+            "multi": [], "by_category": {}, "to_rerun": {}, "filtered": filtered,
+            "compare": ix["file_status"] is not None,   # « à relancer » calculable ?
+            "orphans": [], "invalid": [], "without": [], "sources": []}
+    for k, u in units.items():
+        t = tutos(u)
+        d = rep_["by_category"].setdefault(u["cat"] or "(sans catégorie)", [0, 0])
+        d[1] += 1
+        if t:
+            d[0] += 1
+            rep_["covered"].append((u["name"], u["cat"]))
+            if u["status"].upper() != "OK":
+                rep_["covered_not_ok"].append((u["name"], u["status"], t))
+            if len(t) > 1:
+                rep_["multi"].append((u["name"], t))
+            f = u["file"].lower()
+            if "oui" in f or "modif" in f:
+                for tt in t:
+                    rep_["to_rerun"].setdefault(tt, []).append(u["name"])
+        else:
+            rep_["uncovered"].append((u["name"], u["cat"]))
+    rep_["to_rerun"] = sorted(rep_["to_rerun"].items())
+
+    if coverage:
+        present = {k for k in units if not k.startswith("#row")}
+        for d in coverage.get("declared", []):
+            if d["key"] and d["key"].lower() not in present:
+                rep_["orphans"].append((d["label"], d["raw"]))
+        rep_["invalid"] = list(coverage.get("invalid", []))
+        rep_["without"] = list(coverage.get("without", []))
+        rep_["sources"] = list(coverage.get("sources", []))
+    return rep_
+
+
+def coverage_detail_rows(headers, rows, coverage):
+    """Table détaillée (une ligne par identifiant déclaré) pour la feuille
+    'Couverture' : (headers, rows)."""
+    lab = COLUMN_LABELS
+    h = ["Workflow", "Source", "Identifiant déclaré", "Trouvé ?",
+         "Widget", "Catégorie", "Statut widget"]
+    found = {}
+    if lab["widget_key"] in headers:
+        ik = headers.index(lab["widget_key"])
+        inm = headers.index(lab["name"]) if lab["name"] in headers else None
+        ica = headers.index(lab["category"]) if lab["category"] in headers else None
+        ist = headers.index(lab["statut"]) if lab["statut"] in headers else None
+        iva = headers.index(lab["variant"]) if lab["variant"] in headers else None
+        for r in rows:
+            if iva is not None and str(r[iva] or "") == "dev":
+                continue
+            k = str(r[ik] or "").lower()
+            if not k:
+                continue
+            g = lambda i: "" if i is None else str(r[i] or "")
+            prev = found.get(k)
+            if prev is None or (prev[2].upper() != "OK" and g(ist).upper() == "OK"):
+                found[k] = (g(inm), g(ica), g(ist))
+    out = []
+    for d in (coverage or {}).get("declared", []):
+        if not d["key"]:
+            out.append([d["label"], d["source"], d["raw"], "identifiant invalide", "", "", ""])
+            continue
+        w = found.get(d["key"].lower())
+        if w:
+            out.append([d["label"], d["source"], d["raw"], "oui", w[0], w[1], w[2]])
+        else:
+            out.append([d["label"], d["source"], d["raw"], "non (orphelin)", "", "", ""])
+    for label in (coverage or {}).get("without", []):
+        out.append([label, "", f"(aucun {TESTED_FIELD})", "", "", "", ""])
+    return h, out
+
+
+def _coverage_summary_lines(rep_):
+    """Section(s) de récapitulatif à partir de coverage_report()."""
+    out = []
+    tot, n_cov = rep_["total"], len(rep_["covered"])
+    out.append(("COUVERTURE PAR LES WORKFLOWS", None))
+    if rep_["sources"]:
+        out.append(("Sources lues", ", ".join(rep_["sources"])))
+    out.append(("Widgets (prod) couverts", f"{n_cov} / {tot}  ({_pct(n_cov, tot)})"))
+    out.append(("Widgets non couverts", len(rep_["uncovered"])))
+    out.append(("Couverts par plusieurs workflows", len(rep_["multi"])))
+    out.append(("Couverts mais statut ≠ OK", len(rep_["covered_not_ok"])))
+    for nm, st, t in rep_["covered_not_ok"]:
+        out.append((f"  • {nm}", f"{st}  [{', '.join(t)}]"))
+    out.append(("Workflows sans tested_widgets", len(rep_["without"])))
+    for t in rep_["without"]:
+        out.append((f"  • {t}", ""))
+    note = " (diagnostic filtré par catégorie)" if rep_["filtered"] else ""
+    out.append((f"Identifiants orphelins{note}", len(rep_["orphans"])))
+    for t, raw in rep_["orphans"]:
+        out.append((f"  • {t}", raw))
+    if rep_["invalid"]:
+        out.append(("Identifiants invalides", len(rep_["invalid"])))
+        for t, raw in rep_["invalid"]:
+            out.append((f"  • {t}", raw))
+    out.append(("WORKFLOWS À RELANCER (widget .py modifié)", None))
+    if not rep_["compare"]:
+        out.append(("Workflows à relancer", RERUN_UNAVAILABLE))
+    else:
+        out.append(("Workflows à relancer", len(rep_["to_rerun"])))
+        for t, ws in rep_["to_rerun"]:
+            out.append((f"  • {t}", ", ".join(ws)))
+    if rep_["by_category"]:
+        out.append(("COUVERTURE PAR CATÉGORIE (couverts / total)", None))
+        for cat in sorted(rep_["by_category"]):
+            c, t = rep_["by_category"][cat]
+            out.append((cat, f"{c} / {t}  ({_pct(c, t)})"))
+    return out
+
+
+def _file_is_modified(value):
+    """True si une cellule « Modifié vs réf. » indique une modification."""
+    v = str(value or "").lower()
+    return "oui" in v or "modif" in v
+
+
+def modified_prod_widgets(headers, rows):
+    """{clé_minuscule: nom_widget} des widgets PROD dont le .py est modifié
+    par rapport à la référence. None si le diagnostic ne permet pas de le
+    savoir (pas de comparaison à la référence ou pas de colonne identifiant)."""
+    lab = COLUMN_LABELS
+    if lab["file_status"] not in headers or lab["widget_key"] not in headers:
+        return None
+    i_f, i_k = headers.index(lab["file_status"]), headers.index(lab["widget_key"])
+    i_n = headers.index(lab["name"]) if lab["name"] in headers else None
+    i_v = headers.index(lab["variant"]) if lab["variant"] in headers else None
+    out = {}
+    for r in rows:
+        if i_v is not None and str(r[i_v] or "") == "dev":
+            continue
+        f = str(r[i_f] or "").lower()
+        k = str(r[i_k] or "").lower()
+        if k and ("oui" in f or "modif" in f):
+            out[k] = "" if i_n is None else str(r[i_n] or "")
+    return out
+
+
+def rerun_for_entry(entry, modified):
+    """Noms des widgets modifiés (prod) déclarés par une entrée de batch."""
+    if not modified:
+        return []
+    out = []
+    for raw in declared_widgets(entry):
+        k = widget_key(raw)
+        if k and k.lower() in modified:
+            nm = modified[k.lower()] or k
+            if nm not in out:
+                out.append(nm)
+    return out
+
+
+def coverage_short_text(rep_):
+    """Résumé d'une ligne pour l'UI."""
+    if not rep_:
+        return ""
+    tot, n = rep_["total"], len(rep_["covered"])
+    parts = [f"Couverture : {n}/{tot} widgets prod couverts ({_pct(n, tot)})"]
+    if rep_["covered_not_ok"]:
+        parts.append(f"{len(rep_['covered_not_ok'])} couvert(s) en erreur")
+    if rep_["orphans"]:
+        parts.append(f"{len(rep_['orphans'])} orphelin(s)")
+    if rep_["without"]:
+        parts.append(f"{len(rep_['without'])} workflow(s) sans {TESTED_FIELD}")
+    if not rep_["compare"]:
+        parts.append("workflows à relancer : comparaison à la référence inactive")
+    elif rep_["to_rerun"]:
+        parts.append(f"{len(rep_['to_rerun'])} workflow(s) à relancer")
+    return " — ".join(parts)
 
 
 # ── Métadonnées du test ─────────────────────────────────────────────────────
@@ -1025,7 +1551,7 @@ def _pct(n, total):
     return f"{(100.0 * n / total):.0f} %" if total else "—"
 
 
-def build_summary(headers, rows):
+def build_summary(headers, rows, coverage=None, filtered=False):
     """Statistiques récapitulatives calculées à partir des en-têtes + lignes.
 
     Robuste : chaque section n'est produite que si sa colonne est présente.
@@ -1035,29 +1561,35 @@ def build_summary(headers, rows):
     def col(key, *aliases):
         """Index de colonne d'après la clé interne (COLUMN_LABELS) + alias.
 
-        Les alias couvrent les exports au schéma différent (ex. tutoriels :
-        'Résultat' pour le statut, 'Tutoriel' pour le nom)."""
+        Les alias couvrent les exports au schéma différent (workflows :
+        'Résultat' pour le statut, 'Tutoriel' ou 'Nom' pour le nom)."""
         for nm in (COLUMN_LABELS.get(key, key), *aliases):
             if nm in headers:
                 return headers.index(nm)
         return None
 
     c_status = col("statut", "Résultat")
-    c_name = col("name", "Tutoriel")
+    c_name = col("name", "Tutoriel", "Nom")
     c_cat = col("category")
     c_file = col("file_status")
     c_pver = col("pkg_status")
     c_pkg = col("package")
+    c_var = col("variant")
+    c_launch = col("launch")
 
     def cell(row, ci):
         return "" if ci is None or ci >= len(row) else str(row[ci]).strip()
 
     # ── Unités "widget" : on dédoublonne les lignes (widget, librairie) ──
-    # Clé = (nom, catégorie) si dispo, sinon l'index de ligne (pas de dédup).
+    # Clé = (nom, catégorie, version, fichier .py) si dispo, sinon l'index de
+    # ligne. Le fichier distingue deux widgets homonymes de la même catégorie
+    # (prod/dev, ou deux add-ons différents) : sans lui, ils étaient fusionnés
+    # et seul le statut .py de la première ligne était compté.
     units = {}  # clé -> {"status":..., "file":...}
     for i, row in enumerate(rows):
         if c_name is not None:
-            key = (cell(row, c_name), cell(row, c_cat))
+            key = (cell(row, c_name), cell(row, c_cat), cell(row, c_var),
+                   cell(row, c_launch))
         else:
             key = i
         u = units.setdefault(key, {"status": "", "file": ""})
@@ -1070,6 +1602,10 @@ def build_summary(headers, rows):
     out = [("RÉCAPITULATIF", None)]
     out.append(("Lignes (page brute)", len(rows)))
     out.append(("Widgets analysés", total_units))
+    if c_var is not None and c_name is not None:
+        n_dev = sum(1 for k in units if k[2] == "dev")
+        out.append(("  dont versions prod", total_units - n_dev))
+        out.append(("  dont versions dev", n_dev))
 
     # ── Statuts OK / NOK ──
     if c_status is not None:
@@ -1099,6 +1635,10 @@ def build_summary(headers, rows):
         out.append(("Nouveaux (absents réf)", n_new))
         if n_pb:
             out.append(("Illisibles / introuvables", n_pb))
+
+    elif COLUMN_LABELS["name"] in headers:        # diagnostic sans comparaison
+        out.append((".PY vs RÉFÉRENCE", None))
+        out.append(("Modifiés / inchangés / nouveaux", RERUN_UNAVAILABLE))
 
     # ── Différences pip (si comparaison + grain fin) ──
     if c_pver is not None:
@@ -1132,7 +1672,7 @@ def build_summary(headers, rows):
     # ── Répartition par catégorie ──
     if c_cat is not None and c_name is not None:
         cats = {}
-        for (nm, cat), u in units.items():
+        for (nm, cat, _var, _f), u in units.items():
             d = cats.setdefault(cat or "(sans catégorie)", [0, 0])
             d[0] += 1
             if u["status"].upper() == "OK":
@@ -1142,6 +1682,14 @@ def build_summary(headers, rows):
             for cat in sorted(cats):
                 tot, ok = cats[cat][0], cats[cat][1]
                 out.append((cat, f"{ok} / {tot}"))
+
+    # ── Couverture par les tutoriels (si colonnes présentes) ──
+    try:
+        cov_rep = coverage_report(headers, rows, coverage, filtered)
+    except Exception:
+        cov_rep = None
+    if cov_rep:
+        out += _coverage_summary_lines(cov_rep)
 
     return out
 
@@ -1158,27 +1706,28 @@ def _write_delimited(path, headers, rows, delimiter):
     return path
 
 
-def _write_xlsx(path, headers, rows, metadata=None):
+def _write_xlsx(path, headers, rows, metadata=None, coverage=None, filtered=False):
     try:
         from openpyxl import Workbook
     except Exception as e:
         raise RuntimeError(
             "Le format .xlsx nécessite le paquet 'openpyxl'. "
-            "Installe-le (pip install openpyxl) ou choisis un fichier .csv."
+            "Installez-le (pip install openpyxl) ou choisissez un fichier .csv."
         ) from e
     from openpyxl.styles import Font
 
     path = Path(path)
     wb = Workbook()
     ws = wb.active
-    ws.title = "Diagnostic"
+    # Résultats de workflows (colonne « Résultat ») ou diagnostic des widgets.
+    ws.title = "Résultats" if "Résultat" in headers else "Diagnostic"
     ws.append(list(headers))
     for r in rows:
         ws.append(list(r))
 
     # Feuille récap, placée en première position (page d'accueil du classeur).
     try:
-        summary = build_summary(list(headers), rows)
+        summary = build_summary(list(headers), rows, coverage, filtered)
     except Exception:
         summary = None
     if summary:
@@ -1193,6 +1742,20 @@ def _write_xlsx(path, headers, rows, metadata=None):
         rs.column_dimensions["B"].width = 24
         wb.move_sheet("Récapitulatif", -(wb.index(rs)))  # -> index 0
 
+    if coverage and COLUMN_LABELS["widget_key"] in headers:
+        try:
+            ch, crows = coverage_detail_rows(list(headers), rows, coverage)
+            cs = wb.create_sheet("Couverture")
+            cs.append(ch)
+            for c in cs[1]:
+                c.font = Font(bold=True)
+            for r in crows:
+                cs.append(r)
+            for col, w in zip("ABCDEFG", (32, 18, 58, 16, 30, 28, 20)):
+                cs.column_dimensions[col].width = w
+        except Exception:
+            pass
+
     if metadata:
         ms = wb.create_sheet("Métadonnées")
         ms.append(["Clé", "Valeur"])
@@ -1203,7 +1766,7 @@ def _write_xlsx(path, headers, rows, metadata=None):
     return path
 
 
-def write_rows(path, headers, rows, metadata=None):
+def write_rows(path, headers, rows, metadata=None, coverage=None, filtered=False):
     """Écrit headers+rows selon l'extension : .xlsx, .tab/.tsv (tabulation),
     sinon CSV (séparateur ';').
 
@@ -1216,7 +1779,7 @@ def write_rows(path, headers, rows, metadata=None):
     ext = p.suffix.lower()
 
     if ext in (".xlsx", ".xlsm"):
-        return _write_xlsx(p, headers, rows, metadata)
+        return _write_xlsx(p, headers, rows, metadata, coverage, filtered)
 
     if ext in (".tab", ".tsv"):
         out = _write_delimited(p, headers, rows, "\t")
@@ -1231,9 +1794,20 @@ def write_rows(path, headers, rows, metadata=None):
             w.writerow(["Clé", "Valeur"])
             for k, v in metadata:
                 w.writerow([k, "" if v is None else str(v)])
+    # Détail de couverture dans un sidecar dédié.
+    if coverage and COLUMN_LABELS["widget_key"] in headers:
+        try:
+            ch, crows = coverage_detail_rows(list(headers), rows, coverage)
+            side = p.with_suffix(p.suffix + ".coverage.csv")
+            with open(side, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f, delimiter=";")
+                w.writerow(ch)
+                w.writerows(crows)
+        except Exception:
+            pass
     # Récapitulatif dans un sidecar dédié.
     try:
-        summary = build_summary(list(headers), rows)
+        summary = build_summary(list(headers), rows, coverage, filtered)
     except Exception:
         summary = None
     if summary:

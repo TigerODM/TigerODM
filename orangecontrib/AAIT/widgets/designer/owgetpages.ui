@@ -42,6 +42,22 @@
     <string>Return one row for every chunk found</string>
    </property>
   </widget>
+  <widget class="QCheckBox" name="tolerantCheckBox">
+   <property name="geometry">
+    <rect>
+     <x>30</x>
+     <y>250</y>
+     <width>550</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Find the chunk even if the PDF text differs by hyphens, spaces, line breaks, ligatures or case. Adds a 'matched_text' column with the text as written in the PDF.</string>
+   </property>
+   <property name="text">
+    <string>Tolerant search (ignore hyphens, spaces, line breaks, case)</string>
+   </property>
+  </widget>
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
     <rect>

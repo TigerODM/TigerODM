@@ -11,11 +11,13 @@ from Orange.widgets.settings import Setting
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.llm import process_documents
+    from Orange.widgets.orangecontrib.AAIT.llm import process_documents_as_text
     from Orange.widgets.orangecontrib.AAIT.utils import thread_management, help_management
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
 else:
     from orangecontrib.AAIT.llm import process_documents
+    from orangecontrib.AAIT.llm import process_documents_as_text
     from orangecontrib.AAIT.utils import thread_management, help_management
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
@@ -33,6 +35,9 @@ class OWLoadDocuments(widget.OWWidget):
     want_control_area = False
     priority = 1060
 
+    # In "load as text" mode, these binary formats keep their dedicated extractor
+    RICH_FORMATS = (".pdf", ".docx", ".pptx", ".xlsx")
+
     class Inputs:
         data = Input("Data", Orange.data.Table)
 
@@ -42,6 +47,7 @@ class OWLoadDocuments(widget.OWWidget):
 
     detailed_docx_loading = Setting(False)
     per_page_loading = Setting(False)
+    load_as_text = Setting(False)
     autorun = Setting(True)
 
     @Inputs.data
@@ -54,7 +60,7 @@ class OWLoadDocuments(widget.OWWidget):
         super().__init__()
         # Qt Management
         self.setFixedWidth(470)
-        self.setFixedHeight(300)
+        self.setFixedHeight(330)
         uic.loadUi(self.gui, self)
 
         # Data Management
@@ -70,6 +76,7 @@ class OWLoadDocuments(widget.OWWidget):
         self.checkBox_send.setChecked(bool(self.autorun))
         self.checkBox_detailed.setChecked(bool(self.detailed_docx_loading))
         self.checkBox_pages.setChecked(bool(self.per_page_loading))
+        self.checkBox_text.setChecked(bool(self.load_as_text))
         
 
 
@@ -83,6 +90,9 @@ class OWLoadDocuments(widget.OWWidget):
 
         # Per page loading
         self.checkBox_pages.stateChanged.connect(self.on_pages_checkbox_toggled)
+
+        # Load documents as text
+        self.checkBox_text.stateChanged.connect(self.on_text_checkbox_toggled)
 
         # Run button
         self.pushButton_send.clicked.connect(self.run)
@@ -103,6 +113,8 @@ class OWLoadDocuments(widget.OWWidget):
             self.checkBox_detailed.setChecked(False)
             self.checkBox_detailed.blockSignals(False)
             self.detailed_docx_loading = False
+        if state:
+            self._uncheck_text()
         if not state:
             self.Outputs.details.send(None)
         if self.autorun:
@@ -116,10 +128,32 @@ class OWLoadDocuments(widget.OWWidget):
             self.checkBox_pages.setChecked(False)
             self.checkBox_pages.blockSignals(False)
             self.per_page_loading = False
+        if state:
+            self._uncheck_text()
         if not state:
             self.Outputs.details.send(None)
         if self.autorun:
             self.run()
+
+    def on_text_checkbox_toggled(self, state):
+        self.load_as_text = bool(state)
+        if state:
+            # Décoche les deux autres modes sans déclencher leurs handlers (pas de double run)
+            for checkbox in (self.checkBox_detailed, self.checkBox_pages):
+                checkbox.blockSignals(True)
+                checkbox.setChecked(False)
+                checkbox.blockSignals(False)
+            self.detailed_docx_loading = False
+            self.per_page_loading = False
+            self.Outputs.details.send(None)
+        if self.autorun:
+            self.run()
+
+    def _uncheck_text(self):
+        self.checkBox_text.blockSignals(True)
+        self.checkBox_text.setChecked(False)
+        self.checkBox_text.blockSignals(False)
+        self.load_as_text = False
 
     def run(self):
         self.warning("")
@@ -173,11 +207,17 @@ class OWLoadDocuments(widget.OWWidget):
             loading_fn = process_documents.load_documents_per_page
         elif self.detailed_docx_loading:
             loading_fn = process_documents.load_documents_in_table_detailed
+        elif self.load_as_text:
+            loading_fn = process_documents_as_text.load_documents_as_text
         else:
             loading_fn = process_documents.load_documents_in_table
 
         # Thread management
-        self.thread = thread_management.Thread(loading_fn, self.data)
+        if self.load_as_text:
+            extractors = {ext: process_documents.extract_text for ext in self.RICH_FORMATS}
+            self.thread = thread_management.Thread(loading_fn, self.data, extractors=extractors)
+        else:
+            self.thread = thread_management.Thread(loading_fn, self.data)
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)
