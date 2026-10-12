@@ -13,8 +13,8 @@
 #   default_output_name(include_packages=True, ext=".csv") -> str
 # ---------------------------------------------------------------------------
 
-import os
 import re
+import os
 import sys
 import ast
 import csv
@@ -1180,34 +1180,63 @@ def default_tutorial_output_name(ext=".xlsx", prefix="tutoriels"):
 #
 # Chaque entrée d'un JSON de batch peut déclarer :
 #   "tested_widgets": ["orangecontrib.IO4IT.widgets.OWExportMarkdown", ...]
-# (liste ou chaîne seule). Formats acceptés pour un identifiant :
-#   - module    : orangecontrib.<ADDON>.widgets.<fichier>
-#   - qualifié  : orangecontrib.<ADDON>.widgets.<fichier>.<Classe>
-#   - préfixé   : Orange.widgets.orangecontrib.<ADDON>.widgets.<fichier>[.<Classe>]
-# Tous sont ramenés à une clé normalisée "<ADDON>.<fichier>". Le nom de
-# l'add-on est conservé tel quel (HLIT et HLIT_dev sont deux add-ons distincts).
+# (liste ou chaîne seule). L'identifiant est le chemin du .py à partir de
+# site-packages, avec des points et sans .py ; n'importe quel dossier est
+# accepté après l'add-on (widgets, optimization, sous-dossiers…) et les
+# noms peuvent contenir des lettres accentuées :
+#   - module    : orangecontrib.<ADDON>.<dossier(s)>.<fichier>
+#   - qualifié  : orangecontrib.<ADDON>.<dossier(s)>.<fichier>.<Classe>
+#   - préfixé   : Orange.widgets.orangecontrib.<ADDON>.<dossier(s)>.<fichier>[.<Classe>]
+# Clé normalisée : "<ADDON>.<dossier(s)>.<fichier>" (comparée sans la casse).
+# Le nom de l'add-on est conservé tel quel (HLIT et HLIT_dev sont distincts).
+# La séparation prod/dev ne dépend pas de cette clé (voir widget_variant) :
+# les deux versions d'un widget ont volontairement la même clé.
 
 TESTED_FIELD = "tested_widgets"
 
+# \w couvre les lettres accentuées (Unicode). Le "-" est toléré dans les noms
+# de fichier (ex. OWTokenizer_Qwen3-8B).
 _RE_KEY_DOTTED = re.compile(
-    r"(?:^|\.)orangecontrib\.([A-Za-z0-9_]+?)\.widgets\.([A-Za-z0-9_\-]+)")
+    r"(?:^|\.)orangecontrib\.(\w+)\.([\w\-]+(?:\.[\w\-]+)*)$")
 _RE_KEY_PATH = re.compile(
-    r"orangecontrib[\\/]([^\\/]+?)[\\/]widgets[\\/]([^\\/]+)\.py$",
+    r"orangecontrib[\\/]([^\\/]+)[\\/](.+)\.py$",
     re.IGNORECASE)
 
 
 def widget_key(qualified=None, file_path=None):
-    """Clé normalisée '<ADDON>.<fichier>' d'un widget, ou None.
+    """Clé normalisée '<ADDON>.<dossier(s)>.<fichier>' d'un widget, ou None.
     Le chemin du .py est prioritaire (indépendant du nom de classe)."""
     if file_path:
         m = _RE_KEY_PATH.search(str(file_path))
         if m:
-            return f"{m.group(1)}.{m.group(2)}"
+            rest = re.sub(r"[\\/]+", ".", m.group(2))
+            return f"{m.group(1)}.{rest}"
     if qualified:
         m = _RE_KEY_DOTTED.search(str(qualified).strip())
         if m:
             return f"{m.group(1)}.{m.group(2)}"
     return None
+
+
+def key_candidates(raw):
+    """Clés possibles (minuscules) pour un identifiant déclaré : la clé
+    complète, puis sans son dernier élément. Avec des dossiers libres, on ne
+    peut pas savoir si le dernier élément est un nom de classe
+    (…OWSolver.OWSolver) ou de fichier : on essaie les deux."""
+    k = widget_key(raw)
+    if not k:
+        return []
+    k = k.lower()
+    parts = k.split(".")
+    out = [k]
+    if len(parts) >= 3:          # au moins add-on + dossier/fichier + classe
+        out.append(".".join(parts[:-1]))
+    return out
+
+
+def _first_known(cands, known):
+    """Première clé candidate présente dans `known` (ensemble/dict), ou None."""
+    return next((c for c in cands if c in known), None)
 
 
 def declared_widgets(entry):
@@ -1270,15 +1299,17 @@ def load_coverage(include_batches=False):
                 cov["without"].append(label)
                 continue
             for raw in ids:
-                k = widget_key(raw)
+                cands = key_candidates(raw)
                 cov["declared"].append({"label": label, "source": Path(path).name,
-                                        "tuto": name, "raw": raw, "key": k or ""})
-                if not k:
+                                        "tuto": name, "raw": raw,
+                                        "key": cands[0] if cands else "", "keys": cands})
+                if not cands:
                     cov["invalid"].append((label, raw))
                     continue
-                lst = cov["by_widget"].setdefault(k.lower(), [])
-                if label not in lst:
-                    lst.append(label)
+                for k in cands:   # le widget réel correspondra à l'une des deux
+                    lst = cov["by_widget"].setdefault(k, [])
+                    if label not in lst:
+                        lst.append(label)
     return cov
 
 
@@ -1314,7 +1345,7 @@ def coverage_report(headers, rows, coverage=None, filtered=False):
         return None
     ix = {k: (headers.index(lab[k]) if lab[k] in headers else None)
           for k in ("name", "category", "statut", "file_status", "coverage", "widget_key",
-                    "variant")}
+                    "variant", "launch")}
 
     def cell(row, k):
         i = ix[k]
@@ -1322,11 +1353,15 @@ def coverage_report(headers, rows, coverage=None, filtered=False):
 
     # Dédoublonnage par clé widget (grain fin = plusieurs lignes / widget).
     # Seules les versions PROD comptent : les tutos couvrent la prod.
+    # Sans identifiant (add-ons tiers : Textable, Time Series…), repli sur
+    # (nom, catégorie, fichier) et non sur l'index de ligne : sinon chaque
+    # librairie pip du widget le comptait une fois de plus.
     units = {}
-    for i, row in enumerate(rows):
+    for row in rows:
         if cell(row, "variant") == "dev":
             continue
-        k = cell(row, "widget_key").lower() or f"#row{i}"
+        k = (cell(row, "widget_key").lower()
+             or f"#{cell(row, 'name')}|{cell(row, 'category')}|{cell(row, 'launch')}")
         u = units.setdefault(k, {"name": cell(row, "name"), "cat": cell(row, "category"),
                                  "status": cell(row, "statut"), "file": cell(row, "file_status"),
                                  "tutos": cell(row, "coverage")})
@@ -1362,9 +1397,9 @@ def coverage_report(headers, rows, coverage=None, filtered=False):
     rep_["to_rerun"] = sorted(rep_["to_rerun"].items())
 
     if coverage:
-        present = {k for k in units if not k.startswith("#row")}
+        present = {k for k in units if not k.startswith("#")}
         for d in coverage.get("declared", []):
-            if d["key"] and d["key"].lower() not in present:
+            if d["keys"] and _first_known(d["keys"], present) is None:
                 rep_["orphans"].append((d["label"], d["raw"]))
         rep_["invalid"] = list(coverage.get("invalid", []))
         rep_["without"] = list(coverage.get("without", []))
@@ -1400,7 +1435,8 @@ def coverage_detail_rows(headers, rows, coverage):
         if not d["key"]:
             out.append([d["label"], d["source"], d["raw"], "identifiant invalide", "", "", ""])
             continue
-        w = found.get(d["key"].lower())
+        k = _first_known(d["keys"], found)
+        w = found.get(k) if k else None
         if w:
             out.append([d["label"], d["source"], d["raw"], "oui", w[0], w[1], w[2]])
         else:
@@ -1482,9 +1518,9 @@ def rerun_for_entry(entry, modified):
         return []
     out = []
     for raw in declared_widgets(entry):
-        k = widget_key(raw)
-        if k and k.lower() in modified:
-            nm = modified[k.lower()] or k
+        k = _first_known(key_candidates(raw), modified)
+        if k:
+            nm = modified[k] or k
             if nm not in out:
                 out.append(nm)
     return out
@@ -1643,31 +1679,44 @@ def build_summary(headers, rows, coverage=None, filtered=False):
     # ── Différences pip (si comparaison + grain fin) ──
     if c_pver is not None:
         changed = []       # (package, "ref → actuelle")
-        n_same = n_new = n_absent = n_offpip = 0
+        new = []           # (package, "nouvelle (actuelle x)")
+        absent = []        # (package, "absente (réf x)")
+        n_same = n_offpip = 0
+        # Une librairie apparaît sur chaque ligne des widgets qui l'utilisent :
+        # on ne la compte qu'une fois.
+        seen = set()
         for row in rows:
             s = cell(row, c_pver)
             if not s:
                 continue
+            pkg_key = (cell(row, c_pkg).lower(), s)
+            if pkg_key in seen:
+                continue
+            seen.add(pkg_key)
             low = s.lower()
             if s.startswith("= "):
                 n_same += 1
             elif "→" in s:
                 changed.append((cell(row, c_pkg), s))
             elif low.startswith("nouvelle"):
-                n_new += 1
+                new.append((cell(row, c_pkg), s))
             elif low.startswith("absente"):
-                n_absent += 1
+                absent.append((cell(row, c_pkg), s))
             elif low.startswith("(hors pip"):
                 n_offpip += 1
         out.append(("LIBRAIRIES PIP vs RÉFÉRENCE", None))
         out.append(("Versions changées", len(changed)))
+        for pkg, s in sorted(changed, key=lambda x: x[0].lower()):
+            out.append((f"  • {pkg}", s))
         out.append(("Versions identiques", n_same))
-        out.append(("Nouvelles (absentes réf)", n_new))
-        out.append(("Absentes (présentes en réf)", n_absent))
+        out.append(("Nouvelles (absentes réf)", len(new)))
+        for pkg, s in sorted(new, key=lambda x: x[0].lower()):
+            out.append((f"  • {pkg}", s))
+        out.append(("Absentes (présentes en réf)", len(absent)))
+        for pkg, s in sorted(absent, key=lambda x: x[0].lower()):
+            out.append((f"  • {pkg}", s))
         if n_offpip:
             out.append(("Hors pip / local", n_offpip))
-        for pkg, s in changed:
-            out.append((f"  • {pkg}", s))
 
     # ── Répartition par catégorie ──
     if c_cat is not None and c_name is not None:
@@ -1706,6 +1755,16 @@ def _write_delimited(path, headers, rows, delimiter):
     return path
 
 
+def _append_text_row(ws, values):
+    """ws.append() sans interprétation des formules : openpyxl écrit toute
+    chaîne commençant par '=' comme une formule (ex. statut pip '= 1.2.3'),
+    ce qu'Excel rejette à l'ouverture (« Formule dans la partie ... »)."""
+    ws.append(list(values))
+    for c in ws[ws.max_row]:
+        if c.data_type == "f":
+            c.data_type = "s"
+
+
 def _write_xlsx(path, headers, rows, metadata=None, coverage=None, filtered=False):
     try:
         from openpyxl import Workbook
@@ -1721,9 +1780,9 @@ def _write_xlsx(path, headers, rows, metadata=None, coverage=None, filtered=Fals
     ws = wb.active
     # Résultats de workflows (colonne « Résultat ») ou diagnostic des widgets.
     ws.title = "Résultats" if "Résultat" in headers else "Diagnostic"
-    ws.append(list(headers))
+    _append_text_row(ws, headers)
     for r in rows:
-        ws.append(list(r))
+        _append_text_row(ws, r)
 
     # Feuille récap, placée en première position (page d'accueil du classeur).
     try:
@@ -1737,7 +1796,7 @@ def _write_xlsx(path, headers, rows, metadata=None, coverage=None, filtered=Fals
                 cell = rs.cell(row=rs.max_row + 1, column=1, value=str(label))
                 cell.font = Font(bold=True)
             else:
-                rs.append([str(label), "" if value is None else str(value)])
+                _append_text_row(rs, [str(label), "" if value is None else str(value)])
         rs.column_dimensions["A"].width = 34
         rs.column_dimensions["B"].width = 24
         wb.move_sheet("Récapitulatif", -(wb.index(rs)))  # -> index 0
@@ -1746,11 +1805,11 @@ def _write_xlsx(path, headers, rows, metadata=None, coverage=None, filtered=Fals
         try:
             ch, crows = coverage_detail_rows(list(headers), rows, coverage)
             cs = wb.create_sheet("Couverture")
-            cs.append(ch)
+            _append_text_row(cs, ch)
             for c in cs[1]:
                 c.font = Font(bold=True)
             for r in crows:
-                cs.append(r)
+                _append_text_row(cs, r)
             for col, w in zip("ABCDEFG", (32, 18, 58, 16, 30, 28, 20)):
                 cs.column_dimensions[col].width = w
         except Exception:
@@ -1760,7 +1819,7 @@ def _write_xlsx(path, headers, rows, metadata=None, coverage=None, filtered=Fals
         ms = wb.create_sheet("Métadonnées")
         ms.append(["Clé", "Valeur"])
         for k, v in metadata:
-            ms.append([k, "" if v is None else str(v)])
+            _append_text_row(ms, [k, "" if v is None else str(v)])
 
     wb.save(path)
     return path

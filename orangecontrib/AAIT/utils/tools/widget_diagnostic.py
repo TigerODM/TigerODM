@@ -24,13 +24,13 @@
 #           logging.error(f"Failed to open widget diagnostic window: {e}")
 # ---------------------------------------------------------------------------
 
-import os
 import re
 import sys
+import threading
 import traceback
 from pathlib import Path
 
-from AnyQt.QtCore import QSettings, Qt, QUrl
+from AnyQt.QtCore import QEventLoop, QSettings, Qt, QTimer, QUrl
 from AnyQt.QtGui import QColor, QDesktopServices
 from AnyQt.QtWidgets import (
     QAbstractItemView,
@@ -49,6 +49,7 @@ from AnyQt.QtWidgets import (
     QMenu,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QStatusBar,
     QTableWidget,
@@ -111,6 +112,42 @@ def s_list(key):
     if isinstance(v, str):
         return [v] if v else []
     return [str(x) for x in v]
+
+
+def run_with_busy_dialog(parent, text, fn, *args, **kwargs):
+    """Exécute fn(*args, **kwargs) dans un thread en affichant une fenêtre
+    d'attente (barre indéterminée) : l'interface reste réactive pendant les
+    opérations longues (ex. écriture d'un .xlsx volumineux). Renvoie le
+    résultat de fn ou relève son exception."""
+    box = {}
+
+    def work():
+        try:
+            box["result"] = fn(*args, **kwargs)
+        except BaseException as e:
+            box["error"] = e
+
+    dlg = QProgressDialog(text, None, 0, 0, parent)
+    dlg.setWindowTitle("Veuillez patienter")
+    dlg.setWindowModality(Qt.WindowModality.WindowModal)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
+    dlg.setCancelButton(None)
+    dlg.setMinimumDuration(0)
+    dlg.show()
+
+    t = threading.Thread(target=work, daemon=True)
+    loop = QEventLoop()
+    timer = QTimer()
+    timer.setInterval(50)
+    timer.timeout.connect(lambda: None if t.is_alive() else loop.quit())
+    t.start()
+    timer.start()
+    loop.exec()
+    timer.stop()
+    dlg.close()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def ask_export_path(parent, title, suggested_name):
@@ -608,8 +645,10 @@ class EditorMainWindow(QMainWindow):
         if not path:
             return
         try:
-            p = core.write_rows(path, self._headers, self._rows, metadata=self._metadata,
-                                coverage=self._coverage, filtered=self._cov_filtered)
+            p = run_with_busy_dialog(
+                self, f"Enregistrement en cours…\n{path}", core.write_rows,
+                path, self._headers, self._rows, metadata=self._metadata,
+                coverage=self._coverage, filtered=self._cov_filtered)
             self.status.showMessage(f"Exporté : {p}", 6000)
             QMessageBox.information(
                 self, "Exporté", f"Diagnostic exporté ({len(self._rows)} ligne(s)) :\n{p}")
@@ -1519,7 +1558,9 @@ class WorkflowValidationWindow(QMainWindow):
             meta.append(("Colonne « À relancer »",
                          self._rerun_msg if self._rerun_available
                          else core.RERUN_UNAVAILABLE))
-            p = core.write_rows(path, headers, rows, metadata=meta)
+            p = run_with_busy_dialog(
+                self, f"Enregistrement en cours…\n{path}", core.write_rows,
+                path, headers, rows, metadata=meta)
             self.status.showMessage(f"Exporté : {p}", 6000)
             QMessageBox.information(self, "Exporté", f"Résultats exportés :\n{p}")
         except Exception as e:

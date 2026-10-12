@@ -57,6 +57,7 @@ file_mapping = {
     "Tokenizer - Qwen3 8B": os.path.join("Models", "NLP", "Tokenizer_Qwen3-8B"),
     "DinoV2":os.path.join("Models", "ComputerVision", "dinov2-base"),
     "ResNet50":os.path.join("Models","ComputerVision","resnet50","resnet50-0676ba61.pth"),
+    "Docling Models": os.path.join("Models", "ComputerVision", "docling"),
     "Paddle OCR": ([ os.path.join("Models", "ComputerVision", "PaddleOCR", "latin_PP-OCRv5_mobile_rec"),os.path.join("Models", "ComputerVision", "PaddleOCR", "PP-OCRv5_server_det")], os.path.join("Models", "ComputerVision", "PaddleOCR", "PP-OCRv5_server_det", "inference.yml")),
     "Qwen3.5 9B Q6": ([os.path.join("Models","NLP","Qwen3.5-9B-GGUF","Qwen3.5-9B-Q6_K.gguf"),os.path.join("Models","NLP","Qwen3.5-9B-GGUF","mmproj-F16.gguf")],os.path.join("Models","NLP","Qwen3.5-9B-GGUF","Qwen3.5-9B-Q6_K.gguf")),
     # a verifier
@@ -71,6 +72,7 @@ file_mapping = {
     "Phi4 4B": os.path.join("Models", "NLP","Phi-4-mini-reasoning-Q4_K_M.gguf"),
     "Gemma3 270m": os.path.join("Models", "NLP","gemma-3-270m-Q8_0.gguf"),
     "Gemma3 12B": os.path.join("Models", "NLP", "gemma-3-12b-it-Q4_K_M.gguf",),
+    "Gemma4 12B": ([os.path.join("Models","NLP","Gemma4-12B","mmproj-F16.gguf"),os.path.join("Models","NLP","Gemma4-12B","gemma-4-12b-it-Q4_K_M.gguf")]),
     "Deepseek 8B": os.path.join("Models", "NLP", "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf"),
     "Gemma 4 E2B Q4":([os.path.join("Models","NLP","gemma-4-E2B-qat-Q4-GGUF","mmproj-F16.gguf"),os.path.join("Models","NLP","gemma-4-E2B-qat-Q4-GGUF","gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf")],os.path.join("Models","NLP","gemma-4-E2B-qat-Q4-GGUF","gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf")),
 

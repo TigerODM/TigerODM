@@ -749,6 +749,7 @@ def _handle_truncate(messages, model, limit, progress_callback, context_length=N
     kept_messages.reverse()
     if system_msg:
         kept_messages.insert(0, system_msg)
+    print(f"\n\nLimit={limit}\nContext_length={total_tokens}\nKept messages: {len(kept_messages)}\n\n\n")
     return kept_messages
 
 

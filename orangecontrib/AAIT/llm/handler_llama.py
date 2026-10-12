@@ -27,6 +27,7 @@ def is_a_thinking_model(model):
         "qwen3-thinking",
         "qwen-3-thinking",
         "qwen3-instruct-thinking",
+        "qwen3.5",
         # "magistral",
         # "reflection",
         # "r1",
@@ -56,7 +57,6 @@ def is_a_thinking_model(model):
         "phi-4",
         "qwen2.5",
         "qwen2.5-instruct",
-        "qwen3.5",
         # "qwen3",
         # "qwen3-instruct",
         "yi",
@@ -641,7 +641,10 @@ def get_generic_chat_handler(model_path, mmproj_path):
         chat_template = field.contents()
         return GenericMTMDChatHandler(
             chat_format=chat_template,
-            mmproj_path=mmproj_path
+            mmproj_path=mmproj_path,
+            # Check the templates and add all the "enable_thinking" (similar keywords) in this dictionary
+            # enable_thinking is used by Qwen, Ornith, Gemma4 so far
+            extra_template_arguments={"enable_thinking": True}
         )
     except Exception as e:
         print("Unable to load chat handler:", e)

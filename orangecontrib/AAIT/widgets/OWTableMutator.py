@@ -1,6 +1,8 @@
 import Orange
 import os
 import sys
+import ast
+import json
 from Orange.widgets import widget
 from Orange.widgets.widget import Input, Output
 from Orange.widgets.settings import Setting
@@ -53,7 +55,7 @@ class OWTableMutator(widget.OWWidget):
         super().__init__()
         # Qt Management
         self.setFixedWidth(470)
-        self.setFixedHeight(300)
+        self.setFixedHeight(400)
         uic.loadUi(self.gui, self)
         self.data=None
         self.checkbox_interface = self.findChild(QCheckBox, 'checkBox')
@@ -65,7 +67,7 @@ class OWTableMutator(widget.OWWidget):
         self.radioButton_add_colname = self.findChild(QRadioButton, 'radioButton_add_colname')
         self.radioButton_impute_above = self.findChild(QRadioButton, 'radioButton_impute_above')
         self.radioButton_reverse_line_order=self.findChild(QRadioButton, 'radioButton_reverse_line_order')
-
+        self.radioButton_trasnform_list = self.findChild(QRadioButton, 'radioButton_trasnform_list')
 
         self.push_button_run = self.findChild(QPushButton, 'pushButton')
         if self.strauto == 'False':
@@ -118,6 +120,10 @@ class OWTableMutator(widget.OWWidget):
         else:
             self.radioButton_reverse_line_order.setChecked(False)
 
+        if self.operation_mode=="Table2Column":
+            self.radioButton_trasnform_list.setChecked(True)
+        else:
+            self.radioButton_trasnform_list.setChecked(False)
         self.push_button_run.clicked.connect(self.run)
         self.checkbox_interface.toggled.connect(self.on_auto_toggled)
         self.checkBox_only_colname.toggled.connect(self.on_checkBox_only_colname_toggled)
@@ -128,15 +134,22 @@ class OWTableMutator(widget.OWWidget):
         self.radioButton_multiply_colname.toggled.connect(self.on_radioButton_mul_colname_toggled)
         self.radioButton_impute_above.toggled.connect(self.on_radioButton_impute_above_toggled)
         self.radioButton_reverse_line_order.toggled.connect(self.on_radioButton_reverse_line_order)
-        if self.strauto == 'True':
-            self.run()
+        self.radioButton_trasnform_list.toggled.connect(self.on_radioButton_trasnform_list)
 
+        self.run_if_auto()
+
+
+    def run_if_auto(self):
+        if self.strauto == "True" and self.data is not None:
+            self.run()
 
     def on_auto_toggled(self, checked):
         if checked:
             self.strauto = "True"
         else:
             self.strauto = "False"
+
+
     def on_checkBox_only_colname_toggled(self, checked):
         if checked:
             self.stronlyconame = "True"
@@ -144,32 +157,39 @@ class OWTableMutator(widget.OWWidget):
             self.stronlyconame = "False"
 
 
+
     def on_radio_cast_nuemric_toggled(self,checked):
         if checked:
             self.operation_mode = "CastNumeric"
+
 
 
     def on_radio_transpose_toggled(self, checked):
         if checked:
             self.operation_mode = "Transpose"
 
+
     def on_radioButton_cast_string_toggled(self,checked):
         if checked:
             self.operation_mode = "CastString"
 
+
     def on_radioButton_add_colname_toggled(self,checked):
         if checked:
             self.operation_mode = "Add"
+
 
     def on_radioButton_mul_colname_toggled(self,checked):
         if checked:
             self.operation_mode = "Mul"
 
 
+
     def on_radioButton_impute_above_toggled(self,checked):
         if checked:
             self.operation_mode = "FFill"
             self.checkBox_only_colname.setVisible(True)
+
         else:
             self.checkBox_only_colname.setVisible(False)
 
@@ -178,25 +198,39 @@ class OWTableMutator(widget.OWWidget):
             self.operation_mode = "Reverse"
 
 
+    def on_radioButton_trasnform_list(self,checked):
+        if checked:
+            self.operation_mode = "Table2Column"
+
+
     @Inputs.data
     def set_data(self, data):
+        self.data = data
         if data is None:
             self.Outputs.out_data.send(None)
             return
-        self.data=data
-        self.run()
+        self.run_if_auto()
     def run(self):
         self.error("")
         if self.operation_mode == "Transpose":
-            self.run_translate()
+            try:
+                self.run_translate()
+            except Exception as e:
+                self.error(str(e))
             return
 
         if self.operation_mode == "CastNumeric":
-            self.run_numeric()
+            try:
+                self.run_numeric()
+            except Exception as e:
+                self.error(str(e))
             return
 
         if self.operation_mode == "CastString":
-            self.run_string()
+            try:
+                self.run_string()
+            except Exception as e:
+                self.error(str(e))
             return
 
         if self.operation_mode == "Add":
@@ -225,6 +259,14 @@ class OWTableMutator(widget.OWWidget):
             except Exception as e:
                 self.error(str(e))
             return
+
+        if self.operation_mode == "Table2Column":
+            try:
+                self.run_computetable2column()
+            except Exception as e:
+                self.error(str(e))
+            return
+
         self.error("please check an option")
         return
 
@@ -236,6 +278,177 @@ class OWTableMutator(widget.OWWidget):
 
         out_data = in_data[::-1]
         self.Outputs.out_data.send(out_data)
+
+    def run_computetable2column(self):
+        self.error("")
+        in_data = self.data
+
+        if in_data is None:
+            self.Outputs.out_data.send(None)
+            return
+
+        def parse_list(value):
+            """Renvoie une liste, ou None si la cellule n'est pas une liste."""
+            if not isinstance(value, str):
+                return None
+
+            text = value.strip()
+            if not (text.startswith("[") and text.endswith("]")):
+                return None
+
+            # Listes JSON ou Python.
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    result = parser(text)
+                    if isinstance(result, list):
+                        return result
+                except (ValueError, SyntaxError, TypeError):
+                    pass
+
+            # Listes sans guillemets : [a,b,c].
+            # Respecte les virgules dans les chaînes et les listes imbriquées.
+            inner = text[1:-1].strip()
+            if not inner:
+                return []
+
+            parts = []
+            start = 0
+            quote = None
+            escaped = False
+            brackets = []
+            matching = {"]": "[", "}": "{", ")": "("}
+
+            for index, char in enumerate(inner):
+                if quote is not None:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == quote:
+                        quote = None
+                    continue
+
+                if char in ("'", '"'):
+                    quote = char
+                elif char in "[{(":
+                    brackets.append(char)
+                elif char in "]})":
+                    if not brackets or brackets.pop() != matching[char]:
+                        return None
+                elif char == "," and not brackets:
+                    parts.append(inner[start:index].strip())
+                    start = index + 1
+
+            if quote is not None or brackets:
+                return None
+
+            parts.append(inner[start:].strip())
+
+            # Une virgule finale est autorisée : [a,b,].
+            if parts[-1] == "" and inner.endswith(","):
+                parts.pop()
+
+            result = []
+            for part in parts:
+                try:
+                    result.append(ast.literal_eval(part))
+                except (ValueError, SyntaxError, TypeError):
+                    result.append(part)
+
+            return result
+
+        def element_to_string(value):
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, dict)):
+                return json.dumps(value, ensure_ascii=False)
+            return str(value)
+
+        try:
+            domain = in_data.domain
+            all_vars = (
+                    list(domain.attributes)
+                    + list(domain.class_vars)
+                    + list(domain.metas)
+            )
+
+            used_names = {var.name for var in all_vars}
+            new_vars = []
+            new_columns = []
+            n_rows = len(in_data)
+
+            for var in all_vars:
+                if not isinstance(var, StringVariable):
+                    continue
+
+                lists = [
+                    parse_list(value)
+                    for value in in_data.get_column(var)
+                ]
+
+                max_size = max(
+                    (len(value) for value in lists if value is not None),
+                    default=0
+                )
+
+                # Aucun élément de liste : aucune nouvelle colonne.
+                for index in range(max_size):
+                    base_name = f"{var.name}_{index}"
+                    name = base_name
+                    suffix = 1
+
+                    # Évite d'écraser une colonne déjà existante.
+                    while name in used_names:
+                        name = f"{base_name}_{suffix}"
+                        suffix += 1
+
+                    used_names.add(name)
+                    new_vars.append(StringVariable(name))
+
+                    values = [
+                        element_to_string(value[index])
+                        if value is not None and index < len(value)
+                        else ""
+                        for value in lists
+                    ]
+
+                    new_columns.append(
+                        np.asarray(values, dtype=object).reshape(n_rows, 1)
+                    )
+
+            if not new_vars:
+                self.Outputs.out_data.send(in_data)
+                return
+
+            out_domain = Domain(
+                domain.attributes,
+                domain.class_vars,
+                list(domain.metas) + new_vars
+            )
+
+            out_metas = np.hstack([
+                in_data.metas.copy(),
+                *new_columns
+            ])
+
+            out_data = Table.from_numpy(
+                out_domain,
+                X=in_data.X.copy(),
+                Y=in_data.Y.copy(),
+                metas=out_metas,
+                W=in_data.W.copy(),
+                attributes=dict(in_data.attributes),
+                ids=in_data.ids.copy()
+            )
+            out_data.name = in_data.name
+
+            self.Outputs.out_data.send(out_data)
+
+        except Exception as error:
+            self.error(str(error))
+            self.Outputs.out_data.send(None)
 
     def run_translate(self):
         self.error("")
@@ -823,6 +1036,10 @@ class OWTableMutator(widget.OWWidget):
 
         X = np.array(table.X, dtype=float, copy=True) if table.X.size else np.empty((n, 0), dtype=float)
         Y = np.array(table.Y, dtype=float, copy=True) if table.Y.size else np.empty((n, 0), dtype=float)
+        # pas sur du if peut etre a supprimer
+        if Y.ndim == 1:
+            Y = Y.reshape(n, 1)
+        # fin du pas sur du if
         M = np.array(table.metas, dtype=object, copy=True) if table.metas.size else np.empty((n, 0), dtype=object)
 
         # Features
