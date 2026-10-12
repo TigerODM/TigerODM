@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>700</width>
-    <height>809</height>
+    <height>697</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -35,7 +35,7 @@
      <x>20</x>
      <y>50</y>
      <width>661</width>
-     <height>317</height>
+     <height>281</height>
     </rect>
    </property>
    <property name="title">
@@ -63,9 +63,6 @@
       <height>29</height>
      </rect>
     </property>
-    <property name="toolTip">
-     <string>Include the API version prefix if your server uses one, e.g. http://127.0.0.1:8080/v1</string>
-    </property>
    </widget>
    <widget class="QLabel" name="labelRoute">
     <property name="geometry">
@@ -88,9 +85,6 @@
       <width>491</width>
       <height>29</height>
      </rect>
-    </property>
-    <property name="toolTip">
-     <string>Path relative to Base URL, e.g. /chat/completions</string>
     </property>
    </widget>
    <widget class="QLabel" name="labelHeaderName">
@@ -161,44 +155,15 @@
       <height>29</height>
      </rect>
     </property>
-    <property name="toolTip">
-     <string>Only used when "Key manager service" below is empty. Stored in plain text in the workflow file (.ows) — prefer the Key Manager service field when possible.</string>
-    </property>
     <property name="echoMode">
      <enum>QLineEdit::Password</enum>
-    </property>
-   </widget>
-   <widget class="QLabel" name="labelKeyService">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>174</y>
-      <width>131</width>
-      <height>21</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>Key manager service :</string>
-    </property>
-   </widget>
-   <widget class="QLineEdit" name="lineKeyService">
-    <property name="geometry">
-     <rect>
-      <x>150</x>
-      <y>170</y>
-      <width>491</width>
-      <height>29</height>
-     </rect>
-    </property>
-    <property name="toolTip">
-     <string>Name of an API key registered via the standalone Key Manager tool ("Create / overwrite api key"). Takes priority over the API key field above and is never stored in the workflow file.</string>
     </property>
    </widget>
    <widget class="QLabel" name="labelCertPath">
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>210</y>
+      <y>174</y>
       <width>131</width>
       <height>21</height>
      </rect>
@@ -211,7 +176,7 @@
     <property name="geometry">
      <rect>
       <x>150</x>
-      <y>206</y>
+      <y>170</y>
       <width>410</width>
       <height>29</height>
      </rect>
@@ -221,7 +186,7 @@
     <property name="geometry">
      <rect>
       <x>566</x>
-      <y>206</y>
+      <y>170</y>
       <width>75</width>
       <height>29</height>
      </rect>
@@ -234,7 +199,7 @@
     <property name="geometry">
      <rect>
       <x>150</x>
-      <y>240</y>
+      <y>204</y>
       <width>491</width>
       <height>21</height>
      </rect>
@@ -247,7 +212,7 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>276</y>
+      <y>240</y>
       <width>131</width>
       <height>21</height>
      </rect>
@@ -263,7 +228,7 @@
     <property name="geometry">
      <rect>
       <x>150</x>
-      <y>272</y>
+      <y>236</y>
       <width>491</width>
       <height>29</height>
      </rect>
@@ -277,9 +242,9 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>376</y>
+     <y>340</y>
      <width>661</width>
-     <height>157</height>
+     <height>121</height>
     </rect>
    </property>
    <property name="title">
@@ -369,54 +334,12 @@
      <double>0.100000000000000</double>
     </property>
    </widget>
-   <widget class="QLabel" name="labelWorkflowId">
-    <property name="geometry">
-     <rect>
-      <x>10</x>
-      <y>102</y>
-      <width>131</width>
-      <height>21</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>Workflow id :</string>
-    </property>
-   </widget>
-   <widget class="QLineEdit" name="lineWorkflowId">
-    <property name="geometry">
-     <rect>
-      <x>150</x>
-      <y>98</y>
-      <width>491</width>
-      <height>29</height>
-     </rect>
-    </property>
-    <property name="toolTip">
-     <string>Optional identifier used to expose live token streaming for this request (written under aait_store/exchangeApi/&lt;workflow id&gt;/). Leave empty to disable.</string>
-    </property>
-   </widget>
-  </widget>
-  <widget class="QPushButton" name="buttonListModels">
-   <property name="geometry">
-    <rect>
-     <x>20</x>
-     <y>544</y>
-     <width>661</width>
-     <height>31</height>
-    </rect>
-   </property>
-   <property name="toolTip">
-    <string>GET Base URL + /models — lists the model ids exposed by the server.</string>
-   </property>
-   <property name="text">
-    <string>List models</string>
-   </property>
   </widget>
   <widget class="QPushButton" name="pushButtonRun">
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>584</y>
+     <y>472</y>
      <width>661</width>
      <height>31</height>
     </rect>
@@ -429,7 +352,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>624</y>
+     <y>512</y>
      <width>661</width>
      <height>151</height>
     </rect>

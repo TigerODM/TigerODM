@@ -11,15 +11,15 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Process Pool Executor</string>
+   <string>Form</string>
   </property>
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>20</y>
+     <y>30</y>
      <width>451</width>
-     <height>200</height>
+     <height>201</height>
     </rect>
    </property>
    <property name="title">
@@ -29,9 +29,9 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>20</y>
+      <y>16</y>
       <width>431</width>
-      <height>45</height>
+      <height>51</height>
      </rect>
     </property>
     <property name="text">
@@ -50,7 +50,7 @@
       <x>10</x>
       <y>70</y>
       <width>431</width>
-      <height>20</height>
+      <height>21</height>
      </rect>
     </property>
     <property name="text">
@@ -61,9 +61,9 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>100</y>
+      <y>110</y>
       <width>431</width>
-      <height>20</height>
+      <height>21</height>
      </rect>
     </property>
     <property name="text">
@@ -74,27 +74,40 @@
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>130</y>
+      <y>140</y>
       <width>431</width>
-      <height>25</height>
+      <height>22</height>
      </rect>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="btn_create">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>170</y>
+      <width>431</width>
+      <height>23</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>(Re)create / Update executor</string>
     </property>
    </widget>
   </widget>
   <widget class="QPushButton" name="pushButton_send">
    <property name="enabled">
-    <bool>true</bool>
+    <bool>false</bool>
    </property>
    <property name="geometry">
     <rect>
      <x>170</x>
-     <y>235</y>
+     <y>244</y>
      <width>291</width>
-     <height>32</height>
+     <height>31</height>
     </rect>
    </property>
    <property name="text">
-    <string>(Re)create / Update executor</string>
+    <string>Run</string>
    </property>
   </widget>
   <widget class="QCheckBox" name="checkBox_send">
@@ -104,9 +117,9 @@
    <property name="geometry">
     <rect>
      <x>10</x>
-     <y>240</y>
-     <width>150</width>
-     <height>20</height>
+     <y>250</y>
+     <width>131</width>
+     <height>16</height>
     </rect>
    </property>
    <property name="text">
