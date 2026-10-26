@@ -212,7 +212,10 @@ class OWFileFromDir(base_widget.BaseListWidget):
                 except Exception:
                     continue
 
-            for root, _, files in traversal:
+            for root, dirs, files in traversal:
+                if self.ignore_orphan == "True":
+                    dirs[:] = [d for d in dirs if not (d.startswith("$") or d.startswith("~$") or d.startswith(".~"))]
+
                 for file in files:
                     # on ignore les liens symboliques et et les dossiers
                     full_path = os.path.join(root, file)

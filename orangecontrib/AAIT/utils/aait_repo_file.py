@@ -783,11 +783,16 @@ class FolderServerDownloader:
             raise ValueError(f"Redirection / accès hors domaine interdit: {url}")
 
         try:
+            # Accept-Encoding: identity -> pas de compression côté serveur.
+            # Sinon (requests envoie "gzip, deflate" par défaut), certains serveurs
+            # (ex. Caddy "encode") renvoient Content-Length: 20 (gzip vide) sur HEAD
+            # pour les fichiers texte, ce qui fausse la vérification de taille.
             response = self.session.head(
                 url,
                 timeout=self.timeout,
                 verify=self.verify_ssl,
                 allow_redirects=True,
+                headers={"Accept-Encoding": "identity"},
             )
             final_url = response.url
             if not is_same_origin(self.base_url, final_url):
@@ -984,7 +989,10 @@ class FolderServerDownloader:
             try:
                 accept_ranges = "bytes" in head_response.headers.get("Accept-Ranges", "").lower()
                 content_length = head_response.headers.get("Content-Length")
-                if content_length:
+                # Réponse compressée malgré tout : Content-Length = taille compressée,
+                # pas celle du fichier écrit par curl (sans --compressed) -> on ne vérifie pas.
+                content_encoding = head_response.headers.get("Content-Encoding", "").strip().lower()
+                if content_length and content_encoding in ("", "identity"):
                     total_size = int(content_length)
             except Exception:
                 total_size = 0

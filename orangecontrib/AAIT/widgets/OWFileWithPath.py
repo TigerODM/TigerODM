@@ -5,7 +5,7 @@ import Orange.data
 from AnyQt.QtWidgets import QApplication, QPushButton
 from Orange.data import StringVariable
 from Orange.widgets.utils.signals import Input, Output
-from AnyQt.QtWidgets import QCheckBox
+from AnyQt.QtWidgets import QCheckBox, QLineEdit
 from Orange.widgets.settings import Setting
 from AnyQt.QtCore import QTimer
 from pathlib import Path
@@ -44,6 +44,13 @@ class OWFileWithPath(base_widget.BaseListWidget):
     strloadAsString: str = Setting('False')
     strloadWithPandaReader: str = Setting('False')
     strRenameColumns: str = Setting('False')
+    # Feuille Excel : nom saisi dans l'interface (vide = comportement par défaut)
+    strSheetName: str = Setting('')
+    # Nom de la colonne optionnelle de la Path Table contenant la feuille
+    strSheetColumnName: str = Setting('sheet')
+
+    EXCEL_EXTENSIONS_STANDARD = {".xlsx", ".xls"}
+    EXCEL_EXTENSIONS_PANDAS = {".xlsx", ".xls", ".xlsm", ".xlsb", ".ods"}
 
     @Inputs.filepath
     def set_filepath(self, in_filepath):
@@ -98,6 +105,14 @@ class OWFileWithPath(base_widget.BaseListWidget):
             self.checkbox_rename.setChecked(True)
         self.checkbox_rename.stateChanged.connect(self.on_checkbox_rename_toggled)
 
+        # Feuille Excel
+        self.lineEdit_sheet = self.findChild(QLineEdit, 'lineEdit_sheet')
+        self.lineEdit_sheet.setText(self.strSheetName)
+        self.lineEdit_sheet.textChanged.connect(self.on_sheet_name_changed)
+        self.lineEdit_sheet_column = self.findChild(QLineEdit, 'lineEdit_sheet_column')
+        self.lineEdit_sheet_column.setText(self.strSheetColumnName)
+        self.lineEdit_sheet_column.textChanged.connect(self.on_sheet_column_changed)
+
         # Data Management
         self.filepath = None
         self.in_path_table = None
@@ -125,6 +140,30 @@ class OWFileWithPath(base_widget.BaseListWidget):
             self.strRenameColumns = "True"
         else:
             self.strRenameColumns = "False"
+
+    def on_sheet_name_changed(self, text):
+        self.strSheetName = text
+
+    def on_sheet_column_changed(self, text):
+        self.strSheetColumnName = text
+
+    def resolve_sheet(self):
+        """
+        Détermine la feuille Excel à lire :
+        1) la colonne de feuille de la Path Table si elle existe et n'est pas vide,
+        2) sinon le champ de l'interface,
+        3) sinon None (comportement par défaut du lecteur).
+        """
+        column_name = self.strSheetColumnName.strip()
+        if self.in_path_table is not None and len(self.in_path_table) > 0 \
+                and column_name and column_name in self.in_path_table.domain:
+            var = self.in_path_table.domain[column_name]
+            value = self.in_path_table[0][var]
+            text = self.safe_repr_val(var, value, missing_as_empty=True).strip()
+            if text:
+                return text
+        text = self.strSheetName.strip()
+        return text or None
 
     def safe_repr_val(self, var, val, missing_as_empty=False):
         """
@@ -173,17 +212,38 @@ class OWFileWithPath(base_widget.BaseListWidget):
 
         return t_str
 
-    def load_table_as_strings(self,filepath: str) -> Orange.data.Table:
+    def load_table_standard(self, filepath: str, sheet=None) -> Orange.data.Table:
+        """
+        Charge un fichier avec le lecteur standard d'Orange.
+        La feuille n'est transmise que pour les fichiers Excel.
+        Renvoie None (avec message d'erreur) en cas d'échec.
+        """
+        extension = Path(filepath).suffix.lower()
+        try:
+            if sheet is not None and extension in self.EXCEL_EXTENSIONS_STANDARD:
+                return Orange.data.Table.from_file(filepath, sheet=sheet)
+            return Orange.data.Table.from_file(filepath)
+        except Exception as e:
+            if sheet is not None and extension in self.EXCEL_EXTENSIONS_STANDARD:
+                self.error(f'Failed to load sheet "{sheet}" with standard reader: {e}')
+            else:
+                self.error(f"Failed to load file with standard reader: {e}")
+            return None
+
+    def load_table_as_strings(self, filepath: str, sheet=None) -> Orange.data.Table:
         """
         Charge un fichier Orange et renvoie un Table où toutes les colonnes
         (features, class, metas) sont converties en StringVariable et placées en metas.
         """
-        t = Orange.data.Table.from_file(filepath)
+        t = self.load_table_standard(filepath, sheet)
+        if t is None:
+            return None
         return self.table_as_strings(t)
 
     def load_table_with_pandas_as_strings(
             self,
-            filepath: str
+            filepath: str,
+            sheet=None
     ) -> Orange.data.Table:
         """
         Charge un fichier avec pandas et renvoie une table Orange dont toutes
@@ -230,9 +290,11 @@ class OWFileWithPath(base_widget.BaseListWidget):
                     keep_default_na=False
                 )
 
-            elif extension in {".xlsx", ".xls", ".xlsm", ".xlsb", ".ods"}:
+            elif extension in self.EXCEL_EXTENSIONS_PANDAS:
+                # sheet_name=0 : première feuille (comportement par défaut de pandas)
                 df = pd.read_excel(
                     filepath,
+                    sheet_name=sheet if sheet is not None else 0,
                     dtype=str,
                     keep_default_na=False
                 )
@@ -279,7 +341,10 @@ class OWFileWithPath(base_widget.BaseListWidget):
                 self.error(f"Unsupported pandas file format: {extension or '(no extension)'}")
                 return None
         except Exception as e:
-            self.error("Failed to load file with panda: ", e)
+            if sheet is not None and extension in self.EXCEL_EXTENSIONS_PANDAS:
+                self.error(f'Failed to load sheet "{sheet}" with pandas reader: {e}')
+            else:
+                self.error(f"Failed to load file with pandas reader: {e}")
             return None
         # Certains lecteurs pandas ne prennent pas en charge dtype=str ou
         # keep_default_na=False. On harmonise donc toutes les données ici.
@@ -385,12 +450,19 @@ class OWFileWithPath(base_widget.BaseListWidget):
                 self.Outputs.data.send(None)
                 return
 
+        sheet = self.resolve_sheet()
+
         if self.strloadAsString!="False":
-            out_data = self.load_table_as_strings(self.filepath)
+            out_data = self.load_table_as_strings(self.filepath, sheet)
         elif self.strloadWithPandaReader!="False":
-            out_data = self.load_table_with_pandas_as_strings(self.filepath)
+            out_data = self.load_table_with_pandas_as_strings(self.filepath, sheet)
         else:
-            out_data = Orange.data.Table.from_file(self.filepath)
+            out_data = self.load_table_standard(self.filepath, sheet)
+
+        # Échec du chargement : le message d'erreur a déjà été affiché
+        if out_data is None:
+            self.Outputs.data.send(None)
+            return
 
         if self.strRenameColumns != "False":
             out_data = self.force_rename_columns(out_data)

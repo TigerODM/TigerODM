@@ -10,7 +10,8 @@ from AnyQt.QtWidgets import (
     QPushButton,
     QDialog,
     QLabel,
-    QTextBrowser
+    QTextBrowser,
+    QCheckBox
 )
 from markdown import markdown
 
@@ -258,6 +259,7 @@ class OWSkillsManager(widget.OWWidget):
     request = Setting("")
     index_selected_prompt = Setting(0)
     prompt_settings = Setting([])
+    autorun = Setting(True)
 
     class Outputs:
         data = Output("Data", Orange.data.Table)
@@ -275,7 +277,6 @@ class OWSkillsManager(widget.OWWidget):
 
         # Data Management
         self.data = None
-        self.autorun = True
         self.post_initialized()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self) if help_management else None)
 
@@ -353,11 +354,19 @@ class OWSkillsManager(widget.OWWidget):
         bottom_layout = QHBoxLayout()
         bottom_layout.setAlignment(Qt.AlignRight)
 
+        self.autorun_checkbox = QCheckBox("Auto send")
+        self.autorun_checkbox.setChecked(self.autorun)
+        self.autorun_checkbox.toggled.connect(self.on_autorun_toggled)
+        bottom_layout.addWidget(self.autorun_checkbox)
+
         self.send_button = QPushButton("Send Skill")
         self.send_button.clicked.connect(self.send)
         bottom_layout.addWidget(self.send_button)
 
         main_layout.addLayout(bottom_layout)
+
+    def on_autorun_toggled(self, checked):
+        self.autorun = checked
 
     def update_preview(self, text):
         self.preview_text.setHtml(
@@ -554,7 +563,8 @@ class OWSkillsManager(widget.OWWidget):
         pass
 
     def post_initialized(self):
-        pass
+        if self.autorun:
+            self.send()
 
 
 if __name__ == "__main__":

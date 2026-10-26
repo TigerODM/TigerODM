@@ -48,6 +48,7 @@ def create_lemmes_and_tags_on_text(table, model_path, progress_callback=None, ar
     class_dom = list(data.domain.class_vars)
     # Load the model
     model = spacy.load(model_path)
+    model = add_custom_patterns(model)
     # Generate lemmes & tags on column named "content"
     rows = []
     for i, row in enumerate(data):
@@ -79,6 +80,7 @@ def create_lemmes_and_tags_on_request(table, model_path):
     request = table[0]["content"].value
     # Load the model
     model = spacy.load(model_path)
+    model = add_custom_patterns(model)
     # Generate lemmes & tags
     lemmes, tags = lemmatize(request, model)
     # Rearrange lemmes and tags to fit in a Table
@@ -105,6 +107,17 @@ def normalize_text(text):
     return unidecode(text).lower()  # Convert accents and lowercase
 
 
+def add_custom_patterns(model):
+    # Modify the infix patterns (patterns for token splits)
+    infixes = list(model.Defaults.infixes)
+    # Add custom pattern for numbers with special characters
+    infixes.append(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]+(?:[-.#][A-Za-z\d]+)*")
+    infixes.append(r"[^\s]*")
+    # Recompile the infix pattern after adding the custom one
+    model.tokenizer.infix_finditer = compile_infix_regex(infixes).finditer
+    return model
+
+
 def lemmatize(text, model):
     """
     Computes the lemmas & tags of a text using a spaCy model.
@@ -119,13 +132,6 @@ def lemmatize(text, model):
     """
     lemmes = []
     tags = []
-    # Modify the infix patterns (patterns for token splits)
-    infixes = list(model.Defaults.infixes)
-    # Add custom pattern for numbers with special characters
-    infixes.append(r"(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]+(?:[-.#][A-Za-z\d]+)*")
-    infixes.append(r"[^\s]*")
-    # Recompile the infix pattern after adding the custom one
-    model.tokenizer.infix_finditer = compile_infix_regex(infixes).finditer
     document = model(text)
     for token in document:
         if any([c.isdigit() for c in token.text]):

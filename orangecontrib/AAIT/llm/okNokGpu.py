@@ -278,7 +278,7 @@ def get_model_names():
         "Gemma3 12B",
         "Deepseek 8B",
         "Gemma 4 E2B Q4",
-        "Gemma4-12B"
+        "Gemma4 12B"
     ]
     result = {}
     for model_name in model_names:

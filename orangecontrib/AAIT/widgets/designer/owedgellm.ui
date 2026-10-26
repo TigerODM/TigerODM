@@ -19,7 +19,7 @@
      <x>10</x>
      <y>10</y>
      <width>681</width>
-     <height>641</height>
+     <height>651</height>
     </rect>
    </property>
    <property name="title">
@@ -57,7 +57,7 @@
      <rect>
       <x>20</x>
       <y>100</y>
-      <width>71</width>
+      <width>91</width>
       <height>21</height>
      </rect>
     </property>
@@ -408,6 +408,19 @@
       <string>q4_0</string>
      </property>
     </item>
+   </widget>
+   <widget class="QCheckBox" name="checkReasoning">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>620</y>
+      <width>231</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Reasoning</string>
+    </property>
    </widget>
   </widget>
  </widget>

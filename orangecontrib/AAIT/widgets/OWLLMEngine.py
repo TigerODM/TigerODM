@@ -9,7 +9,7 @@ from Orange.widgets import widget
 
 from Orange.widgets.utils.signals import Input, Output
 from Orange.widgets.settings import Setting
-from AnyQt.QtWidgets import QLineEdit, QTextBrowser, QSpinBox, QDoubleSpinBox
+from AnyQt.QtWidgets import QLineEdit, QTextBrowser, QSpinBox, QDoubleSpinBox, QCheckBox
 from AnyQt.QtCore import QTimer
 
 
@@ -55,6 +55,8 @@ class OWQEdgeLLM(widget.OWWidget):
     k_cache = Setting(1)
     v_cache = Setting(1)
 
+    reasoning = Setting(True)
+
 
     @Inputs.data
     def set_data(self, in_data):
@@ -99,6 +101,11 @@ class OWQEdgeLLM(widget.OWWidget):
         self.edit_top_k = self.bind_spinbox("boxTopK", self.top_k)
         self.edit_repeat_penalty = self.bind_spinbox("boxRepeatPenalty", self.repeat_penalty, is_double=True)
 
+        # Checkbox reasoning
+        self.checkbox_reasoning = self.findChild(QCheckBox, "checkReasoning")
+        self.checkbox_reasoning.setChecked(self.reasoning)
+        self.checkbox_reasoning.toggled.connect(self.update_reasoning)
+
 
         # Text browser
         self.textBrowser = self.findChild(QTextBrowser, 'textBrowser')
@@ -133,7 +140,8 @@ class OWQEdgeLLM(widget.OWWidget):
     def update_workflow_id(self):
         self.workflow_id = self.edit_ID.text()
 
-
+    def update_reasoning(self):
+        self.reasoning = self.checkbox_reasoning.isChecked()
 
     def bind_spinbox(self, name, value, is_double=False):
         widget_type = QDoubleSpinBox if is_double else QSpinBox
@@ -231,7 +239,8 @@ class OWQEdgeLLM(widget.OWWidget):
             "top_k": self.top_k,
             "repeat_penalty": self.repeat_penalty,
             "k_cache": self.k_cache,
-            "v_cache": self.v_cache
+            "v_cache": self.v_cache,
+            "reasoning": self.reasoning,
         }
         chemin_dossier = MetManagement.get_api_local_folder(workflow_id=self.workflow_id)
         if os.path.exists(chemin_dossier):

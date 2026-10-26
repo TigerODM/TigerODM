@@ -19,7 +19,7 @@
      <x>19</x>
      <y>40</y>
      <width>431</width>
-     <height>191</height>
+     <height>211</height>
     </rect>
    </property>
    <property name="title">
@@ -31,11 +31,11 @@
       <x>20</x>
       <y>30</y>
       <width>401</width>
-      <height>61</height>
+      <height>75</height>
      </rect>
     </property>
     <property name="text">
-     <string>This widget accumulate data in order to propagate it to a final table.</string>
+     <string>This widget accumulates data and sends it to a final table. A signal on the Trigger input automatically sends the accumulated data.</string>
     </property>
     <property name="textFormat">
      <enum>Qt::AutoText</enum>
@@ -54,8 +54,8 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>150</y>
-      <width>131</width>
+      <y>152</y>
+      <width>200</width>
       <height>20</height>
      </rect>
     </property>
@@ -66,9 +66,9 @@
    <widget class="QPushButton" name="pushButton_send">
     <property name="geometry">
      <rect>
-      <x>155</x>
-      <y>145</y>
-      <width>150</width>
+      <x>20</x>
+      <y>112</y>
+      <width>210</width>
       <height>31</height>
      </rect>
     </property>
@@ -79,14 +79,30 @@
    <widget class="QPushButton" name="pushButton_purge">
     <property name="geometry">
      <rect>
-      <x>313</x>
-      <y>145</y>
+      <x>240</x>
+      <y>112</y>
       <width>100</width>
       <height>31</height>
      </rect>
     </property>
     <property name="text">
      <string>Purge</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_send_2">
+    <property name="enabled">
+     <bool>true</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>177</y>
+      <width>200</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Also purge on trigger</string>
     </property>
    </widget>
   </widget>

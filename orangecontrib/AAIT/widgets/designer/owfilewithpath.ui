@@ -19,7 +19,7 @@
      <x>19</x>
      <y>39</y>
      <width>431</width>
-     <height>145</height>
+     <height>200</height>
     </rect>
    </property>
    <property name="title">
@@ -29,7 +29,7 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>80</y>
+      <y>65</y>
       <width>331</width>
       <height>16</height>
      </rect>
@@ -42,7 +42,7 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>120</y>
+      <y>105</y>
       <width>300</width>
       <height>16</height>
      </rect>
@@ -55,9 +55,9 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>10</y>
+      <y>20</y>
       <width>391</width>
-      <height>61</height>
+      <height>40</height>
      </rect>
     </property>
     <property name="text">
@@ -77,13 +77,71 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>100</y>
+      <y>85</y>
       <width>301</width>
       <height>16</height>
      </rect>
     </property>
     <property name="text">
      <string>Load content as StringVariable with panda reader</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_sheet">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>135</y>
+      <width>171</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Excel sheet:</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineEdit_sheet">
+    <property name="geometry">
+     <rect>
+      <x>200</x>
+      <y>133</y>
+      <width>211</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Sheet name used when the input Path Table has no sheet column (or an empty value).</string>
+    </property>
+    <property name="placeholderText">
+     <string>empty = default sheet</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_sheet_column">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>165</y>
+      <width>171</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Sheet column:</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="lineEdit_sheet_column">
+    <property name="geometry">
+     <rect>
+      <x>200</x>
+      <y>163</y>
+      <width>211</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Optional column of the input Path Table giving the sheet to read. Its value takes priority over the Excel sheet field.</string>
+    </property>
+    <property name="placeholderText">
+     <string>sheet</string>
     </property>
    </widget>
   </widget>
@@ -94,7 +152,7 @@
    <property name="geometry">
     <rect>
      <x>160</x>
-     <y>354</y>
+     <y>380</y>
      <width>291</width>
      <height>31</height>
     </rect>
@@ -110,7 +168,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>360</y>
+     <y>385</y>
      <width>121</width>
      <height>21</height>
     </rect>
@@ -126,9 +184,9 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>190</y>
+     <y>245</y>
      <width>431</width>
-     <height>141</height>
+     <height>125</height>
     </rect>
    </property>
    <property name="title">

@@ -34,6 +34,7 @@ class OWAccumulator(widget.OWWidget):
     want_main_area = True
     want_control_area = False
     auto_send = Setting(True)
+    purge_on_trigger = Setting(False)
 
     class Inputs:
         data = Input("Input Data", Table)
@@ -52,6 +53,7 @@ class OWAccumulator(widget.OWWidget):
 
         # --- Récupération dynamique des widgets ---
         self.checkBox_send = self.findChild(QCheckBox, 'checkBox_send')
+        self.checkBox_purge_on_trigger = self.findChild(QCheckBox, 'checkBox_send_2')
         self.pushButton_send = self.findChild(QPushButton, 'pushButton_send')
         self.pushButton_purge = self.findChild(QPushButton, 'pushButton_purge')
 
@@ -70,6 +72,10 @@ class OWAccumulator(widget.OWWidget):
         self.checkBox_send.setChecked(self.auto_send)
         self.checkBox_send.toggled.connect(self.on_auto_send_changed)
 
+        # --- Checkbox purge-on-trigger (etat restaure depuis le Setting) ---
+        self.checkBox_purge_on_trigger.setChecked(self.purge_on_trigger)
+        self.checkBox_purge_on_trigger.toggled.connect(self.on_purge_on_trigger_changed)
+
         self.post_initialized()
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
 
@@ -79,6 +85,10 @@ class OWAccumulator(widget.OWWidget):
         self.auto_send = self.checkBox_send.isChecked()
         if self.auto_send:
             self.push(clean=False)
+
+    def on_purge_on_trigger_changed(self):
+        """Memorise si le trigger doit aussi vider l'accumulateur apres l'envoi."""
+        self.purge_on_trigger = self.checkBox_purge_on_trigger.isChecked()
 
     def push(self, clean=False):
         """Envoie les donnees accumulees.
@@ -111,13 +121,17 @@ class OWAccumulator(widget.OWWidget):
 
     @Inputs.trigger
     def on_trigger(self, signal_data):
-        """Un vrai signal (table non None) declenche un envoi + purge.
+        """Un vrai signal (table non None) declenche un envoi, suivi d'une purge
+        si la case "Also purge on trigger" est cochee.
         On ignore les None (ex. debranchement en amont) pour ne pas vider par accident."""
         if signal_data is None:
             return
         if self.data is not None:
-            self.push(clean=False)
-            self.information("Data sent on trigger.")
+            self.push(clean=self.purge_on_trigger)
+            if self.purge_on_trigger:
+                self.information("Data sent and purged on trigger.")
+            else:
+                self.information("Data sent on trigger.")
                             
 
     @Inputs.data

@@ -1505,7 +1505,13 @@ class WorkflowValidationWindow(QMainWindow):
     def _on_finish(self):
         self._queue_done += 1
         self.progress.setValue(self._queue_done)
+        old = self._thread
         self._thread = None
+        if old is not None:
+            # `finish` est émis à la fin de run() : l'attente est de quelques ms.
+            # On ne libère la référence qu'une fois le thread réellement terminé.
+            old.wait()
+            old.deleteLater()
         self._run_next()
 
     def _finish_batch(self):
@@ -1523,9 +1529,16 @@ class WorkflowValidationWindow(QMainWindow):
         self._update_counter()
 
     def closeEvent(self, event):
-        # Fermeture en cours de route : on arrête d'enchaîner et on ferme l'API
-        # si nous l'avions démarrée.
         self._cancel = True
+        t = self._thread
+        if t is not None and t.isRunning():
+            if not t.wait(10_000):
+                # Toujours actif : on GARDE la référence (self._thread) pour éviter
+                # « Destroyed while thread is still running ». La fin du tutoriel
+                # en cours passera par _on_finish → _finish_batch, qui arrêtera l'API.
+                event.accept()
+                settings().setValue("geometry/validation", self.saveGeometry())
+                return
         if self._api_started_by_us:
             try:
                 core.stop_api()

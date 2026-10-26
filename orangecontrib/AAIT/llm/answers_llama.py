@@ -274,7 +274,7 @@ def check_gpu(model_path, argself, mmproj_path=None, n_ctx=0):
             return
 
 
-def count_tokens(model, message, image_token_cost=1968, overhead_size=4):
+def count_tokens(model, message, image_token_cost=4028, overhead_size=4): #1968 for Qwen, 4028 for Ornith
     """
     Estimate token count for a single message.
     """
@@ -359,6 +359,19 @@ def load_model(model_path, use_gpu, n_ctx=10000, k_cache=None, v_cache=None, ver
         return
 
 
+def release_model(model):
+    """Libere le contexte llama.cpp et le projecteur multimodal (VRAM) a la fin d'un run."""
+    if model is None:
+        return
+    handler = getattr(model, "chat_handler", None)
+    try:
+        model.close()
+    except Exception as e:
+        print(f"model.close() failed: {e}")
+    handler_llama.close_chat_handler(handler)
+    gc.collect()
+
+
 def generate_answers(table, model_path, use_gpu=False, n_ctx=4096, query_parameters=None, workflow_id="", progress_callback=None, argself=None):
     """
     Identique en signature/comportement, mais utilise llama_cpp sous le capot.
@@ -373,8 +386,18 @@ def generate_answers(table, model_path, use_gpu=False, n_ctx=4096, query_paramet
     # Note: `progress_callback` est le canal multi-usage (tokens, %, warnings, erreurs).
     # load_model/load_model_with_handler ne l'utilisent que pour signaler un échec,
     # d'où le nom `error_callback` côté de leur signature.
-    model = load_model_with_handler(model_path=model_path, use_gpu=use_gpu, n_ctx=n_ctx, verbose=True, error_callback=progress_callback)
-    with_handler = True
+    # Handler multimodal uniquement si la table contient des images :
+    # les prompts texte passent par le chemin texte.
+    model = None
+    with_handler = False
+    if "image paths" in data.domain:
+        model = load_model_with_handler(model_path=model_path,
+                                        use_gpu=use_gpu,
+                                        n_ctx=n_ctx,
+                                        reasoning=query_parameters["reasoning"],
+                                        verbose=True,
+                                        error_callback=progress_callback)
+        with_handler = model is not None
     if model is None:
         model = load_model(model_path=model_path,
                            use_gpu=use_gpu,
@@ -392,94 +415,97 @@ def generate_answers(table, model_path, use_gpu=False, n_ctx=4096, query_paramet
         query_parameters = {"max_tokens": 4096, "temperature": 0.4, "top_p": 0.4, "top_k": 40, "repeat_penalty": 1.15}
 
 
-    # Génération sur la colonne "prompt", fonctionnement ligne à ligne
-    rows = []
-    for i, row in enumerate(data):
-        features = list(data[i])
-        metas = list(data.metas[i])
-        prompt = row["prompt"].value
-        model.reset()
-        _ctx = model._ctx
-        if hasattr(_ctx, "memory_clear"):
-            _ctx.memory_clear(True)
-        elif hasattr(_ctx, "kv_cache_clear"):
-            _ctx.kv_cache_clear()
-        else:
-            import llama_cpp
-            llama_cpp.llama_memory_clear(llama_cpp.llama_get_memory(_ctx.ctx), True)
-        system_prompt = row["system prompt"].value if "system prompt" in data.domain else ""
-        assistant_prompt = row["assistant prompt"].value if "assistant prompt" in data.domain else ""
+    try:
+        # Génération sur la colonne "prompt", fonctionnement ligne à ligne
+        rows = []
+        for i, row in enumerate(data):
+            features = list(data[i])
+            metas = list(data.metas[i])
+            prompt = row["prompt"].value
+            model.reset()
+            _ctx = model._ctx
+            if hasattr(_ctx, "memory_clear"):
+                _ctx.memory_clear(True)
+            elif hasattr(_ctx, "kv_cache_clear"):
+                _ctx.kv_cache_clear()
+            else:
+                import llama_cpp
+                llama_cpp.llama_memory_clear(llama_cpp.llama_get_memory(_ctx.ctx), True)
+            system_prompt = row["system prompt"].value if "system prompt" in data.domain else ""
+            assistant_prompt = row["assistant prompt"].value if "assistant prompt" in data.domain else ""
 
-        # Si ce n'est pas un VLM:
-        if not with_handler:
-            prompt = prompt_management.apply_prompt_template(
-                model_path,
-                user_prompt=prompt,
-                assistant_prompt=assistant_prompt,
-                system_prompt=system_prompt
-            )
+            # Si ce n'est pas un VLM:
+            if not with_handler:
+                prompt = prompt_management.apply_prompt_template(
+                    model_path,
+                    user_prompt=prompt,
+                    assistant_prompt=assistant_prompt,
+                    system_prompt=system_prompt
+                )
 
-            prompt = handle_context_length(prompt, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
+                prompt = handle_context_length(prompt, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
 
-            answer = run_query(
-                prompt,
-                model=model,
-                max_tokens=query_parameters["max_tokens"],
-                temperature=query_parameters["temperature"],
-                top_p=query_parameters["top_p"],
-                top_k=query_parameters["top_k"],
-                repeat_penalty=query_parameters["repeat_penalty"],
-                workflow_id=workflow_id,
-                argself=argself,
-                progress_callback=progress_callback
-            )
+                answer = run_query(
+                    prompt,
+                    model=model,
+                    max_tokens=query_parameters["max_tokens"],
+                    temperature=query_parameters["temperature"],
+                    top_p=query_parameters["top_p"],
+                    top_k=query_parameters["top_k"],
+                    repeat_penalty=query_parameters["repeat_penalty"],
+                    workflow_id=workflow_id,
+                    argself=argself,
+                    progress_callback=progress_callback
+                )
 
-        else:
-            # Parsing et regroupement des prompts / image path
-            image_paths = [p.strip() for p in row["image paths"].value.split(";")] if "image paths" in data.domain else []
-            message_rows = [["user", "text", prompt]]
-            for image_path in image_paths:
-                message_rows.append(["user", "image", image_path])
-            if assistant_prompt:
-                message_rows.append(["assistant", "text", assistant_prompt])
+            else:
+                # Parsing et regroupement des prompts / image path
+                image_paths = [p.strip() for p in row["image paths"].value.split(";")] if "image paths" in data.domain else []
+                message_rows = [["user", "text", prompt]]
+                for image_path in image_paths:
+                    message_rows.append(["user", "image", image_path])
+                if assistant_prompt:
+                    message_rows.append(["assistant", "text", assistant_prompt])
 
-            # Création d'une table pour utiliser la helper function table_to_messages
-            v1 = StringVariable("role")
-            v2 = StringVariable("type")
-            v3 = StringVariable("content")
-            temp_domain = Domain([], metas=[v1, v2, v3])
-            temp_table = Table.from_list(temp_domain, rows=message_rows)
-            messages = table_to_messages(temp_table)
+                # Création d'une table pour utiliser la helper function table_to_messages
+                v1 = StringVariable("role")
+                v2 = StringVariable("type")
+                v3 = StringVariable("content")
+                temp_domain = Domain([], metas=[v1, v2, v3])
+                temp_table = Table.from_list(temp_domain, rows=message_rows)
+                messages = table_to_messages(temp_table)
 
-            answer = chat_completion_with_handler(messages=messages,
-                                                  model=model,
-                                                  parameters=query_parameters,
-                                                  workflow_id=workflow_id,
-                                                  progress_callback=progress_callback,
-                                                  argself=argself)
+                answer = chat_completion_with_handler(messages=messages,
+                                                      model=model,
+                                                      parameters=query_parameters,
+                                                      workflow_id=workflow_id,
+                                                      progress_callback=progress_callback,
+                                                      argself=argself)
 
-        if answer == "":
-            answer = (
-                "Error: The answer could not be generated. Your prompt might be too long, or the model architecture you tried to use is possibly "
-                f"not supported yet.\n\nModel name: {ntpath.basename(model_path)}"
-            )
+            if answer == "":
+                answer = (
+                    "Error: The answer could not be generated. Your prompt might be too long, or the model architecture you tried to use is possibly "
+                    f"not supported yet.\n\nModel name: {ntpath.basename(model_path)}"
+                )
 
-        thinking, answer = split_think(answer)
-        metas += [answer, thinking]
-        rows.append(features + metas)
+            thinking, answer = split_think(answer)
+            metas += [answer, thinking]
+            rows.append(features + metas)
 
-        if progress_callback is not None:
-            progress_value = float(100 * (i + 1) / len(data))
-            progress_callback(("progressBar", progress_value))
+            if progress_callback is not None:
+                progress_value = float(100 * (i + 1) / len(data))
+                progress_callback(("progressBar", progress_value))
 
-        if argself is not None and getattr(argself, "stop", False):
-            break
+            if argself is not None and getattr(argself, "stop", False):
+                break
 
-    # Ajouter la colonne "Answer" en metas
-    answer_dom = [StringVariable("Answer"), StringVariable("Thinking")]
+        # Ajouter la colonne "Answer" en metas
+        answer_dom = [StringVariable("Answer"), StringVariable("Thinking")]
 
-    domain = Domain(attributes=attr_dom, metas=metas_dom + answer_dom, class_vars=class_dom)
-    out_data = Table.from_list(domain=domain, rows=rows)
+        domain = Domain(attributes=attr_dom, metas=metas_dom + answer_dom, class_vars=class_dom)
+        out_data = Table.from_list(domain=domain, rows=rows)
+    finally:
+        release_model(model)
     return out_data
 
 
@@ -816,7 +842,12 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
     data = copy.deepcopy(table)
 
     if handler_llama.find_mmproj_path(model_path) is not None:
-        model = load_model_with_handler(model_path, n_ctx=n_ctx, use_gpu=use_gpu, verbose=True, error_callback=progress_callback)
+        model = load_model_with_handler(model_path,
+                                        n_ctx=n_ctx,
+                                        use_gpu=use_gpu,
+                                        reasoning=query_parameters["reasoning"],
+                                        verbose=True,
+                                        error_callback=progress_callback)
         with_handler = True
     else:
         model = load_model(model_path=model_path,
@@ -833,73 +864,76 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
     if query_parameters is None:
         query_parameters = {"max_tokens": 0, "temperature": 0.4, "top_p": 0.4, "top_k": 40, "repeat_penalty": 1.15}
 
-    # Build the conversation from table
-    messages = table_to_messages(data)
-    if not messages:
-        if progress_callback is not None:
-            progress_callback(("error", "Could not build a conversation from the input data (empty or invalid role/type/content rows)."))
-        return data
-    messages = handle_long_messages(messages, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
+    try:
+        # Build the conversation from table
+        messages = table_to_messages(data)
+        if not messages:
+            if progress_callback is not None:
+                progress_callback(("error", "Could not build a conversation from the input data (empty or invalid role/type/content rows)."))
+            return data
+        messages = handle_long_messages(messages, model, n_ctx, method="truncate", margin=query_parameters["max_tokens"], progress_callback=progress_callback)
 
-    ### GENERATE ANSWER
-    if with_handler:
-        answer = chat_completion_with_handler(messages=messages,
-                                              model=model,
-                                              parameters=query_parameters,
-                                              workflow_id=workflow_id,
-                                              progress_callback=progress_callback,
-                                              argself=argself)
-    else:
-        try:
-            print("Trying native prompt formating...")
-            chat_template = model.metadata["tokenizer.chat_template"]
-            if not is_multimodal_template(chat_template):
-                messages = flatten_multimodal_messages(messages, drop_images=True)
-            template = Template(chat_template)
-            prompt = template.render(messages=messages, tools=None, add_generation_prompt=True)
-            print("Successfully generated prompt.")
-        except Exception as e:
-            print(f"An error happened: {e}. Falling back to generic prompt formating...")
-            prompt = prompt_management.apply_template_to_conversation_2(model.model_path, conversation=messages)
-        answer = run_query(
-            prompt,
-            model=model,
-            max_tokens=query_parameters["max_tokens"],
-            temperature=query_parameters["temperature"],
-            top_p=query_parameters["top_p"],
-            top_k=query_parameters["top_k"],
-            repeat_penalty=query_parameters["repeat_penalty"],
-            workflow_id=workflow_id,
-            argself=argself,
-            progress_callback=progress_callback
+        ### GENERATE ANSWER
+        if with_handler:
+            answer = chat_completion_with_handler(messages=messages,
+                                                  model=model,
+                                                  parameters=query_parameters,
+                                                  workflow_id=workflow_id,
+                                                  progress_callback=progress_callback,
+                                                  argself=argself)
+        else:
+            try:
+                print("Trying native prompt formating...")
+                chat_template = model.metadata["tokenizer.chat_template"]
+                if not is_multimodal_template(chat_template):
+                    messages = flatten_multimodal_messages(messages, drop_images=True)
+                template = Template(chat_template)
+                prompt = template.render(messages=messages, tools=None, add_generation_prompt=True)
+                print("Successfully generated prompt.")
+            except Exception as e:
+                print(f"An error happened: {e}. Falling back to generic prompt formating...")
+                prompt = prompt_management.apply_template_to_conversation_2(model.model_path, conversation=messages)
+            answer = run_query(
+                prompt,
+                model=model,
+                max_tokens=query_parameters["max_tokens"],
+                temperature=query_parameters["temperature"],
+                top_p=query_parameters["top_p"],
+                top_k=query_parameters["top_k"],
+                repeat_penalty=query_parameters["repeat_penalty"],
+                workflow_id=workflow_id,
+                argself=argself,
+                progress_callback=progress_callback
+            )
+
+        if answer == "":
+            answer = (
+                "Error: The answer could not be generated. Your prompt might be too long, or the model architecture you tried to use is possibly "
+                f"not supported yet.\n\nModel name: {ntpath.basename(model_path)}"
+            )
+
+        thinking, answer = split_think(answer)
+
+        # Create output table
+        meta = data.metas[-1].copy()
+        meta_names = [m.name for m in data.domain.metas]
+        meta[meta_names.index("role")] = "assistant"
+        meta[meta_names.index("type")] = "text"
+        meta[meta_names.index("content")] = answer
+        empty_x = np.zeros((1, len(data.domain.attributes)))
+
+        new_row = Table.from_numpy(
+            data.domain,
+            X=empty_x,
+            metas=np.array([meta], dtype=object)
         )
-
-    if answer == "":
-        answer = (
-            "Error: The answer could not be generated. Your prompt might be too long, or the model architecture you tried to use is possibly "
-            f"not supported yet.\n\nModel name: {ntpath.basename(model_path)}"
-        )
-
-    thinking, answer = split_think(answer)
-
-    # Create output table
-    meta = data.metas[-1].copy()
-    meta_names = [m.name for m in data.domain.metas]
-    meta[meta_names.index("role")] = "assistant"
-    meta[meta_names.index("type")] = "text"
-    meta[meta_names.index("content")] = answer
-    empty_x = np.zeros((1, len(data.domain.attributes)))
-
-    new_row = Table.from_numpy(
-        data.domain,
-        X=empty_x,
-        metas=np.array([meta], dtype=object)
-    )
-    out_data = Table.concatenate([data, new_row])
+        out_data = Table.concatenate([data, new_row])
+    finally:
+        release_model(model)
     return out_data
 
 
-def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True, min_n_ctx=4096, error_callback=None):
+def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, reasoning=True, verbose=True, min_n_ctx=4096, error_callback=None):
     """
     Loads a multimodal (vision-language) model using a dedicated chat handler and GGUF backend.
 
@@ -973,7 +1007,7 @@ def load_model_with_handler(model_path, n_ctx=32768, use_gpu=True, verbose=True,
             # Llama() n'alloue son cache KV. Il est donc recree a chaque essai,
             # et libere explicitement en cas d'echec.
             chat_handler = handler_llama.get_chat_handler(
-                model_path, mmproj_path, verbose=verbose, use_gpu=on_gpu
+                model_path, mmproj_path, verbose=verbose, use_gpu=on_gpu, reasoning=reasoning
             )
 
             print(f"Loading model (n_ctx={attempt_n_ctx}, gpu={on_gpu}, "
@@ -1107,6 +1141,8 @@ def chat_completion_with_handler(messages, model, parameters, workflow_id="", pr
         requested_max_tokens=parameters.get("max_tokens", 0),
         progress_callback=progress_callback,
     )
+    if not messages or effective_max_tokens <= 0:
+        return ""
 
     full_response = ""
 
@@ -1446,16 +1482,27 @@ def fit_messages_to_context(messages, model, requested_max_tokens,
         except Exception:
             n_ctx = 4096
 
-    # Marge qu'on réserve pour la réponse pendant qu'on tronque l'entrée
-    margin = requested_max_tokens if requested_max_tokens and requested_max_tokens > 0 else min_generation
-
-    # 1) Tronque les vieux messages si l'entrée seule est déjà trop grosse
-    messages = handle_long_messages(messages, model, n_ctx, method="truncate",
-                                    margin=margin, progress_callback=progress_callback,
-                                    mode="single")
-
-    # 2) Borne max_tokens à ce qui reste réellement après le prompt (tronqué)
+    # 1) L'entrée est prioritaire sur la réponse : on ne tronque que si elle
+    #    ne laisse même pas min_generation tokens pour générer.
     prompt_tokens = count_messages_tokens(model, messages)
+    if prompt_tokens + min_generation + safety > n_ctx:
+        messages = handle_long_messages(messages, model, n_ctx, method="truncate",
+                                        margin=min_generation + safety,
+                                        progress_callback=progress_callback,
+                                        mode="single")
+        prompt_tokens = count_messages_tokens(model, messages)
+
+    # Plus aucun message utilisateur : on refuse de générer (sinon le modèle
+    # hallucine une tâche à partir du template seul).
+    if not any(m.get("role") == "user" for m in messages):
+        if progress_callback is not None:
+            progress_callback(("error",
+                f"Entrée supprimée : elle ne tient pas dans le contexte "
+                f"(Context Length {n_ctx}). Aucune génération lancée.\n"
+                f"-> Augmentez Context Length ou libérez de la VRAM."))
+        return [], 0
+
+    # 2) Borne max_tokens à ce qui reste réellement après le prompt
     available = max(1, n_ctx - prompt_tokens - safety)
 
     if requested_max_tokens and requested_max_tokens > 0:

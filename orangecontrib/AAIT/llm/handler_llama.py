@@ -628,7 +628,7 @@ def close_chat_handler(chat_handler):
             continue
 
 
-def get_generic_chat_handler(model_path, mmproj_path):
+def get_generic_chat_handler(model_path, mmproj_path, reasoning=True):
     """
     Handler générique (version en ligne) : utilise le chat template du GGUF.
     Sert de repli pour les modèles sans handler dédié.
@@ -644,14 +644,14 @@ def get_generic_chat_handler(model_path, mmproj_path):
             mmproj_path=mmproj_path,
             # Check the templates and add all the "enable_thinking" (similar keywords) in this dictionary
             # enable_thinking is used by Qwen, Ornith, Gemma4 so far
-            extra_template_arguments={"enable_thinking": True}
+            extra_template_arguments={"enable_thinking": reasoning}
         )
     except Exception as e:
         print("Unable to load chat handler:", e)
         return None
 
 
-def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
+def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True, reasoning=True):
 
     model_name = os.path.basename(model_path).lower()
 
@@ -674,7 +674,8 @@ def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
             return Qwen3VLChatHandler(
                 clip_model_path=mmproj_path,
                 force_reasoning=False,
-                verbose=verbose
+                verbose=verbose,
+                extra_template_arguments={"enable_thinking": reasoning}
             )
 
         except Exception as e:
@@ -695,7 +696,8 @@ def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
             return Qwen35ChatHandler(
                 clip_model_path=mmproj_path,
                 verbose=verbose,
-                use_gpu=use_gpu
+                use_gpu=use_gpu,
+                extra_template_arguments={"enable_thinking": reasoning}
             )
 
         except Exception as e:
@@ -716,7 +718,8 @@ def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
             return Gemma4ChatHandler(
                 clip_model_path=mmproj_path,
                 verbose=verbose,
-                use_gpu=use_gpu
+                use_gpu=use_gpu,
+                extra_template_arguments={"enable_thinking": reasoning}
             )
 
         except Exception as e:
@@ -726,4 +729,4 @@ def get_chat_handler(model_path, mmproj_path, verbose=False, use_gpu=True):
     # =============================================================================
     # Autres modèles : handler générique
     # =============================================================================
-    return get_generic_chat_handler(model_path, mmproj_path)
+    return get_generic_chat_handler(model_path, mmproj_path, reasoning=reasoning)
