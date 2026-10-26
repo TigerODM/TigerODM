@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>482</width>
-    <height>399</height>
+    <height>424</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -107,7 +107,7 @@
    <property name="geometry">
     <rect>
      <x>149</x>
-     <y>354</y>
+     <y>379</y>
      <width>301</width>
      <height>31</height>
     </rect>
@@ -123,7 +123,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>360</y>
+     <y>385</y>
      <width>131</width>
      <height>16</height>
     </rect>
@@ -143,6 +143,25 @@
    </property>
    <property name="text">
     <string>DataTable -&gt; json</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="checkBox_deep_json">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>345</y>
+     <width>431</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Flatten nested keys (key.sub_key, list[i]) and merge keys of all records. Missing keys become missing values (?).</string>
+   </property>
+   <property name="text">
+    <string>Deep / variable JSON (flatten nested keys)</string>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
    </property>
   </widget>
  </widget>

@@ -250,7 +250,7 @@ class OWExportMarkdown(widget.OWWidget):
                     )
                     self.ajouter_en_tete_pied_docx(
                         docx_out,
-                        "Rapport - Orange AI",
+                        "Rapport - TigerODM",
                         "Page générée automatiquement - Ne pas diffuser"
                     )
                     produced_docx = docx_out if os.path.isfile(docx_out) else ""
@@ -265,8 +265,8 @@ class OWExportMarkdown(widget.OWWidget):
                     )
                     self.ajouter_entete_pied_pptx(
                         pptx_out,
-                        "Orange AI – Présentation",
-                        "Page générée automatiquement"
+                        "TigerODM – Présentation",
+                        "Page générée automatiquement par IA"
                     )
                     produced_pptx = pptx_out if os.path.isfile(pptx_out) else ""
 

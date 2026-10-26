@@ -16,11 +16,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils import thread_management
-    from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert
+    from Orange.widgets.orangecontrib.HLIT.remote_server_smb import convert
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
 else:
     from orangecontrib.AAIT.utils.import_uic import uic
-    from orangecontrib.HLIT_dev.remote_server_smb import convert
+    from orangecontrib.HLIT.remote_server_smb import convert
     from orangecontrib.AAIT.utils import thread_management
 
 class ParseHMTL(OWWidget):

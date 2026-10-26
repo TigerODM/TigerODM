@@ -1,91 +1,92 @@
 import os, sys
 from pathlib import Path
 import numpy as np
-
-from Orange.widgets import widget
+import re
+import Orange.data
+from AnyQt.QtWidgets import QApplication, QCheckBox, QPushButton
+from Orange.data import StringVariable, Table, Domain
 from Orange.widgets.utils.signals import Input, Output
-from Orange.data import Domain, StringVariable, Table
-from AnyQt.QtWidgets import QCheckBox, QApplication
 from Orange.widgets.settings import Setting
+from AnyQt.QtCore import QTimer
 
-
-try:
-    from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
+if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
+    from Orange.widgets.orangecontrib.AAIT.utils import base_widget, help_management
+    from Orange.widgets.orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
     from Orange.widgets.orangecontrib.IO4IT.utils import utils_md
-except ImportError:
+else:
+    from orangecontrib.AAIT.utils import base_widget, help_management
+    from orangecontrib.AAIT.utils.initialize_from_ini import apply_modification_from_python_file
     from orangecontrib.IO4IT.utils import utils_md
     from orangecontrib.AAIT.utils.import_uic import uic
 
 
-class OWMarkdownLoader(widget.OWWidget):
+@apply_modification_from_python_file(filepath_original_widget=__file__)
+class OWMarkdownLoader(base_widget.BaseListWidget):
     name = "Markdown Loader"
-    description = "Load all Markdown files from a folder (recursively)."
+    description = "Load Markdown files from a folder (recursively) or directly from specific file paths."
     icon = "icons/load_md.png"
     if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
         icon = "icons_dev/load_md.png"
     gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owmarkdownloader.ui")
     want_control_area = False
     priority = 1001
+
+    selected_column_name = Setting("input_dir")
     recursive = Setting(False)
     class Inputs:
-        data = Input("Data", Table)
+        data = Input("Data", Orange.data.Table)
 
     class Outputs:
-        md_files = Output("Markdown Files", Table)  # -> (file_path, content)
-        data = Output("Data", Table)  # passthrough de l'entrée
-
-    def __init__(self):
-        super().__init__()
-
-        self.in_data = None
-        self.input_dir = None
-        uic.loadUi(self.gui, self)
-
-
-        self.checkBoxRecursive = self.findChild(QCheckBox, 'checkBoxRecursive')
-        # These lines MUST be after super().__init__()
-        if self.recursive:
-            self.checkBoxRecursive.setChecked(True)
-        else:
-            self.checkBoxRecursive.setChecked(False)
-        self.recursive = self.checkBoxRecursive.isChecked()
-        self.checkBoxRecursive.stateChanged.connect(self._on_recursive_toggled)
-
-        self.warning("")
-
-    def _on_recursive_toggled(self, _state):
-        self.recursive = self.checkBoxRecursive.isChecked()
-        # If a directory is already set, re-run the production
-        if self.input_dir:
-            self._produce()
+        md_files = Output("Markdown Files", Orange.data.Table)  # -> (file_path, content)
+        data = Output("Data", Orange.data.Table)  # passthrough de l'entrée
 
     @Inputs.data
-    def set_data(self, in_data: Table | None):
-        self.in_data = in_data
-        self.warning("")
+    def set_path_table(self, in_data):
+        self.data = in_data
 
         # Always pass through the input data
         self.Outputs.data.send(in_data)
 
-        if not in_data:
-            # If no input data, send an empty table
+        if in_data is None:
             self.Outputs.md_files.send(self._empty_md_table())
-            self.Description.setText(
-                "This widget loads Markdown files from a folder. The path must be in a column named 'input_dir'.")
             return
 
-        # Look for the 'input_dir' column and get the first folder
-        try:
-            input_dir_column = in_data.domain["input_dir"]
-            self.input_dir = str(in_data[0, input_dir_column].value)
-        except (KeyError, IndexError, AttributeError):
-            self.warning('"input_dir" (Text) is required in the input data.')
-            self.Outputs.md_files.send(self._empty_md_table())
-            self.Description.setText("Error: 'input_dir' (Text) column not found or is empty.")
-            return
+        if self.data:
+            # Remplissage du selecteur de colonnes (issu de BaseListWidget)
+            self.var_selector.add_variables(self.data.domain)
+            self.var_selector.select_variable_by_name(self.selected_column_name)
 
-        self.Description.setText(f"Dossier : {self.input_dir}")
-        self._produce()
+        self.run()
+
+    def __init__(self):
+        super().__init__()
+        # Qt Management
+        self.setFixedWidth(500)
+        self.setFixedHeight(400)
+
+        self.data = None
+        self.autorun = True
+
+        # Checkbox Récursif
+        self.checkBoxRecursive = self.findChild(QCheckBox, 'checkBoxRecursive')
+        self.checkBoxRecursive.setChecked(self.recursive)
+        self.checkBoxRecursive.stateChanged.connect(self._on_recursive_toggled)
+
+        # Run Button
+        self.pushButton_run = self.findChild(QPushButton, 'pushButton_send')
+        self.pushButton_run.clicked.connect(self.run)
+
+        QTimer.singleShot(0, lambda: help_management.override_help_action(self))
+        self.post_initialized()
+
+    def _on_recursive_toggled(self, state):
+        self.recursive = self.checkBoxRecursive.isChecked()
+        if self.data is not None:
+            self.run()
+
+    def update_parameters(self):
+        if self.data is not None:
+            self.run()
 
     def _empty_md_table(self) -> Table:
         domain = Domain([], metas=[StringVariable("file_path"), StringVariable("content")])
@@ -93,33 +94,82 @@ class OWMarkdownLoader(widget.OWWidget):
         metas = np.empty((0, 2), dtype=object)
         return Table.from_numpy(domain, X, metas=metas)
 
-    def _produce(self):
-        if not self.input_dir or not os.path.isdir(self.input_dir):
-            self.warning(f"Invalid directory path: '{self.input_dir}'")
+    def run(self):
+        self.error("")
+        self.warning("")
+
+        if self.data is None:
             self.Outputs.md_files.send(self._empty_md_table())
             return
-        base = Path(self.input_dir)
-        patterns = ["*.md"]
-        paths = []
 
-        for patt in patterns:
-            if self.recursive:
-                paths.extend(base.rglob(patt))
+        if not self.selected_column_name in self.data.domain:
+            self.warning(f'Previously selected column "{self.selected_column_name}" does not exist in your data.')
+            self.Outputs.md_files.send(self._empty_md_table())
+            return
+
+        # Récupération sécurisée des chemins depuis la colonne sélectionnée
+        try:
+            if hasattr(self.data, "get_column"):
+                input_paths = self.data.get_column(self.selected_column_name)
             else:
-                paths.extend(base.glob(patt))
+                # Fallback au cas où get_column n'existe pas
+                col_idx = self.data.domain.index(self.selected_column_name)
+                input_paths = [row[col_idx].value for row in self.data]
+        except Exception as e:
+            self.error(f"Error reading column data: {e}")
+            return
 
         md_rows = []
-        for p in sorted(set(paths)):
-            try:
-                md_rows.append([str(p), utils_md.try_read_text(p)])
-            except Exception:
-                md_rows.append([str(p), ""])
+        seen_paths = set()
+
+        for p_val in input_paths:
+            if not p_val:
+                continue
+
+            p_str = str(p_val)
+            if not os.path.exists(p_str):
+                continue
+
+            p = Path(p_str)
+
+            # CAS 1 : C'est un fichier direct
+            if p.is_file():
+                if p.suffix.lower() == ".md" and p not in seen_paths:
+                    seen_paths.add(p)
+                    try:
+                        md_rows.append([str(p), utils_md.try_read_text(p)])
+                    except Exception:
+                        md_rows.append([str(p), ""])
+
+            # CAS 2 : C'est un répertoire
+            elif p.is_dir():
+                patterns = ["*.md"]
+                found_paths = []
+                for patt in patterns:
+                    if self.recursive:
+                        found_paths.extend(p.rglob(patt))
+                    else:
+                        found_paths.extend(p.glob(patt))
+
+                for fp in found_paths:
+                    if fp not in seen_paths and fp.is_file():
+                        seen_paths.add(fp)
+                        try:
+                            md_rows.append([str(fp), utils_md.try_read_text(fp)])
+                        except Exception:
+                            md_rows.append([str(fp), ""])
+
+        # Formatage des données de sortie
         domain = Domain([], metas=[StringVariable("file_path"), StringVariable("content")])
         X = np.empty((len(md_rows), 0))
         metas = np.array(md_rows, dtype=object) if md_rows else np.empty((0, 2), dtype=object)
         md_table = Table.from_numpy(domain, X, metas=metas)
 
         self.Outputs.md_files.send(md_table)
+
+    def post_initialized(self):
+        pass
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -11,6 +11,7 @@ import docx
 import filetype
 import multiprocessing
 import queue
+from Orange.widgets.settings import Setting
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.IO4IT.utils import utils_md
@@ -47,6 +48,11 @@ class OWOfficeNormalizer(widget.OWWidget):
     want_control_area = False
     priority = 1003
 
+    generate_excel = Setting(True)
+    timeout_enabled = Setting(True)
+    timeout_value_setting = Setting(60)
+    auto_send = Setting(True)
+
     class Inputs:
         data = Input("Files Table", Table)
 
@@ -61,15 +67,46 @@ class OWOfficeNormalizer(widget.OWWidget):
         uic.loadUi(self.gui, self)
 
         self.data = None
-        self.autorun = True
         self.result = None
         self.processed_statuses = []
 
-        # Connecter la case à cocher pour activer/désactiver le spinbox
-        self.checkBox_timeout.toggled.connect(self.spinBox_timeout.setEnabled)
-        self.spinBox_timeout.setEnabled(self.checkBox_timeout.isChecked())
+        # --- Initialisation de l'interface avec les valeurs sauvegardées ---
+        self.checkBox_generate_excel.setChecked(self.generate_excel)
+        self.checkBox_timeout.setChecked(self.timeout_enabled)
+        self.spinBox_timeout.setValue(self.timeout_value_setting)
+        self.checkBox_send.setChecked(self.auto_send)
+        
+        # Lier l'état d'activation du SpinBox à l'état de la checkbox Timeout
+        self.spinBox_timeout.setEnabled(self.timeout_enabled)
+        # -------------------------------------------------------------------
+
+        # --- Connexion des signaux pour mettre à jour les Settings ---
+        self.checkBox_generate_excel.toggled.connect(self._update_generate_excel)
+        self.checkBox_timeout.toggled.connect(self._update_timeout_enabled)
+        self.spinBox_timeout.valueChanged.connect(self._update_timeout_value)
+        self.checkBox_send.toggled.connect(self._update_auto_send)
+        self.pushButton_send.clicked.connect(self.run)
+        # -------------------------------------------------------------
+
+        self.autorun = self.auto_send
 
         self.post_initialized()
+
+    # --- Méthodes de mise à jour des Settings ---
+    def _update_generate_excel(self, checked):
+        self.generate_excel = checked
+
+    def _update_timeout_enabled(self, checked):
+        self.timeout_enabled = checked
+        self.spinBox_timeout.setEnabled(checked) # Active/désactive la saisie
+
+    def _update_timeout_value(self, value):
+        self.timeout_value_setting = value
+
+    def _update_auto_send(self, checked):
+        self.auto_send = checked
+        self.autorun = checked
+    # --------------------------------------------
 
     @Inputs.data
     def set_data(self, in_data: Table | None):
@@ -94,10 +131,9 @@ class OWOfficeNormalizer(widget.OWWidget):
         self.processed_statuses = []
         self.Outputs.status_data.send(None)
 
-        # Déterminer la valeur du timeout
         self.timeout_value = None
-        if self.checkBox_timeout.isChecked():
-            self.timeout_value = self.spinBox_timeout.value()
+        if self.timeout_enabled:
+            self.timeout_value = self.timeout_value_setting
 
         result_table = self._normalize_files(self.data)
 
@@ -143,21 +179,23 @@ class OWOfficeNormalizer(widget.OWWidget):
             common_path = Path(os.path.dirname(os.path.abspath(file_paths[0])))
         else:
             common_path = Path(os.path.commonpath(file_paths))
+
         output_base_dir = common_path / "office_normalisation"
         output_base_dir.mkdir(parents=True, exist_ok=True)
 
-        base_name = "normalization_results"
-        excel_path = output_base_dir / f"{base_name}.xlsx"
-        counter = 1
-        while excel_path.exists():
-            excel_path = output_base_dir / f"{base_name}_{counter}.xlsx"
-            counter += 1
+        if self.generate_excel:
+            base_name = "normalization_results"
+            excel_path = output_base_dir / f"{base_name}.xlsx"
+            counter = 1
+            while excel_path.exists():
+                excel_path = output_base_dir / f"{base_name}_{counter}.xlsx"
+                counter += 1
 
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Normalization Results"
-        headers = ["src_path", "dst_path", "status", "details"]
-        ws.append(headers)
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Normalization Results"
+            headers = ["src_path", "dst_path", "status", "details"]
+            ws.append(headers)
 
         for i, path_str in enumerate(file_paths):
             self.progressBarSet(i / total_files * 100)
@@ -217,8 +255,11 @@ class OWOfficeNormalizer(widget.OWWidget):
                     details = f"error: {e}"
 
             result_row = [path_str, dst_path, status_short, details]
-            ws.append(result_row)
-            wb.save(excel_path)
+
+            if self.generate_excel:
+                ws.append(result_row)
+                wb.save(excel_path)
+                
             rows.append([path_str, dst_path, status_short])
 
             self.processed_statuses.append([path_str, status_short, details])

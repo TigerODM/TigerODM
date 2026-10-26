@@ -7,11 +7,11 @@ import ast
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils import MetManagement
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
-    from Orange.widgets.orangecontrib.HLIT_dev.remote_server_smb import convert, hlit_workflow_management
+    from Orange.widgets.orangecontrib.HLIT.remote_server_smb import convert, hlit_workflow_management
 else:
     from orangecontrib.AAIT.utils import MetManagement
     from orangecontrib.AAIT.utils.import_uic import uic
-    from orangecontrib.HLIT_dev.remote_server_smb import convert, hlit_workflow_management
+    from orangecontrib.HLIT.remote_server_smb import convert, hlit_workflow_management
 
 FUNCTION_NAMES = [
     "Create",
