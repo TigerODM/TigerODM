@@ -1,0 +1,346 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>474</width>
+    <height>630</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>474</width>
+    <height>630</height>
+   </size>
+  </property>
+  <property name="maximumSize">
+   <size>
+    <width>474</width>
+    <height>630</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>Anomalib Training</string>
+  </property>
+
+  <!-- Groupe Configuration & Sélection de colonne -->
+  <widget class="QGroupBox" name="groupBox_dataset">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>10</y>
+     <width>451</width>
+     <height>235</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Configuration du Dataset</string>
+   </property>
+   <widget class="QLabel" name="Description">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>20</y>
+      <width>431</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Entraîne un modèle Patchcore et analyse les zones d'intérêt.
+Sélectionnez la colonne contenant le chemin du dataset racine :</string>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QGroupBox" name="groupVariable">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>65</y>
+      <width>431</width>
+      <height>160</height>
+     </rect>
+    </property>
+    <property name="title">
+     <string>Select Dataset Path Column</string>
+    </property>
+    <!-- Le placeholder indispensable pour BaseListWidget -->
+    <widget class="QWidget" name="placeholder" native="true">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>25</y>
+       <width>411</width>
+       <height>125</height>
+      </rect>
+     </property>
+    </widget>
+   </widget>
+  </widget>
+
+  <!-- Groupe Définition Zone ROI -->
+  <widget class="QGroupBox" name="groupBox_roi">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>255</y>
+     <width>451</width>
+     <height>140</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Zone d'Intérêt / ROI (pourcentages)</string>
+   </property>
+
+   <widget class="QLabel" name="label_ys">
+    <property name="geometry">
+     <rect>
+      <x>15</x>
+      <y>30</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Y Début (%) :</string>
+    </property>
+   </widget>
+   <widget class="QDoubleSpinBox" name="doubleSpinBox_zone_ys">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>30</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="maximum">
+     <double>100.0</double>
+    </property>
+    <property name="value">
+     <double>10.0</double>
+    </property>
+   </widget>
+
+   <widget class="QLabel" name="label_ye">
+    <property name="geometry">
+     <rect>
+      <x>230</x>
+      <y>30</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Y Fin (%) :</string>
+    </property>
+   </widget>
+   <widget class="QDoubleSpinBox" name="doubleSpinBox_zone_ye">
+    <property name="geometry">
+     <rect>
+      <x>325</x>
+      <y>30</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="maximum">
+     <double>100.0</double>
+    </property>
+    <property name="value">
+     <double>20.0</double>
+    </property>
+   </widget>
+
+   <widget class="QLabel" name="label_xs">
+    <property name="geometry">
+     <rect>
+      <x>15</x>
+      <y>70</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>X Début (%) :</string>
+    </property>
+   </widget>
+   <widget class="QDoubleSpinBox" name="doubleSpinBox_zone_xs">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>70</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="maximum">
+     <double>100.0</double>
+    </property>
+    <property name="value">
+     <double>38.0</double>
+    </property>
+   </widget>
+
+   <widget class="QLabel" name="label_xe">
+    <property name="geometry">
+     <rect>
+      <x>230</x>
+      <y>70</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>X Fin (%) :</string>
+    </property>
+   </widget>
+   <widget class="QDoubleSpinBox" name="doubleSpinBox_zone_xe">
+    <property name="geometry">
+     <rect>
+      <x>325</x>
+      <y>70</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="maximum">
+     <double>100.0</double>
+    </property>
+    <property name="value">
+     <double>50.0</double>
+    </property>
+   </widget>
+  </widget>
+
+  <!-- Paramètres Détection & Image -->
+  <widget class="QGroupBox" name="groupBox_params">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>405</y>
+     <width>451</width>
+     <height>145</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Paramètres d'Anomalie</string>
+   </property>
+
+   <widget class="QLabel" name="label_th">
+    <property name="geometry">
+     <rect>
+      <x>15</x>
+      <y>30</y>
+      <width>110</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Seuil Zone :</string>
+    </property>
+   </widget>
+   <widget class="QDoubleSpinBox" name="doubleSpinBox_zone_threshold">
+    <property name="geometry">
+     <rect>
+      <x>130</x>
+      <y>30</y>
+      <width>80</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="decimals">
+     <number>3</number>
+    </property>
+    <property name="singleStep">
+     <double>0.01</double>
+    </property>
+    <property name="value">
+     <double>0.22</double>
+    </property>
+   </widget>
+
+   <widget class="QLabel" name="label_tk">
+    <property name="geometry">
+     <rect>
+      <x>235</x>
+      <y>30</y>
+      <width>90</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Top-K Pixels :</string>
+    </property>
+   </widget>
+   <widget class="QSpinBox" name="spinBox_top_k">
+    <property name="geometry">
+     <rect>
+      <x>335</x>
+      <y>30</y>
+      <width>80</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="maximum">
+     <number>10000</number>
+    </property>
+    <property name="value">
+     <number>100</number>
+    </property>
+   </widget>
+
+   <widget class="QCheckBox" name="checkBox_clahe">
+    <property name="geometry">
+     <rect>
+      <x>15</x>
+      <y>75</y>
+      <width>391</width>
+      <height>25</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Appliquer CLAHE (Amélioration contraste)</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+   </widget>
+  </widget>
+
+  <!-- Boutons d'action inférieurs -->
+  <widget class="QCheckBox" name="checkBox_send">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>570</y>
+     <width>131</width>
+     <height>40</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Auto send data</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_send">
+   <property name="geometry">
+    <rect>
+     <x>170</x>
+     <y>570</y>
+     <width>291</width>
+     <height>40</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Start Training</string>
+   </property>
+  </widget>
+
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

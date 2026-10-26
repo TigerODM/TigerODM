@@ -87,7 +87,6 @@ def run_training(input_data, col_name, params, progress_callback=None):
             train_batch_size=_TRAIN_BATCH,
             eval_batch_size=_EVAL_BATCH,
             num_workers=0,
-            image_size=(_IMG_SIZE, _IMG_SIZE),
         )
 
         model = Patchcore(backbone=_BACKBONE, pre_trained=_PRE_TRAINED, layers=_LAYERS)
