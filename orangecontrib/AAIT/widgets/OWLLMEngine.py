@@ -1,6 +1,7 @@
-
 import os
 import sys
+import psutil
+
 
 import Orange.data
 from AnyQt.QtWidgets import QApplication, QLabel
@@ -231,6 +232,11 @@ class OWQEdgeLLM(widget.OWWidget):
         #answers_llama.check_gpu(self.model_path, self)
         if not self.can_run:
             return
+
+        battery = psutil.sensors_battery()
+        if battery is not None:
+            if not battery.power_plugged:
+                self.warning("Your computer must be plugged in to run models on GPU.")
 
         query_parameters = {
             "max_tokens": self.max_tokens,
