@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>470</width>
+    <height>351</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Pip Auditor</string>
+  </property>
+  <widget class="QGroupBox" name="groupBox">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>20</y>
+     <width>431</width>
+     <height>100</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>1. Environment Reference</string>
+   </property>
+   <widget class="QPushButton" name="pushButton_snapshot">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>40</y>
+      <width>411</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Take Snapshot (pip freeze)</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="groupBox_2">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>140</y>
+     <width>431</width>
+     <height>190</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>2. Audit &amp; Comparison</string>
+   </property>
+   <widget class="QLabel" name="label">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>30</y>
+      <width>411</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Compare the current environment with the snapshot. 
+This will output a table of differences (mismatches, missing or new packages).</string>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_autorun">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>80</y>
+      <width>411</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Auto-run comparison on startup</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_trigger">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>105</y>
+      <width>411</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Run comparison on input signal</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_run">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>135</y>
+      <width>411</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Run Comparison</string>
+    </property>
+   </widget>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -88,6 +88,40 @@ _REC_PREFERENCE = ("PP-OCRv6_rec_small", "ch_PP-OCRv5_rec_mobile", "ch_PP-OCRv4_
 # rapidocr >= 3.10 : "ch_ppocr_...", 3.8/3.9 : "ch_ptocr_..._mobile", <= 3.5 : "..._infer"
 _CLS_PREFERENCE = ("ch_ppocr_mobile_v2.0_cls_mobile", "ch_ptocr_mobile_v2.0_cls_mobile",
                    "ch_ptocr_mobile_v2.0_cls_infer")
+# Même poids cls sous deux noms selon la version de rapidocr (SHA256 identique bfe13860...) :
+# "ch_ptocr_..." jusqu'à 3.9.x, "ch_ppocr_..." à partir de 3.10. rapidocr déduisant
+# l'architecture du nom du fichier, on crée si besoin une copie sous le nom attendu.
+_CLS_ALIASES = ("ch_ppocr_mobile_v2.0_cls_mobile", "ch_ptocr_mobile_v2.0_cls_mobile")
+
+
+def _ensure_cls_alias(base: Path, pths: list, arch: set | None) -> Path | None:
+    """Si le poids cls n'existe que sous le nom d'une autre version de rapidocr,
+    le copie sous le nom attendu par la version installée. Renvoie la copie (ou None).
+    Copie dans le dossier RapidOcr, ou à défaut (dossier non inscriptible) dans le dossier temporaire."""
+    if arch is None:
+        return None
+    expected = next((n for n in _CLS_ALIASES if n in arch), None)
+    stems = {p.stem: p for p in pths}
+    if expected is None or expected in stems:
+        return None
+    src = next((stems[n] for n in _CLS_ALIASES if n in stems), None)
+    if src is None:
+        return None
+    import shutil, tempfile
+    for dst_dir in (src.parent, Path(tempfile.gettempdir()) / "aait_docling_rapidocr"):
+        dst = dst_dir / f"{expected}.pth"
+        try:
+            if dst.is_file() and dst.stat().st_size == src.stat().st_size:
+                return dst
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            tmp = dst_dir / f"{expected}.{os.getpid()}.tmp"
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, dst)  # atomique : sûr avec plusieurs processus
+            print(f"[Docling] poids cls copié pour rapidocr {_rapidocr_version()} : {src.name} -> {dst}")
+            return dst
+        except Exception as e:
+            print(f"[Docling] copie du poids cls impossible dans {dst_dir} : {e}")
+    return None
 
 
 def _pick(candidates: list, preference: tuple) -> Path | None:
@@ -136,6 +170,9 @@ def _rapidocr_model_paths(artifacts_path: str | None) -> dict:
         return {}
     arch = _torch_arch_names()
     pths = sorted(p for p in base.rglob("*.pth") if p.is_file())
+    alias = _ensure_cls_alias(base, pths, arch)
+    if alias is not None and alias not in pths:
+        pths.append(alias)
     if arch is not None:
         pths = [p for p in pths if p.stem in arch]
     det = _pick([p for p in pths if "_det_" in p.stem], _DET_PREFERENCE)

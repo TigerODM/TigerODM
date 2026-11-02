@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Form</class>
+ <widget class="QWidget" name="Form">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>384</width>
+    <height>421</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>File Extension Selector</string>
+  </property>
+  <widget class="QGroupBox" name="groupBox">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>40</y>
+     <width>341</width>
+     <height>311</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Parameters</string>
+   </property>
+   <widget class="QListWidget" name="listExtensions">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>70</y>
+      <width>301</width>
+      <height>181</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="Description">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>20</y>
+      <width>281</width>
+      <height>51</height>
+     </rect>
+    </property>
+    <property name="sizePolicy">
+     <sizepolicy hsizetype="Maximum" vsizetype="Expanding">
+      <horstretch>0</horstretch>
+      <verstretch>0</verstretch>
+     </sizepolicy>
+    </property>
+    <property name="font">
+     <font>
+      <pointsize>8</pointsize>
+     </font>
+    </property>
+    <property name="text">
+     <string>This widget get a folder path to propagate it as a path , either as input or output path</string>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="fileButton">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>270</y>
+      <width>301</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>📂 Select a file with the selected extension</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QPushButton" name="pushButton_send">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>160</x>
+     <y>364</y>
+     <width>201</width>
+     <height>31</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Run</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="checkBox_send">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>370</y>
+     <width>121</width>
+     <height>20</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Auto send data</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
