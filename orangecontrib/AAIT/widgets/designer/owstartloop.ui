@@ -15,75 +15,28 @@
   </property>
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
-    <rect>
-     <x>19</x>
-     <y>30</y>
-     <width>431</width>
-     <height>161</height>
-    </rect>
+    <rect><x>19</x><y>10</y><width>431</width><height>191</height></rect>
    </property>
    <property name="title">
-    <string>Parameters</string>
+    <string>Loop mode</string>
    </property>
-   <widget class="QCheckBox" name="checkBox">
+   <widget class="QComboBox" name="comboBox_mode">
     <property name="geometry">
-     <rect>
-      <x>20</x>
-      <y>126</y>
-      <width>371</width>
-      <height>20</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>Loop over the number of lines until it stops changing</string>
+     <rect><x>10</x><y>25</y><width>411</width><height>24</height></rect>
     </property>
    </widget>
-   <widget class="QLabel" name="Description">
+   <widget class="QLabel" name="label_mode_description">
     <property name="geometry">
-     <rect>
-      <x>20</x>
-      <y>6</y>
-      <width>391</width>
-      <height>81</height>
-     </rect>
+     <rect><x>12</x><y>55</y><width>407</width><height>125</height></rect>
     </property>
     <property name="text">
-     <string>This widget creates a loop with endloop. You have to put before the end loop a formula with iter&gt;=0 until your condition is not done. Put iter &lt;= 0 when it's done.</string>
-    </property>
-    <property name="textFormat">
-     <enum>Qt::AutoText</enum>
+     <string/>
     </property>
     <property name="alignment">
-     <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+     <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
     </property>
     <property name="wordWrap">
      <bool>true</bool>
-    </property>
-   </widget>
-   <widget class="QLabel" name="label">
-    <property name="geometry">
-     <rect>
-      <x>350</x>
-      <y>127</y>
-      <width>71</width>
-      <height>16</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>(Ignore iter)</string>
-    </property>
-   </widget>
-   <widget class="QCheckBox" name="checkBox_2">
-    <property name="geometry">
-     <rect>
-      <x>20</x>
-      <y>86</y>
-      <width>371</width>
-      <height>20</height>
-     </rect>
-    </property>
-    <property name="text">
-     <string>Loop on the number of input lines</string>
     </property>
    </widget>
   </widget>
@@ -91,7 +44,7 @@
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>206</y>
+     <y>212</y>
      <width>431</width>
      <height>31</height>
     </rect>

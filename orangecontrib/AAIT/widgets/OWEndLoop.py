@@ -4,15 +4,19 @@ import sys
 import Orange.data
 from Orange.widgets.widget import Input, Output, OWWidget
 from AnyQt.QtCore import QTimer
+from AnyQt.QtWidgets import QLabel
+import numpy as np
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.unlink_table_domain import unlink_domain,concatenate_tables_harmonized
     from Orange.widgets.orangecontrib.AAIT.utils import help_management
+    from Orange.widgets.orangecontrib.AAIT.utils.loop_mode import LoopMode
 else:
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.unlink_table_domain import unlink_domain,concatenate_tables_harmonized
     from orangecontrib.AAIT.utils import help_management
+    from orangecontrib.AAIT.utils.loop_mode import LoopMode
 
 class EndLoopWidget(OWWidget):
     name = "End Loop"
@@ -38,6 +42,7 @@ class EndLoopWidget(OWWidget):
         self.setFixedWidth(470)
         self.setFixedHeight(300)
         uic.loadUi(self.gui, self)
+        self.label_mode = self.findChild(QLabel, 'label_mode')
 
         self.data = None
         self.out_data = None
@@ -73,6 +78,7 @@ class EndLoopWidget(OWWidget):
     def set_pointer(self, pointer):
         self.in_pointer = int(pointer) if pointer else None
         self.set_ready_in_start()
+        self._update_mode_label()
 
 
 
@@ -82,8 +88,11 @@ class EndLoopWidget(OWWidget):
         if self.in_pointer is None:
             return
 
+        mode = self.get_loop_mode_from_start()
+        self._update_mode_label(mode)
+
         # cas ou on boucle temps que le nombre de ligne augmente
-        if "True"==self.get_is_allow_to_change_line_number_from_start():
+        if mode == LoopMode.WHOLE_UNTIL_STABLE:
             if self.get_nb_line() == self.get_nb_line_from_start():
                 # on s'arrete
                 self.reinitialize_iter()
@@ -93,23 +102,11 @@ class EndLoopWidget(OWWidget):
             ctypes.cast(int(self.in_pointer), ctypes.py_object).value.set_data(self.data)
             return
         # cas ou on boucle sur le nombre de ligne en entrée du workflow
-        if "True" == self.iter_of_line_number_from_start():
-            if self.out_data is None:
-                self.out_data = unlink_domain(self.data)
-            else:
-                self.out_data = concatenate_tables_harmonized([self.out_data, unlink_domain(self.data)])
-            if self.get_nb_line_from_start() == self.get_iter():
-                # on s'arrete
-                self.reinitialize_iter()
-                self.Outputs.out_data.send(self.out_data)
-                self.out_data = None
-                self.in_pointer = None
-                return
-            # on boucle
-            ctypes.cast(int(self.in_pointer), ctypes.py_object).value.execute_iter_of_line_number()
+        if LoopMode.is_row_by_row(mode):
+            self.run_row_by_row(mode)
             return
 
-
+        # LoopMode.WHOLE_UNTIL_ITER (default)
         # Check if the number of lines has changed
         if self.get_nb_line() != self.get_nb_line_from_start():
             self.error("Error! You can't change the number of lines")
@@ -177,6 +174,64 @@ class EndLoopWidget(OWWidget):
         self.Outputs.out_data.send(self.data)
 
 
+
+    def run_row_by_row(self, mode):
+        nb_line = self.get_nb_line_from_start()
+        if self.out_data is None:
+            self.info("")  # first row of a new loop
+
+        # New mode: a row coming back with iter < 0 stops the whole loop
+        stop_requested = (mode == LoopMode.ROWS_STOP_ON_NEGATIVE_ITER
+                          and self.has_negative_iter(self.data))
+
+        # the row is always kept, including the one that triggered the stop
+        if self.out_data is None:
+            self.out_data = unlink_domain(self.data)
+        else:
+            self.out_data = concatenate_tables_harmonized([self.out_data, unlink_domain(self.data)])
+
+        if stop_requested or nb_line == self.get_iter():
+            # on s'arrete
+            if stop_requested:
+                self.info(f"Loop stopped by iter < 0 on row {self.get_iter()}/{nb_line}. "
+                          f"{nb_line - self.get_iter()} row(s) skipped.")
+            self.reinitialize_iter()
+            self.Outputs.out_data.send(self.out_data)
+            self.out_data = None
+            self.in_pointer = None
+            return
+        # on boucle
+        ctypes.cast(int(self.in_pointer), ctypes.py_object).value.execute_iter_of_line_number()
+
+    @staticmethod
+    def has_negative_iter(data):
+        """True if 'iter' exists, is continuous and is < 0 on at least one row."""
+        if data is None or "iter" not in data.domain:
+            return False
+        if not data.domain["iter"].is_continuous:
+            return False
+        values = np.asarray(data.get_column("iter"), dtype=float)
+        return bool(np.any(values < 0))  # NaN is not < 0
+
+    def get_loop_mode_from_start(self):
+        if self.in_pointer is None:
+            return LoopMode.WHOLE_UNTIL_ITER
+        start = ctypes.cast(int(self.in_pointer), ctypes.py_object).value
+        if hasattr(start, "get_loop_mode"):
+            return start.get_loop_mode()
+        # older Loop Start: rebuild the mode from the legacy API
+        return LoopMode.from_legacy(start.is_allow_to_change_line_number(),
+                                    start.iter_of_line_number())
+
+    def _update_mode_label(self, mode=None):
+        if self.label_mode is None:
+            return
+        if mode is None:
+            if self.in_pointer is None:
+                self.label_mode.setText("Mode: (connect a Loop Start)")
+                return
+            mode = self.get_loop_mode_from_start()
+        self.label_mode.setText("Mode (set in Loop Start): " + LoopMode.LABELS.get(mode, "?"))
 
     def get_column_name_and_type_from_start(self):
         if self.in_pointer is not None:

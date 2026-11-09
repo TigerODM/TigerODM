@@ -6,17 +6,19 @@ from Orange.widgets.utils.signals import Input,Output
 from Orange.widgets.widget import OWWidget
 import numpy as np
 from Orange.widgets.settings import Setting
-from AnyQt.QtWidgets import QCheckBox, QPushButton
+from AnyQt.QtWidgets import QPushButton, QComboBox, QLabel
 from AnyQt.QtCore import QTimer
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils.import_uic import uic
     from Orange.widgets.orangecontrib.AAIT.utils.unlink_table_domain import unlink_domain
     from Orange.widgets.orangecontrib.AAIT.utils import help_management
+    from Orange.widgets.orangecontrib.AAIT.utils.loop_mode import LoopMode
 else:
     from orangecontrib.AAIT.utils.import_uic import uic
     from orangecontrib.AAIT.utils.unlink_table_domain import unlink_domain
     from orangecontrib.AAIT.utils import help_management
+    from orangecontrib.AAIT.utils.loop_mode import LoopMode
 
 class LoopStartWidget(OWWidget):
     name = "Loop Start"
@@ -28,8 +30,14 @@ class LoopStartWidget(OWWidget):
     gui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "designer/owstartloop.ui")
     want_control_area = False
     priority = 1010
+
+    # Legacy settings: still read (old workflows) and still written (so an older
+    # version of the add-on opening a new workflow keeps a sensible mode).
     str_iterate_still_nb_line_dont_change: str = Setting("False")
     str_iter_of_line_number: str = Setting("False")
+    # New settings. UNSET means "workflow saved before loop_mode existed".
+    loop_mode: int = Setting(LoopMode.UNSET)
+
     class Inputs:
         data_in = Input("Data In", Orange.data.Table)
         # in_pointer = Input("End of the Loop Do-While", str, auto_summary=False)
@@ -44,21 +52,26 @@ class LoopStartWidget(OWWidget):
         self.setFixedWidth(470)
         self.setFixedHeight(300)
         uic.loadUi(self.gui, self)
-        self.checkBox_iteration_until_number_of_line_dont_change = self.findChild(QCheckBox, 'checkBox')
-        self.checkBox_iteration_on_the_number_of_line = self.findChild(QCheckBox, 'checkBox_2')
+        self.comboBox_mode = self.findChild(QComboBox, 'comboBox_mode')
+        self.label_mode_description = self.findChild(QLabel, 'label_mode_description')
         self.pushButton=self.findChild(QPushButton, 'pushButton')
         self.pushButton.clicked.connect(self.button_reintialise_action)
 
-        if self.str_iterate_still_nb_line_dont_change !="False":
-            self.checkBox_iteration_until_number_of_line_dont_change.setChecked(True)
-        else:
-            self.checkBox_iteration_until_number_of_line_dont_change.setChecked(False)
-        self.checkBox_iteration_until_number_of_line_dont_change.stateChanged.connect(self.update_checkBox_iteration_until_number_of_line_dont_change)
-        if self.str_iter_of_line_number !="False":
-            self.checkBox_iteration_on_the_number_of_line.setChecked(True)
-        else:
-            self.checkBox_iteration_on_the_number_of_line.setChecked(False)
-        self.checkBox_iteration_on_the_number_of_line.stateChanged.connect(self.updat_checkBox_iteration_on_the_number_of_line)
+        # Retro-compatibility: derive the mode from the legacy settings once
+        if self.loop_mode not in LoopMode.ALL:
+            self.loop_mode = LoopMode.from_legacy(self.str_iterate_still_nb_line_dont_change,
+                                                  self.str_iter_of_line_number)
+        self._sync_legacy_settings()
+
+        for mode in LoopMode.ALL:
+            self.comboBox_mode.addItem(LoopMode.LABELS[mode], mode)
+            self.comboBox_mode.setItemData(self.comboBox_mode.count() - 1,
+                                           LoopMode.DESCRIPTIONS[mode], 3)  # 3 = Qt.ToolTipRole
+        self.comboBox_mode.setCurrentIndex(self.comboBox_mode.findData(self.loop_mode))
+        self.comboBox_mode.currentIndexChanged.connect(self.update_loop_mode)
+
+        self._update_mode_ui()
+
         self.iter = 0
         self.data = None
         self.ready=0
@@ -76,20 +89,21 @@ class LoopStartWidget(OWWidget):
         self.set_data(dataset)
         self.send_pointer()
 
-    def update_checkBox_iteration_until_number_of_line_dont_change(self):
-        if self.checkBox_iteration_until_number_of_line_dont_change.isChecked():
-            self.str_iterate_still_nb_line_dont_change="True"
-            self.checkBox_iteration_on_the_number_of_line.setChecked(False)
-        else:
-            self.str_iterate_still_nb_line_dont_change = "False"
+    # ---------- mode management ----------
+    def update_loop_mode(self, index):
+        mode = self.comboBox_mode.itemData(index)
+        if mode not in LoopMode.ALL:
+            return
+        self.loop_mode = int(mode)
+        self._sync_legacy_settings()
+        self._update_mode_ui()
 
-    def updat_checkBox_iteration_on_the_number_of_line(self):
-        if self.checkBox_iteration_on_the_number_of_line.isChecked():
-            self.str_iter_of_line_number="True"
-            self.checkBox_iteration_until_number_of_line_dont_change.setChecked(False)
-        else:
-            self.str_iter_of_line_number = "False"
+    def _sync_legacy_settings(self):
+        (self.str_iterate_still_nb_line_dont_change,
+         self.str_iter_of_line_number) = LoopMode.to_legacy(self.loop_mode)
 
+    def _update_mode_ui(self):
+        self.label_mode_description.setText(LoopMode.DESCRIPTIONS[self.loop_mode])
 
     @Inputs.data_in
     def set_data(self, dataset):
@@ -99,17 +113,17 @@ class LoopStartWidget(OWWidget):
         self.send_pointer()
         self.error("")
         self.data=None
-        if self.str_iterate_still_nb_line_dont_change =="True":
+        if self.loop_mode == LoopMode.WHOLE_UNTIL_STABLE:
             self.data=dataset
             self._process_when_ready()
             return
 
-
-
-        if self.str_iter_of_line_number =="True":
+        if LoopMode.is_row_by_row(self.loop_mode):
             self.data=dataset
             self._execute_iter_of_line_number_when_ready()
             return
+
+        # LoopMode.WHOLE_UNTIL_ITER (default)
         error_code_check_iter_column=self.check_iter_column(dataset)
         if error_code_check_iter_column==1:
             self.data=self.add_iter_column(dataset)
@@ -123,19 +137,19 @@ class LoopStartWidget(OWWidget):
     def add_iter_column(self,in_data_orange):
         iter_var = ContinuousVariable("iter")
         new_domain = Domain(in_data_orange.domain.attributes + (iter_var,), in_data_orange.domain.class_var, in_data_orange.domain.metas)
-        iter_values = np.ones((len(in_data_orange), 1))  # column of 0
+        iter_values = np.ones((len(in_data_orange), 1))  # column of 1
         # merge
         new_X = np.hstack((in_data_orange.X, iter_values))
         return Table(new_domain, new_X, in_data_orange.Y, in_data_orange.metas)
 
     def check_iter_column(self,in_data_orange):
         """
-        Checks the presence and validity of the categorical variable 'iter' in in_data.
+        Checks the presence and validity of the variable 'iter' in in_data.
 
         Returns:
-        - 0 if 'iter' is a categorical variable with only "0" and "1" as values.
+        - 0 if 'iter' exists and is continuous.
         - 1 if 'iter' is missing from the domain.
-        - 2 if 'iter' exists but is either not continuous.
+        - 2 if 'iter' exists but is not continuous.
         """
         # Check if "iter" exists in the domain
         if "iter" not in in_data_orange.domain:
@@ -162,13 +176,17 @@ class LoopStartWidget(OWWidget):
         self.iter = 0
         return
 
+    # ---------- API used by End Loop ----------
+    def get_loop_mode(self):
+        return self.loop_mode
 
+    # Legacy API (kept for older End Loop versions)
     def is_allow_to_change_line_number(self):
         """Return if we are allowed to change the number of line to be called from another widget."""
-        return self.str_iterate_still_nb_line_dont_change
+        return LoopMode.to_legacy(self.loop_mode)[0]
 
     def iter_of_line_number(self):
-        return self.str_iter_of_line_number
+        return LoopMode.to_legacy(self.loop_mode)[1]
 
     def execute_iter_of_line_number(self):
         table = Table.from_table(domain=self.data.domain, source=self.data, row_indices=[self.iter])

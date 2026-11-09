@@ -35,7 +35,7 @@
      </rect>
     </property>
     <property name="text">
-     <string>This widget creates a loop with start loop. You have to put before the end loop a formula with iter=0 until your condition is not done. Put iter = 1 when it's done.</string>
+     <string>Closes the loop opened by Loop Start. The way the loop iterates and stops is chosen in Loop Start (Loop mode).</string>
     </property>
     <property name="textFormat">
      <enum>Qt::AutoText</enum>
@@ -45,6 +45,14 @@
     </property>
     <property name="wordWrap">
      <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QLabel" name="label_mode">
+    <property name="geometry">
+     <rect><x>10</x><y>90</y><width>411</width><height>20</height></rect>
+    </property>
+    <property name="text">
+     <string>Mode: (connect a Loop Start)</string>
     </property>
    </widget>
   </widget>

@@ -1,5 +1,6 @@
 import os
 import sys
+from functools import partial
 
 import Orange.data
 from AnyQt.QtWidgets import QApplication
@@ -48,6 +49,7 @@ class OWLoadDocuments(widget.OWWidget):
     detailed_docx_loading = Setting(False)
     per_page_loading = Setting(False)
     load_as_text = Setting(False)
+    extract_images = Setting(True)
     autorun = Setting(True)
 
     @Inputs.data
@@ -60,7 +62,7 @@ class OWLoadDocuments(widget.OWWidget):
         super().__init__()
         # Qt Management
         self.setFixedWidth(470)
-        self.setFixedHeight(330)
+        self.setFixedHeight(360)
         uic.loadUi(self.gui, self)
 
         # Data Management
@@ -77,6 +79,7 @@ class OWLoadDocuments(widget.OWWidget):
         self.checkBox_detailed.setChecked(bool(self.detailed_docx_loading))
         self.checkBox_pages.setChecked(bool(self.per_page_loading))
         self.checkBox_text.setChecked(bool(self.load_as_text))
+        self.checkBox_images.setChecked(bool(self.extract_images))
         
 
 
@@ -93,6 +96,9 @@ class OWLoadDocuments(widget.OWWidget):
 
         # Load documents as text
         self.checkBox_text.stateChanged.connect(self.on_text_checkbox_toggled)
+
+        # Extract docx images to the "_aait_media" folder
+        self.checkBox_images.stateChanged.connect(self.on_images_checkbox_toggled)
 
         # Run button
         self.pushButton_send.clicked.connect(self.run)
@@ -146,6 +152,11 @@ class OWLoadDocuments(widget.OWWidget):
             self.detailed_docx_loading = False
             self.per_page_loading = False
             self.Outputs.details.send(None)
+        if self.autorun:
+            self.run()
+
+    def on_images_checkbox_toggled(self, state):
+        self.extract_images = bool(state)
         if self.autorun:
             self.run()
 
@@ -214,10 +225,11 @@ class OWLoadDocuments(widget.OWWidget):
 
         # Thread management
         if self.load_as_text:
-            extractors = {ext: process_documents.extract_text for ext in self.RICH_FORMATS}
+            extract_fn = partial(process_documents.extract_text, extract_images=bool(self.extract_images))
+            extractors = {ext: extract_fn for ext in self.RICH_FORMATS}
             self.thread = thread_management.Thread(loading_fn, self.data, extractors=extractors)
         else:
-            self.thread = thread_management.Thread(loading_fn, self.data)
+            self.thread = thread_management.Thread(loading_fn, self.data, extract_images=bool(self.extract_images))
         self.thread.progress.connect(self.handle_progress)
         self.thread.result.connect(self.handle_result)
         self.thread.finish.connect(self.handle_finish)

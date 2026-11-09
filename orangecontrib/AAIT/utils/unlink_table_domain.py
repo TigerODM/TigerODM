@@ -119,7 +119,7 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
     - Discrete: remap code -> label -> code cible (union)
     - Continuous: copie float
     - String/meta: stocke objets/texte
-    Colonnes absentes: NaN / None
+    Colonnes absentes: NaN (numérique, catégorielle, date) / None (texte)
     """
     n = len(table)
 
@@ -127,6 +127,10 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
     X = np.full((n, len(target_domain.attributes)), np.nan, dtype=float) if target_domain.attributes else np.empty((n, 0), dtype=float)
     Y = np.full((n, len(target_domain.class_vars)), np.nan, dtype=float) if target_domain.class_vars else np.empty((n, 0), dtype=float)
     M = np.empty((n, len(target_domain.metas)), dtype=object) if target_domain.metas else np.empty((n, 0), dtype=object)
+    # colonnes meta numériques/dates absentes : NaN (None n'est valide que pour le texte)
+    for j, tv in enumerate(target_domain.metas):
+        if tv.is_primitive():
+            M[:, j] = np.nan
 
     # map nom -> variable source (vars + metas)
     src_dom = table.domain
@@ -154,6 +158,12 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
 
             col = table.get_column(sv)
 
+            def cell(i):
+                # numérique/date : lu depuis la colonne float (None -> NaN, sans passer par Value)
+                if sv.is_primitive() and not isinstance(sv, DiscreteVariable):
+                    return float(col[i])
+                return table[i, sv]
+
             # ------------------------------------------------------------------
             # 1) cible discrète : on doit toujours produire des CODES Orange valides
             # ------------------------------------------------------------------
@@ -175,7 +185,7 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
                 # source non discrète -> valeur brute -> str(...) -> code cible
                 else:
                     for i in range(n):
-                        val = table[i, sv]
+                        val = cell(i)
                         label = _safe_str_label(val)
                         if label is None:
                             continue
@@ -186,7 +196,7 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
             # ------------------------------------------------------------------
             # 2) cible continue
             # ------------------------------------------------------------------
-            elif isinstance(tv, ContinuousVariable) and not is_meta:
+            elif isinstance(tv, ContinuousVariable):
                 out = np.full(n, np.nan, dtype=float)
 
                 if isinstance(sv, DiscreteVariable):
@@ -202,7 +212,7 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
                                 out[i] = np.nan
                 else:
                     for i in range(n):
-                        val = table[i, sv]
+                        val = cell(i)
                         raw = _safe_raw_value(val)
                         try:
                             out[i] = float(raw)
@@ -228,7 +238,7 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
                             else:
                                 out[i] = None
                     else:
-                        val = table[i, sv]
+                        val = cell(i)
                         raw = _safe_raw_value(val)
                         out[i] = raw
                 block[:, j] = out
@@ -252,7 +262,7 @@ def remap_table_to_domain(table: Table, target_domain: Domain) -> Table:
                                 out[i] = np.nan
                 else:
                     for i in range(n):
-                        val = table[i, sv]
+                        val = cell(i)
                         raw = _safe_raw_value(val)
                         try:
                             out[i] = float(raw)

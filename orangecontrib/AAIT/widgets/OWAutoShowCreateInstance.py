@@ -508,6 +508,10 @@ class OWCreateInstance(OWWidget):
         # Set before every programmatic model update, cleared in finally.
         self._silent_update = False
 
+        # Set by input handlers; consumed once in handleNewSignals so that
+        # several inputs arriving together produce a single commit.
+        self._pending_commit = False
+
         self.filter_edit = QLineEdit(textChanged=self.__filter_edit_changed,
                                      placeholderText="Filter...")
         self.view = QTableView(sortingEnabled=True,
@@ -723,7 +727,9 @@ class OWCreateInstance(OWWidget):
             self._silent_update = False
 
     # ------------------------------------------------------------------
-    # Inputs — always silent, no automatic commit on arrival
+    # Inputs — UI updated silently. Only the arrival of Data triggers ONE
+    # commit (if auto), done in handleNewSignals after all inputs of the
+    # batch are processed. Reference arrival still never commits.
     # ------------------------------------------------------------------
 
     @Inputs.data
@@ -736,6 +742,7 @@ class OWCreateInstance(OWWidget):
                 self._apply_reference_to_ui()
         finally:
             self._silent_update = False
+        self._pending_commit = True
 
     def _set_model_data(self):
         self.Information.nans_removed.clear()
@@ -759,6 +766,12 @@ class OWCreateInstance(OWWidget):
     def set_input_autoshow(self, le_str):
         if le_str is not None:
             self.str_WidgetPositionning = str(le_str)
+
+    def handleNewSignals(self):
+        """Called by Orange after all inputs of a batch were processed."""
+        if self._pending_commit:
+            self._pending_commit = False
+            self._do_commit_if_auto()
 
     # ------------------------------------------------------------------
     # Output builders

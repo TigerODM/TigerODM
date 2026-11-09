@@ -22,6 +22,28 @@
 #       except Exception as e:
 #           import logging
 #           logging.error(f"Failed to open widget diagnostic window: {e}")
+# 
+# Lancement depuis un widget python script :
+#
+#   from AnyQt.QtWidgets import QApplication
+#   from orangecontrib.AAIT.utils.tools.widget_diagnostic import EditorMainWindow
+#
+#   app = QApplication.instance()
+#
+#   # Fenêtre du Canvas comme parent : active « Ouvrir le workflow dans Orange… »
+#   canvas = next((w for w in app.topLevelWidgets()
+#                  if hasattr(w, "open_scheme_file") or hasattr(w, "load_scheme")), None)
+#
+#   # Référence durable (attachée à l'application) : la fenêtre survit à la fin du script
+#   win = getattr(app, "_widget_diagnostic", None)
+#   if win is None:
+#       win = EditorMainWindow(canvas)
+#       app._widget_diagnostic = win
+#
+#   win.show()
+#   win.raise_()
+#   win.activateWindow()
+#
 # ---------------------------------------------------------------------------
 
 import re

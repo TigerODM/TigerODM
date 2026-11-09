@@ -153,12 +153,13 @@ def check_for_embeddings(folder_path):
         return None
 
 
-def load_documents_in_table(table, progress_callback=None, argself=None):
+def load_documents_in_table(table, progress_callback=None, argself=None, extract_images=True):
     """
     Load the text content of each document listed in a table and add it
     as a new column "content".
 
     :param table: Orange.data.Table containing file paths in a column named "path".
+    :param extract_images: if False, docx images are not written to the "_aait_media" folder.
     :return: Orange.data.Table with an added meta column "content" containing the extracted text.
     """
     # Make a copy of the table to avoid modifying the original
@@ -173,7 +174,7 @@ def load_documents_in_table(table, progress_callback=None, argself=None):
         filepath = row["path"].value
         # Get text and name
         name = Path(filepath).name
-        text = extract_text(filepath)
+        text = extract_text(filepath, extract_images=extract_images)
         # Store results
         names.append(name)
         texts.append(text)
@@ -195,7 +196,7 @@ def load_documents_in_table(table, progress_callback=None, argself=None):
     return data
 
 
-def load_documents_in_table_detailed(table, progress_callback=None, argself=None):
+def load_documents_in_table_detailed(table, progress_callback=None, argself=None, extract_images=True):
     """
     Returns (main_table, details_table):
       - main_table   : path, name, content            (one row per file)
@@ -210,11 +211,11 @@ def load_documents_in_table_detailed(table, progress_callback=None, argself=None
         name = Path(filepath).name
         ext = os.path.splitext(filepath)[1].lower()
 
-        full_text = extract_text(filepath)
+        full_text = extract_text(filepath, extract_images=extract_images)
         main_rows.append([filepath, name, full_text])
 
         if ext == ".docx":
-            for locator, obj_type, content in extract_docx_objects(filepath):
+            for locator, obj_type, content in extract_docx_objects(filepath, extract_images=extract_images):
                 detail_rows.append([filepath, name, locator, obj_type, content])
 
         if progress_callback is not None:
@@ -2008,11 +2009,13 @@ def _extract_table_text(table) -> str:
     return "\n".join(rows)
 
 
-def extract_text(filepath):
+def extract_text(filepath, extract_images=True):
     """
     Extrait le texte d'un fichier en fonction de son type (PDF ou DOCX).
 
     :param filepath: Chemin vers le fichier.
+    :param extract_images: pour un DOCX, écrit les images dans "_aait_media" (voir _resolve_media_dir).
+        False : aucun dossier créé, pas de marqueurs [IMAGE: ...] dans le texte.
     :return: Texte extrait du fichier sous forme de chaîne.
     """
     try:
@@ -2022,7 +2025,7 @@ def extract_text(filepath):
         if file_extension == ".pdf":
             return extract_text_from_pdf(filepath)
         elif file_extension == ".docx":
-            return extract_text_from_docx(filepath)
+            return extract_text_from_docx(filepath, extract_images=extract_images)
         elif file_extension == ".pptx":
             return extract_text_from_pptx(filepath)
         elif file_extension in [".txt", ".md", ".py", ".html", ".json", ".ows"]:
@@ -2204,7 +2207,7 @@ def extract_text_from_txt(filepath):
         return f"ERROR: Extraction Error ({e})"
 
 
-def load_documents_per_page(table, progress_callback=None, argself=None):
+def load_documents_per_page(table, progress_callback=None, argself=None, extract_images=True):
     """
     Charge les documents avec une ligne par page (pour les PDF) dans la table de détails.
 
@@ -2222,7 +2225,7 @@ def load_documents_per_page(table, progress_callback=None, argself=None):
         name = Path(filepath).name
         ext = os.path.splitext(filepath)[1].lower()
 
-        full_text = extract_text(filepath)
+        full_text = extract_text(filepath, extract_images=extract_images)
         main_rows.append([filepath, name, full_text])
 
         try:
