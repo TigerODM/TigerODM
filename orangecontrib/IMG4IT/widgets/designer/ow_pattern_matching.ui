@@ -7,16 +7,16 @@
     <x>0</x>
     <y>0</y>
     <width>478</width>
-    <height>460</height>
+    <height>671</height>
    </rect>
   </property>
   <widget class="QGroupBox" name="groupBox">
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>20</y>
+     <y>15</y>
      <width>431</width>
-     <height>131</height>
+     <height>125</height>
     </rect>
    </property>
    <property name="title">
@@ -72,35 +72,154 @@
     </item>
    </layout>
   </widget>
+  <widget class="QGroupBox" name="groupBox_3">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>148</y>
+     <width>431</width>
+     <height>160</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Reference Options</string>
+   </property>
+   <layout class="QGridLayout" name="gridLayout_2">
+    <item row="0" column="0" colspan="2">
+     <widget class="QCheckBox" name="checkBox_alpha_mask">
+      <property name="toolTip">
+       <string>Les pixels transparents des PNG de référence sont ignorés (zones de texte variable, fond...)</string>
+      </property>
+      <property name="text">
+       <string>Use PNG transparency as mask (ignore transparent areas)</string>
+      </property>
+     </widget>
+    </item>
+    <item row="1" column="0" colspan="2">
+     <widget class="QCheckBox" name="checkBox_multiscale">
+      <property name="toolTip">
+       <string>Recherche la référence à plusieurs tailles entre l'échelle min et max</string>
+      </property>
+      <property name="text">
+       <string>Multi-scale search (vary reference size)</string>
+      </property>
+     </widget>
+    </item>
+    <item row="2" column="0">
+     <widget class="QLabel" name="label_scale_min">
+      <property name="text">
+       <string>Scale min:</string>
+      </property>
+     </widget>
+    </item>
+    <item row="2" column="1">
+     <widget class="QDoubleSpinBox" name="spinScaleMin">
+      <property name="decimals">
+       <number>2</number>
+      </property>
+      <property name="minimum">
+       <double>0.100000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>5.000000000000000</double>
+      </property>
+      <property name="singleStep">
+       <double>0.050000000000000</double>
+      </property>
+      <property name="value">
+       <double>0.800000000000000</double>
+      </property>
+     </widget>
+    </item>
+    <item row="3" column="0">
+     <widget class="QLabel" name="label_scale_max">
+      <property name="text">
+       <string>Scale max:</string>
+      </property>
+     </widget>
+    </item>
+    <item row="3" column="1">
+     <widget class="QDoubleSpinBox" name="spinScaleMax">
+      <property name="decimals">
+       <number>2</number>
+      </property>
+      <property name="minimum">
+       <double>0.100000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>5.000000000000000</double>
+      </property>
+      <property name="singleStep">
+       <double>0.050000000000000</double>
+      </property>
+      <property name="value">
+       <double>1.200000000000000</double>
+      </property>
+     </widget>
+    </item>
+    <item row="4" column="0">
+     <widget class="QLabel" name="label_scale_steps">
+      <property name="text">
+       <string>Number of variations:</string>
+      </property>
+     </widget>
+    </item>
+    <item row="4" column="1">
+     <widget class="QSpinBox" name="spinScaleSteps">
+      <property name="minimum">
+       <number>1</number>
+      </property>
+      <property name="maximum">
+       <number>50</number>
+      </property>
+      <property name="value">
+       <number>5</number>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
   <widget class="QGroupBox" name="groupBox_2">
    <property name="geometry">
     <rect>
      <x>20</x>
-     <y>159</y>
+     <y>316</y>
      <width>431</width>
-     <height>201</height>
+     <height>270</height>
     </rect>
    </property>
    <property name="title">
-    <string>Output Format Info</string>
+    <string>Input / Output Info</string>
    </property>
    <widget class="QPlainTextEdit" name="plainTextEdit">
     <property name="geometry">
      <rect>
       <x>10</x>
-      <y>30</y>
+      <y>25</y>
       <width>411</width>
-      <height>160</height>
+      <height>235</height>
      </rect>
     </property>
     <property name="readOnly">
      <bool>true</bool>
     </property>
     <property name="plainText">
-     <string>Génère une ligne par objet détecté.
-Colonnes ajoutées :
-- transform : formaté pour 'Image Transformation'
-- name_out : nom du fichier de sortie</string>
+     <string>Entrées (les deux côtés) : colonne 'path' requise
+(chemin complet de l'image), ou à défaut colonne 'image'.
+- Images to Process : images à analyser
+- Reference Images : motifs à rechercher
+
+Sorties :
+- Data : une ligne par objet détecté = colonnes d'entrée +
+    transform : commande Crop pour 'Image Transformation'
+                (en multi-échelle : taille réelle détectée)
+    name_out : nom du fichier de sortie
+- Center : une ligne par image avec au moins un match
+    path : chemin de l'image
+    col_centre / line_centre : centres X / Y des détections,
+    séparés par des espaces (toutes références confondues)
+- Images without match : lignes d'entrée inchangées
+- Preview Image (si activé) : path de l'image annotée</string>
     </property>
    </widget>
   </widget>
@@ -108,7 +227,7 @@ Colonnes ajoutées :
    <property name="geometry">
     <rect>
      <x>30</x>
-     <y>380</y>
+     <y>605</y>
      <width>100</width>
      <height>20</height>
     </rect>
@@ -121,7 +240,7 @@ Colonnes ajoutées :
    <property name="geometry">
     <rect>
      <x>350</x>
-     <y>375</y>
+     <y>600</y>
      <width>100</width>
      <height>30</height>
     </rect>
