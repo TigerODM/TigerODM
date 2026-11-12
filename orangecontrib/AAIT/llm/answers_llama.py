@@ -838,6 +838,11 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
 
     Returns None if model loading or message conversion fails.
     """
+    # Default generation parameters (before model loading, which reads k_cache/v_cache/reasoning)
+    if query_parameters is None:
+        query_parameters = {"max_tokens": 0, "temperature": 0.4, "top_p": 0.4, "top_k": 40, "repeat_penalty": 1.15,
+                            "k_cache": 1, "v_cache": 1, "reasoning": True}
+
     # Copie des données d'entrée
     data = copy.deepcopy(table)
 
@@ -859,10 +864,6 @@ def continue_conversation(table, model_path, use_gpu=False, n_ctx=32768, query_p
         with_handler = False
     if model is None:
         return None
-
-    # Default generation parameters
-    if query_parameters is None:
-        query_parameters = {"max_tokens": 0, "temperature": 0.4, "top_p": 0.4, "top_k": 40, "repeat_penalty": 1.15}
 
     try:
         # Build the conversation from table

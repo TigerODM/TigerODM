@@ -8,6 +8,7 @@ import importlib.util
 import os
 import sys
 import types
+from unittest import mock
 
 import pytest
 
@@ -30,6 +31,13 @@ def _load(name, filename):
 
 @pytest.fixture(scope="session")
 def modules():
+    # sys.modules is restored when the session ends: real installed modules are
+    # never shadowed outside these tests.
+    with mock.patch.dict(sys.modules):
+        yield _build()
+
+
+def _build():
     # third-party stubs
     _stub("gguf", GGUFReader=object)
     _stub("llama_cpp", Llama=object)

@@ -42,6 +42,52 @@ def test_generate_answers_explicit_query_parameters_untouched(modules, monkeypat
     assert qp == {"max_tokens": 5, "k_cache": 8, "v_cache": 8, "reasoning": False}
 
 
+# --- reasoning default on the image path ---------------------------------------
+class _ImageTable(_Table):
+    def __init__(self):
+        super().__init__()
+        self.domain.append("image paths")
+
+
+def _record_handler(al, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(al, "load_model_with_handler", lambda *a, **kw: seen.update(kw))
+    return seen
+
+
+def test_generate_answers_default_reasoning_is_true_on_image_path(modules, monkeypatch):
+    al = modules.answers_llama
+    seen = _record_handler(al, monkeypatch)
+    al.generate_answers(_ImageTable(), "m.gguf", use_gpu=False, query_parameters=None)
+    assert seen["reasoning"] is True  # thinking stays on by default
+
+
+def test_generate_answers_explicit_reasoning_false_is_kept(modules, monkeypatch):
+    al = modules.answers_llama
+    seen = _record_handler(al, monkeypatch)
+    qp = {"max_tokens": 5, "k_cache": 1, "v_cache": 1, "reasoning": False}
+    al.generate_answers(_ImageTable(), "m.gguf", use_gpu=False, query_parameters=qp)
+    assert seen["reasoning"] is False
+
+
+# --- continue_conversation: query_parameters=None ---------------------------
+def test_continue_conversation_without_query_parameters_text_model(modules, monkeypatch):
+    al = modules.answers_llama
+    seen = {}
+    monkeypatch.setattr(al.handler_llama, "find_mmproj_path", lambda p: None, raising=False)
+    monkeypatch.setattr(al, "load_model", lambda **kw: seen.update(kw))
+    assert al.continue_conversation(_Table(), "m.gguf", use_gpu=False, query_parameters=None) is None
+    assert seen["k_cache"] == 1 and seen["v_cache"] == 1
+
+
+def test_continue_conversation_without_query_parameters_handler(modules, monkeypatch):
+    al = modules.answers_llama
+    seen = _record_handler(al, monkeypatch)
+    monkeypatch.setattr(al.handler_llama, "find_mmproj_path", lambda p: "mm.gguf", raising=False)
+    al.continue_conversation(_Table(), "m.gguf", use_gpu=False, query_parameters=None)
+    assert seen["reasoning"] is True
+
+
 # --- split_think -------------------------------------------------------------
 def test_split_think_qwen_and_gemma4(modules):
     st = modules.answers_llama.split_think
