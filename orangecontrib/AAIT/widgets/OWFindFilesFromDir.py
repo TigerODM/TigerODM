@@ -1,14 +1,14 @@
 import os
 import sys
 import Orange.data
-from AnyQt.QtWidgets import QApplication, QLineEdit, QCheckBox,QSpinBox, QPushButton
+from AnyQt.QtWidgets import QApplication, QLineEdit, QCheckBox,QSpinBox, QPushButton, QDateEdit
 from Orange.data import StringVariable, Table, Domain
 from Orange.widgets.utils.signals import Input, Output
 from Orange.widgets.settings import Setting
 from datetime import datetime, timedelta
 from pathlib import Path
 import numpy as np
-from AnyQt.QtCore import QTimer
+from AnyQt.QtCore import QTimer, QDate
 
 if "site-packages/Orange/widgets" in os.path.dirname(os.path.abspath(__file__)).replace("\\", "/"):
     from Orange.widgets.orangecontrib.AAIT.utils import base_widget, help_management
@@ -36,6 +36,8 @@ class OWFileFromDir(base_widget.BaseListWidget):
     filter_per_date = Setting("False")
     extra_column = Setting("False")
     time_filter= Setting("0-0-0-1")
+    filter_after_date = Setting("False")
+    date_threshold = Setting("2025-09-01")
 
     class Inputs:
         data = Input("Data", Orange.data.Table)
@@ -126,6 +128,36 @@ class OWFileFromDir(base_widget.BaseListWidget):
         self.spinBox_minute.valueChanged.connect(self.on_value_changed)
         self.spinBox_second.valueChanged.connect(self.on_value_changed)
 
+        self.checkBox_date_threshold = self.findChild(
+            QCheckBox, 'checkBox_date_threshold'
+        )
+        self.dateEdit_threshold = self.findChild(
+            QDateEdit, 'dateEdit_threshold'
+        )
+        self.dateEdit_threshold.setCalendarPopup(True)
+        self.dateEdit_threshold.setDisplayFormat("dd/MM/yyyy")
+
+        self.dateEdit_threshold.setDate(
+            QDate.fromString(self.date_threshold, "yyyy-MM-dd")
+        )
+        self.checkBox_date_threshold.setChecked(
+            self.filter_after_date == "True"
+        )
+        self.dateEdit_threshold.setVisible(
+            self.filter_after_date == "True"
+        )
+        self.checkBox_date_threshold.stateChanged.connect(
+            self.on_date_threshold_toggled
+        )
+        self.dateEdit_threshold.dateChanged.connect(
+            self.on_threshold_date_changed
+        )
+
+        # Ensure mutually exclusive filters on startup
+        if self.filter_after_date == "True":
+            self.filter_per_date = "False"
+
+
         self.pushButton_run =self.findChild(QPushButton, 'pushButton_send')
         self.pushButton_run.clicked.connect(self.run)
         QTimer.singleShot(0, lambda: help_management.override_help_action(self))
@@ -144,29 +176,49 @@ class OWFileFromDir(base_widget.BaseListWidget):
             self.recursive = "False"
         if self.folderpath is not None:
             self.run()
-    def on_checkBox_2_toggled(self,state):
-        self.filter_per_date = "True"
-        if state==0:
-            self.filter_per_date = "False"
 
-        if self.filter_per_date == "False":
-            self.spinBox_day.setVisible(False)
-            self.spinBox_hour.setVisible(False)
-            self.spinBox_minute.setVisible(False)
-            self.spinBox_second.setVisible(False)
-        else:
-            self.spinBox_day.setVisible(True)
-            self.spinBox_hour.setVisible(True)
-            self.spinBox_minute.setVisible(True)
-            self.spinBox_second.setVisible(True)
+
+    def on_checkBox_2_toggled(self, state):
+        self.filter_per_date = "True" if state != 0 else "False"
+
+        if state != 0:
+            self.checkBox_date_threshold.setChecked(False)
+
+        visible = self.filter_per_date == "True"
+
+        for widget in [
+            self.spinBox_day,
+            self.spinBox_hour,
+            self.spinBox_minute,
+            self.spinBox_second
+        ]:
+            widget.setVisible(visible)
 
         if self.folderpath is not None:
             self.run()
+
 
     def on_checkBox_3_toggled(self,state):
         self.ignore_orphan = "True"
         if state==0:
             self.ignore_orphan = "False"
+
+    def on_date_threshold_toggled(self, state):
+        self.filter_after_date = "True" if state != 0 else "False"
+
+        if state != 0:
+            self.checkBox_2.setChecked(False)
+
+        self.dateEdit_threshold.setVisible(state != 0)
+
+        if self.folderpath is not None:
+            self.run()
+
+    def on_threshold_date_changed(self, date):
+        self.date_threshold = date.toString("yyyy-MM-dd")
+
+        if self.folderpath is not None:
+            self.run()
 
 
     def checkBox_extra_column_toggled(self,state):
@@ -379,6 +431,36 @@ class OWFileFromDir(base_widget.BaseListWidget):
 
         return filtered_files_data, filtered_roots_data, filtered_files_data_rel
 
+
+    def filter_files_after_date(
+            self, files_data, roots_data, files_data_rel, date_str
+    ):
+        threshold = datetime.strptime(
+            date_str, "%Y-%m-%d"
+        )
+
+        filtered_files = []
+        filtered_roots = []
+        filtered_rel = []
+
+        for file_item, root_item, rel_item in zip(
+                files_data, roots_data, files_data_rel
+        ):
+            try:
+                file_date = self._created_or_modified_time(file_item[0])
+
+                if file_date >= threshold:
+                    filtered_files.append(file_item)
+                    filtered_roots.append(root_item)
+                    filtered_rel.append(rel_item)
+
+            except (OSError, ValueError):
+                continue
+
+        return filtered_files, filtered_roots, filtered_rel
+
+
+
     def run(self):
         self.error("")
         self.warning("")
@@ -403,12 +485,24 @@ class OWFileFromDir(base_widget.BaseListWidget):
 
         try:
             files_data,roots_data,files_data_rel = self.find_files()
-            if self.filter_per_date !="False":
-                files_data, roots_data, files_data_rel = self.filter_files_newer_than_delta(
-                    files_data,
-                    roots_data,
-                    files_data_rel,
-                    self.time_filter
+            if self.filter_per_date == "True":
+                files_data, roots_data, files_data_rel = (
+                    self.filter_files_newer_than_delta(
+                        files_data,
+                        roots_data,
+                        files_data_rel,
+                        self.time_filter
+                    )
+                )
+
+            elif self.filter_after_date == "True":
+                files_data, roots_data, files_data_rel = (
+                    self.filter_files_after_date(
+                        files_data,
+                        roots_data,
+                        files_data_rel,
+                        self.date_threshold
+                    )
                 )
 
             if len(files_data) == 0:

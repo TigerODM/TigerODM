@@ -178,7 +178,7 @@ class EndLoopWidget(OWWidget):
     def run_row_by_row(self, mode):
         nb_line = self.get_nb_line_from_start()
         if self.out_data is None:
-            self.info("")  # first row of a new loop
+            self.information("")  # first row of a new loop
 
         # New mode: a row coming back with iter < 0 stops the whole loop
         stop_requested = (mode == LoopMode.ROWS_STOP_ON_NEGATIVE_ITER
@@ -193,7 +193,7 @@ class EndLoopWidget(OWWidget):
         if stop_requested or nb_line == self.get_iter():
             # on s'arrete
             if stop_requested:
-                self.info(f"Loop stopped by iter < 0 on row {self.get_iter()}/{nb_line}. "
+                self.information(f"Loop stopped by iter < 0 on row {self.get_iter()}/{nb_line}. "
                           f"{nb_line - self.get_iter()} row(s) skipped.")
             self.reinitialize_iter()
             self.Outputs.out_data.send(self.out_data)

@@ -29,7 +29,7 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>160</y>
+      <y>110</y>
       <width>401</width>
       <height>21</height>
      </rect>
@@ -39,7 +39,7 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>80</y>
+      <y>50</y>
       <width>365</width>
       <height>31</height>
      </rect>
@@ -52,7 +52,7 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>40</y>
+      <y>20</y>
       <width>401</width>
       <height>31</height>
      </rect>
@@ -65,7 +65,7 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>200</y>
+      <y>140</y>
       <width>411</width>
       <height>16</height>
      </rect>
@@ -78,7 +78,7 @@
     <property name="geometry">
      <rect>
       <x>30</x>
-      <y>240</y>
+      <y>170</y>
       <width>71</width>
       <height>22</height>
      </rect>
@@ -91,7 +91,7 @@
     <property name="geometry">
      <rect>
       <x>120</x>
-      <y>240</y>
+      <y>170</y>
       <width>71</width>
       <height>22</height>
      </rect>
@@ -104,7 +104,7 @@
     <property name="geometry">
      <rect>
       <x>210</x>
-      <y>240</y>
+      <y>170</y>
       <width>71</width>
       <height>22</height>
      </rect>
@@ -117,7 +117,7 @@
     <property name="geometry">
      <rect>
       <x>300</x>
-      <y>240</y>
+      <y>170</y>
       <width>71</width>
       <height>22</height>
      </rect>
@@ -149,13 +149,36 @@
     <property name="geometry">
      <rect>
       <x>20</x>
-      <y>110</y>
+      <y>80</y>
       <width>365</width>
       <height>31</height>
      </rect>
     </property>
     <property name="text">
      <string>Ignore Orphan files (~$docu.docx ~$report.xlsx etc)</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="checkBox_date_threshold">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>210</y>
+      <width>411</width>
+      <height>16</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Only the files that are after a specific date</string>
+    </property>
+   </widget>
+   <widget class="QDateEdit" name="dateEdit_threshold">
+    <property name="geometry">
+     <rect>
+      <x>30</x>
+      <y>240</y>
+      <width>110</width>
+      <height>22</height>
+     </rect>
     </property>
    </widget>
   </widget>
